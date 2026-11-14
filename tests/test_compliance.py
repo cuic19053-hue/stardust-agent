@@ -470,6 +470,7 @@ KNOWN_WRONG_NUMBERS = {
 
 
 def _all_skill_text() -> str:
+    """所有面向用户/维护者的内容：skill 正文、references、根级参考、docs。"""
     parts = []
     for p in sorted((ROOT / "subskills").glob("*/SKILL.md")):
         parts.append(p.read_text(encoding="utf-8"))
@@ -477,7 +478,13 @@ def _all_skill_text() -> str:
         parts.append(p.read_text(encoding="utf-8"))
     for p in sorted((ROOT / "references").glob("*.md")):
         parts.append(p.read_text(encoding="utf-8"))
+    for p in sorted((ROOT / "docs").rglob("*.md")):
+        parts.append(p.read_text(encoding="utf-8"))
     return "\n".join(parts)
+
+
+# 允许提及错误文号的上下文：修订记录 / 测试 / 待办清单
+WRONG_NUMBER_ALLOWLIST = ("ISSUES.md", "DELIVERY_", "VERSION_DIFF_", "SKILL_LANGUAGE")
 
 
 def test_verified_doc_numbers_stay_correct():
@@ -491,10 +498,21 @@ def test_verified_doc_numbers_stay_correct():
 
 
 def test_known_wrong_doc_numbers_absent():
-    """已确认的错误文号不得再次出现。"""
-    text = _all_skill_text()
-    found = [f"{bad}（{why}）" for bad, why in KNOWN_WRONG_NUMBERS.items() if bad in text]
-    assert not found, "出现已知错误文号：" + "；".join(found)
+    """已确认的错误文号不得再次出现在「会被人当作正确知识读」的文件里。
+
+    修订记录、交付报告、本测试文件本身需要引用错误值做对照，按文件名排除。
+    """
+    offenders = []
+    for path in sorted(list((ROOT / "subskills").rglob("*.md"))
+                       + list((ROOT / "references").glob("*.md"))
+                       + list((ROOT / "docs").rglob("*.md"))):
+        if any(a in path.name for a in WRONG_NUMBER_ALLOWLIST):
+            continue
+        text = path.read_text(encoding="utf-8")
+        for bad, why in KNOWN_WRONG_NUMBERS.items():
+            if bad in text:
+                offenders.append(f"{path.name}: {bad}（{why}）")
+    assert not offenders, "出现已知错误文号：" + "；".join(offenders)
 
 
 def test_verified_doc_numbers_documented():
