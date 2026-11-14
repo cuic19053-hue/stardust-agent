@@ -33,7 +33,7 @@ README_ROW = re.compile(
 FRONTMATTER = re.compile(r"^---\n(.*?)\n---\n", re.S)
 
 
-def check(root: Path = ROOT) -> Tuple[List[str], List[str]]:
+def check(root: Path = ROOT, require_skills_ref: bool = False) -> Tuple[List[str], List[str]]:
     """返回 (errors, warnings)；errors 非空即门禁失败。"""
     errors: List[str] = []
     warnings: List[str] = []
@@ -101,6 +101,8 @@ def check(root: Path = ROOT) -> Tuple[List[str], List[str]]:
             warnings.append(f"[version.json] skills 列表 {len(vs)} 条，实际 {len(dirs)}（元数据待更新）")
 
     # --- 5: skills-ref 标准规范校验 ---
+    # CI 必须安装 skills-ref；缺依赖时默认降级为告警，加 --require-skills-ref
+    # 则升级为错误，避免「校验静默跳过」造成的假绿。
     try:
         from skills_ref import validate
         for name in dirs:
@@ -109,7 +111,11 @@ def check(root: Path = ROOT) -> Tuple[List[str], List[str]]:
             if s_errs:
                 errors.append(f"[skills-ref] subskills/{name} 未通过规范校验: {s_errs}")
     except ImportError:
-        warnings.append("[skills-ref] 未安装 skills-ref，跳过参考规范严格校验")
+        msg = "[skills-ref] 未安装 skills-ref，跳过参考规范严格校验"
+        if require_skills_ref:
+            errors.append(msg + "（--require-skills-ref 要求必须安装）")
+        else:
+            warnings.append(msg)
 
     return errors, warnings
 
@@ -117,9 +123,11 @@ def check(root: Path = ROOT) -> Tuple[List[str], List[str]]:
 def main() -> int:
     ap = argparse.ArgumentParser(description="文档一致性门禁")
     ap.add_argument("--json", action="store_true", help="以 JSON 输出结果")
+    ap.add_argument("--require-skills-ref", action="store_true",
+                    help="skills-ref 缺失时判为错误（CI 用）")
     args = ap.parse_args()
 
-    errors, warnings = check()
+    errors, warnings = check(require_skills_ref=args.require_skills_ref)
     if args.json:
         print(json.dumps(
             {"passed": not errors, "errors": errors, "warnings": warnings},

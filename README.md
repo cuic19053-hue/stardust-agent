@@ -100,71 +100,71 @@ ollama pull bge-m3
 
 | # | 赛道 | 编码 | 内容量 |
 |---|---|---|---|
-| 1 | 大创 · 创新训练项目 | `innovation-research` | 59 KB |
-| 2 | 大创 · 创业训练项目 | `entrepreneurship-training` | 46 KB |
-| 3 | 大创 · 创业实践项目 | `entrepreneurship-practice` | 52 KB |
-| 4 | 校级科研立项 | `university-research` | 61 KB |
-| 5 | 院级科研立项 | `college-research` | 79 KB |
-| 6 | 挑战杯 · 课外学术科技作品 | `challenge-cup` | 81 KB |
-| 7 | 互联网+ · 商业计划书 | `internet-plus` | 75 KB |
-| 8 | 互联网+ · 红旅赛道 | `internet-plus-red-tour` | 64 KB |
-| 9 | 国家级项目立项逻辑评测 | `national-project-eval` | 43 KB |
+| 1 | 大创 · 创新训练项目 | `innovation-research` | 60 KB |
+| 2 | 大创 · 创业训练项目 | `entrepreneurship-training` | 48 KB |
+| 3 | 大创 · 创业实践项目 | `entrepreneurship-practice` | 54 KB |
+| 4 | 校级科研立项 | `university-research` | 62 KB |
+| 5 | 院级科研立项 | `college-research` | 80 KB |
+| 6 | 挑战杯 · 课外学术科技作品 | `challenge-cup` | 83 KB |
+| 7 | 互联网+ · 商业计划书 | `internet-plus` | 76 KB |
+| 8 | 互联网+ · 红旅赛道 | `internet-plus-red-tour` | 65 KB |
+| 9 | 国家级项目立项逻辑评测 | `national-project-eval` | 45 KB |
 
 **🏆 评优与资助· 12 个**
 
 | # | 赛道 | 编码 | 内容量 |
 |---|---|---|---|
-| 10 | 国家奖学金（10000 元） | `national-scholarship` | 37 KB |
-| 11 | 国家励志奖学金（6000 元） | `motivation-scholarship` | 46 KB |
-| 12 | 校级奖学金 | `university-scholarship` | 43 KB |
-| 13 | 企业专项奖学金 | `enterprise-scholarship` | 49 KB |
-| 14 | 单项奖学金 | `single-scholarship` | 44 KB |
-| 15 | 国家助学金 | `grant-application` | 13 KB |
-| 16 | 优秀毕业生 | `outstanding-graduate` | 45 KB |
-| 17 | 优秀学生 / 三好学生 / 优秀团员 | `outstanding-student` | 60 KB |
-| 18 | 优秀学生干部 | `outstanding-cadre` | 71 KB |
-| 19 | 文明大学生 | `civilized-student` | 61 KB |
-| 20 | 优秀班集体 | `class-collective` | 55 KB |
-| 21 | 优秀毕业设计 / 论文 | `outstanding-thesis` | 64 KB |
+| 10 | 国家奖学金（10000 元） | `national-scholarship` | 38 KB |
+| 11 | 国家励志奖学金（6000 元） | `motivation-scholarship` | 48 KB |
+| 12 | 校级奖学金 | `university-scholarship` | 45 KB |
+| 13 | 企业专项奖学金 | `enterprise-scholarship` | 51 KB |
+| 14 | 单项奖学金 | `single-scholarship` | 46 KB |
+| 15 | 国家助学金 | `grant-application` | 15 KB |
+| 16 | 优秀毕业生 | `outstanding-graduate` | 47 KB |
+| 17 | 优秀学生 / 三好学生 / 优秀团员 | `outstanding-student` | 62 KB |
+| 18 | 优秀学生干部 | `outstanding-cadre` | 72 KB |
+| 19 | 文明大学生 | `civilized-student` | 62 KB |
+| 20 | 优秀班集体 | `class-collective` | 57 KB |
+| 21 | 优秀毕业设计 / 论文 | `outstanding-thesis` | 66 KB |
 
 **🌾 活动类 · 5 个**
 
 | # | 赛道 | 编码 | 内容量 |
 |---|---|---|---|
-| 22 | 三下乡 · 社会调查 | `social-survey` | 46 KB |
-| 23 | 三下乡 · 支教 | `volunteer-teaching` | 52 KB |
-| 24 | 三下乡 · 政策宣讲 | `policy-lecture` | 55 KB |
-| 25 | 三下乡 · 科技服务 | `tech-service` | 66 KB |
-| 26 | 西部计划 | `western-plan` | 63 KB |
+| 22 | 三下乡 · 社会调查 | `social-survey` | 47 KB |
+| 23 | 三下乡 · 支教 | `volunteer-teaching` | 54 KB |
+| 24 | 三下乡 · 政策宣讲 | `policy-lecture` | 57 KB |
+| 25 | 三下乡 · 科技服务 | `tech-service` | 68 KB |
+| 26 | 西部计划 | `western-plan` | 65 KB |
 
 **🚩 政治身份类 · 3 个**
 
 | # | 赛道 | 编码 | 内容量 |
 |---|---|---|---|
-| 27 | 入团申请书 | `youth-league-application` | 61 KB |
-| 28 | 阶段汇报 / 思想汇报 | `summary-report` | 29 KB |
-| 29 | 转正申请书 | `youth-league-conversion` | 29 KB |
+| 27 | 入团申请书 | `youth-league-application` | 62 KB |
+| 28 | 阶段汇报 / 思想汇报 | `summary-report` | 30 KB |
+| 29 | 转正申请书 | `youth-league-conversion` | 31 KB |
 
 **🎓 升学类 · 2 个**
 
 | # | 赛道 | 编码 | 内容量 |
 |---|---|---|---|
-| 30 | 保研推免申请 | `graduate-recommendation` | 45 KB |
-| 31 | 选调生申请 | `selected-graduate` | 63 KB |
+| 30 | 保研推免申请 | `graduate-recommendation` | 46 KB |
+| 31 | 选调生申请 | `selected-graduate` | 65 KB |
 
 **✈️ 公派留学 / 交流类 · 2 个**
 
 | # | 赛道 | 编码 | 内容量 |
 |---|---|---|---|
-| 32 | CSC 国家公派留学 | `csc-scholarship` | 59 KB |
-| 33 | 交流项目申请 | `exchange-program` | 73 KB |
+| 32 | CSC 国家公派留学 | `csc-scholarship` | 61 KB |
+| 33 | 交流项目申请 | `exchange-program` | 75 KB |
 
 **📋 其他 · 2 个**
 
 | # | 赛道 | 编码 | 内容量 |
 |---|---|---|---|
-| 34 | 转专业申请 | `major-transfer` | 66 KB |
-| 35 | 应征入伍申请书 | `military-enlistment` | 60 KB |
+| 34 | 转专业申请 | `major-transfer` | 67 KB |
+| 35 | 应征入伍申请书 | `military-enlistment` | 62 KB |
 
 </details>
 

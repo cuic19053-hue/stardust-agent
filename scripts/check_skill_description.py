@@ -85,8 +85,21 @@ def parse_skill(md_path: Path) -> SkillInfo | None:
         return None
     fm = m.group(1)
     nm = NAME_RE.search(fm)
-    dm = DESC_RE.search(fm)
     tm = TRIGGERS_RE.search(fm)
+
+    # description 用 YAML 解析取真值：规范按字符数（len）计，
+    # 正则直取原始文本会把 YAML 折行符算进长度，造成虚高。
+    description = ""
+    try:
+        import yaml
+        parsed = yaml.safe_load(fm) or {}
+        if isinstance(parsed, dict):
+            description = str(parsed.get("description", "") or "").strip()
+    except Exception:
+        pass
+    if not description:
+        dm = DESC_RE.search(fm)
+        description = dm.group(1).strip() if dm else ""
 
     triggers: List[str] = []
     if tm:
@@ -99,7 +112,7 @@ def parse_skill(md_path: Path) -> SkillInfo | None:
     return SkillInfo(
         skill_id=md_path.parent.name,
         name=nm.group(1) if nm else "",
-        description=dm.group(1).strip() if dm else "",
+        description=description,
         triggers=triggers,
     )
 
