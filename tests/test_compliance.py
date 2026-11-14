@@ -356,3 +356,57 @@ def test_anchor_stays_within_length_budget():
     """加锚点后 description 仍须 ≤300 字符。"""
     over = [(sid, len(d)) for sid, d in _descriptions().items() if len(d) > 300]
     assert not over, f"超 300 字符：{over}"
+
+
+# --- 触发词质量 ---
+
+def _triggers() -> dict:
+    import yaml
+
+    out = {}
+    for md in sorted((ROOT / "subskills").glob("*/SKILL.md")):
+        text = md.read_text(encoding="utf-8")
+        m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+        fm = yaml.safe_load(m.group(1)) or {}
+        meta = fm.get("metadata") or {}
+        out[md.parent.name] = list(meta.get("triggers") or [])
+    return out
+
+
+def test_each_skill_has_unique_triggers():
+    """每个 skill 至少 3 个不被其他 skill 共用的触发词，保证可区分。
+
+    共享的上位词（三下乡/大创/立项申报书）是用户真实会输入的分类词，
+    保留它们以维持类目召回；只要独有触发词足够，就不会互相抢占。
+    """
+    import collections
+
+    trig = _triggers()
+    owners = collections.defaultdict(list)
+    for sid, ts in trig.items():
+        for t in ts:
+            owners[t].append(sid)
+    weak = []
+    for sid, ts in trig.items():
+        uniq = [t for t in ts if len(owners[t]) == 1]
+        if len(uniq) < 3:
+            weak.append(f"{sid}(独有 {len(uniq)}/{len(ts)})")
+    assert not weak, "独有触发词不足 3 个：" + "；".join(weak)
+
+
+def test_no_duplicate_triggers_within_skill():
+    """同一 skill 内不得有重复触发词。"""
+    import collections
+
+    dups = []
+    for sid, ts in _triggers().items():
+        rep = [k for k, v in collections.Counter(ts).items() if v > 1]
+        if rep:
+            dups.append(f"{sid}: {rep}")
+    assert not dups, "skill 内重复触发词：" + "；".join(dups)
+
+
+def test_triggers_minimum_count():
+    """每个 skill 至少 3 个触发词（官方建议）。"""
+    few = [(sid, len(ts)) for sid, ts in _triggers().items() if len(ts) < 3]
+    assert not few, f"触发词过少：{few}"
