@@ -85,12 +85,12 @@
 
 | 严重度 | 位置 | 问题 |
 |--------|------|------|
-| 中 | `military-enlistment/build.py:654-657,1007,1024`；`western-plan/build.py:604-606,951,1005` | 政治面貌逻辑矛盾：模板"党员必写：入团时间"，示例数据 political_detail 写"2023年6月入党"、abilities 写"中共党员，2023年6月入团"，自相矛盾且复制到两 skill |
-| 中 | `challenge-cup/build.py:1495-1530,1321` | DEFAULT_DATA 编造政策文号（`国办发〔2026〕12号`、`国发〔2021〕109号`）与无来源统计（2024火灾74.5万起/死亡2338人），会逐字写入申报书 |
-| 低 | `index.json:46-47,659-662` | 路由触发词仍含旧金额（国奖 8000、励志 5000） |
-| 低 | `national-scholarship/SKILL.md` frontmatter | 同一文件 description/正文已写 10000，triggers/适用段仍写 8000 |
-| 高 | `utils/review_criteria.json`（28/35）| 缺 7 赛道评审标准（csc-scholarship、exchange-program、internet-plus-red-tour、military-enlistment、national-scholarship、outstanding-thesis、youth-league-conversion），`simulate_student_review` 对这 7 赛道直接报错；`review_simulator.py:6` 写"30 个"与实际 28 不符 |
-| 低 | `military-enlistment/SKILL.md:250,1061` vs `:54,504,1170` | 年龄示例"18-24 周岁"与校验"女兵 18-22"不一致 |
+| ~~中~~ | `military-enlistment/build.py`；`western-plan/build.py` | **已修复（2026-11-15）**：abilities 段改为「中共党员，2023 年 6 月加入中国共产党（2020 年 5 月加入共青团）」，与 political_detail 一致 |
+| ~~中~~ | `challenge-cup/build.py` 等 3 个 build.py | **已修复（2026-11-15）**：示例政策统一加「（示例）」前缀，文号改「〔示例：填入真实文号〕」；`国发〔2021〕109 号`→`36 号`；新增 e2e 测试防止产物含不可核验内容 |
+| ~~低~~ | `index.json` | **已修复（2026-11-15 复核）**：触发词已改为 10000/6000（财教〔2024〕181 号标准） |
+| ~~低~~ | `national-scholarship/SKILL.md` | **已修复（2026-11-15 复核）**：triggers 与正文均为 10000，且已加「2024 年起标准，以当年通知为准」 |
+| ~~高~~ | `utils/review_criteria.json` | **已修复（2026-11-15 复核）**：35 个赛道全部覆盖（键名用下划线，如 `national_scholarship`），原先缺失的 7 个赛道均已补齐，`review_simulator.py --list-skills` 列出 35 项且实跑正常 |
+| ~~低~~ | `military-enlistment/SKILL.md` | **撤销（2026-11-15 复核）**：各处表述一致且正确——男兵 18-22 周岁（毕业生可放宽至 24 周岁）、女兵 18-22 周岁；不存在矛盾 |
 
 ## 5. 环境配置漂移（第 4 轮）
 
