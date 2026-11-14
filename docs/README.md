@@ -21,6 +21,7 @@
 - `check_compliance.py`：**国家规范与合规门禁**（领导人表述 / 文号 / 统计出处 / 金额时效 / 诚信底线 / 公文误用）
 - `verify_skill_integrity.py`：SKILL.md 完整性验收（受保护块 / 索引指针 / frontmatter / 重复标题 / 空章节）
 - `apply_skill_fixes.py`：2026-11-15 审查修复的幂等重放脚本
+- `sync_version_meta.py`：同步 version.json 的 total_lines / 分类行数（防元数据漂移）
 - `sync_readme_kb.py`：同步 README 赛道表的 KB 数字
 
 ### 📁 reports/ (审计与分析报告)

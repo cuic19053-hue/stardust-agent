@@ -99,6 +99,35 @@ def check(root: Path = ROOT, require_skills_ref: bool = False) -> Tuple[List[str
         vs = ver.get("skills")
         if isinstance(vs, list) and vs and len(vs) != len(dirs):
             warnings.append(f"[version.json] skills 列表 {len(vs)} 条，实际 {len(dirs)}（元数据待更新）")
+        # total_lines 与各分类行数必须与实际一致（曾经停在 35,227 长达 3 个月）
+        actual_lines = sum(
+            len((skills_dir / n / "SKILL.md").read_text(encoding="utf-8").splitlines())
+            for n in dirs)
+        tl = ver.get("total_lines")
+        if isinstance(tl, int) and tl != actual_lines:
+            warnings.append(
+                f"[version.json] total_lines={tl}，实际 {actual_lines}"
+                f"（差 {actual_lines - tl}，请运行 scripts/sync_version_meta.py）")
+        breakdown = ver.get("categories_breakdown") or {}
+        if breakdown:
+            cat_of = {}
+            idx_path = root / "index.json"
+            if idx_path.exists():
+                idx = json.loads(idx_path.read_text(encoding="utf-8"))
+                cat_of = {s["name"]: s.get("category") for s in idx.get("skills", [])}
+            per_cat: dict = {}
+            for n in dirs:
+                c = cat_of.get(n)
+                if not c:
+                    continue
+                per_cat[c] = per_cat.get(c, 0) + len(
+                    (skills_dir / n / "SKILL.md").read_text(encoding="utf-8").splitlines())
+            for cat, meta in breakdown.items():
+                want = per_cat.get(cat)
+                got = meta.get("lines")
+                if want is not None and got != want:
+                    warnings.append(
+                        f"[version.json] {cat}.lines={got}，实际 {want}（元数据待更新）")
 
     # --- 5: skills-ref 标准规范校验 ---
     # CI 必须安装 skills-ref；缺依赖时默认降级为告警，加 --require-skills-ref

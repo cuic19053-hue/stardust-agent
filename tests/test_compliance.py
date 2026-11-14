@@ -410,3 +410,30 @@ def test_triggers_minimum_count():
     """每个 skill 至少 3 个触发词（官方建议）。"""
     few = [(sid, len(ts)) for sid, ts in _triggers().items() if len(ts) < 3]
     assert not few, f"触发词过少：{few}"
+
+
+# --- version.json 元数据不得静默漂移 ---
+
+def test_version_json_metadata_matches_actual():
+    """version.json 的 total_lines / 分类行数必须与实际一致。"""
+    import json
+
+    ver = json.loads((ROOT / "version.json").read_text(encoding="utf-8"))
+    dirs = sorted(p.name for p in (ROOT / "subskills").iterdir() if p.is_dir())
+    actual = sum(
+        len((ROOT / "subskills" / n / "SKILL.md").read_text(encoding="utf-8").splitlines())
+        for n in dirs)
+    assert ver.get("total_lines") == actual, (
+        f"total_lines={ver.get('total_lines')}，实际 {actual}；"
+        "运行 python3 scripts/sync_version_meta.py")
+    assert ver.get("total_skills") == len(dirs)
+    assert sorted(ver.get("skills") or []) == dirs
+
+
+def test_sync_version_meta_is_idempotent():
+    """同步脚本重复运行不应产生改动。"""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from sync_version_meta import sync
+
+    changes, _ = sync(dry_run=True)
+    assert not changes, "version.json 元数据漂移：" + "；".join(changes)
