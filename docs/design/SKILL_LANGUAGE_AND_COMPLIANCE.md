@@ -125,11 +125,29 @@
 | 《中国制造 2025》（国发〔2025〕XX 号） | 国发〔2015〕28 号 | [国务院文件](https://www.gov.cn/zhengce/content/2015-05/19/content_9784.htm) |
 | 国办发〔2026〕12 号 / 〔2026〕8 号（未来年份） | 占位 `〔20XX〕XX 号` | 无法核验 |
 
-已核实的常用文号（可直接引用）：
+已核实的常用文号（可直接引用，2026-11-15 逐条核对官网）：
 
-- 《2030 年前碳达峰行动方案》——[国发〔2021〕23 号](https://www.gov.cn/zhengce/content/2021-10/26/content_5644984.htm)
-- 《新一代人工智能发展规划》——[国发〔2017〕35 号](https://www.gov.cn/zhengce/content/2017-07/20/content_5211996.htm)
-- 《"十四五"国家应急体系规划》——[国发〔2021〕36 号](https://www.gov.cn/gongbao/content/2022/content_5675949.htm)
+| 文件 | 文号 | 来源 |
+|---|---|---|
+| 《2030 年前碳达峰行动方案》 | 国发〔2021〕23 号 | [国务院公报](https://www.gov.cn/gongbao/content/2021/content_5649731.htm) |
+| 《新一代人工智能发展规划》 | 国发〔2017〕35 号 | [国务院文件](https://www.gov.cn/zhengce/content/2017-07/20/content_5211996.htm) |
+| 《"十四五"国家应急体系规划》 | 国发〔2021〕36 号 | [国务院公报](https://www.gov.cn/gongbao/content/2022/content_5675949.htm) |
+| 《中国制造 2025》 | 国发〔2015〕28 号 | [国务院文件](https://www.gov.cn/zhengce/content/2015-05/19/content_9784.htm) |
+| 《"十四五"数字经济发展规划》 | 国发〔2021〕29 号 | [国务院公报](https://www.gov.cn/gongbao/content/2022/content_5671108.htm) |
+| 《关于进一步支持大学生创新创业的指导意见》 | 国办发〔2021〕35 号 | [国务院公报](https://www.gov.cn/gongbao/content/2021/content_5647349.htm) |
+| 《国家级大学生创新创业训练计划管理办法》 | 教高函〔2019〕13 号 | [教育部](http://www.moe.gov.cn/) |
+| 《国家公派出国留学研究生管理规定（试行）》 | 教外留〔2007〕46 号 | [教育部](http://www.moe.gov.cn/s78/A20/s7068/201410/t20141021_178464.html) |
+| 《"十四五"推进农业农村现代化规划》 | 国发〔2021〕25 号 | [国务院文件](https://www.gov.cn/zhengce/content/2022-02/11/content_5673082.htm) |
+| 《"十四五"医药工业发展规划》 | 工信部联规〔2021〕217 号 | [工信部](https://wap.miit.gov.cn/) |
+| 《新能源汽车产业发展规划（2021—2035 年）》 | 国办发〔2020〕39 号 | [国务院文件](https://www.gov.cn/zhengce/zhengceku/2020-11/02/content_5556716.htm) |
+| 《"十四五"新型储能发展实施方案》 | 发改能源〔2022〕209 号 | [国务院部门文件](https://www.gov.cn/zhengce/zhengceku/2022-03/22/content_5680417.htm) |
+| 《"十四五"大数据产业发展规划》 | 工信部规〔2021〕179 号 | [工信部](https://wap.miit.gov.cn/) |
+| 《新时期促进集成电路产业和软件产业高质量发展的若干政策》 | 国发〔2020〕8 号 | [国务院文件](https://www.gov.cn/zhengce/content/2020-08/04/content_5532370.htm) |
+| 《国务院关于新时代支持革命老区振兴发展的意见》 | 国发〔2021〕3 号 | [国务院公报](https://www.gov.cn/gongbao/content/2021/content_5591404.htm) |
+| 《关于调整高等教育阶段和高中阶段国家奖助学金政策的通知》 | 财教〔2024〕181 号 | [国务院部门文件](https://www.gov.cn/zhengce/zhengceku/202410/content_6983670.htm) |
+
+> 以上清单已固化为 `tests/test_compliance.py::VERIFIED_DOC_NUMBERS`：
+> 文号被改回错误值、或从文档中丢失时，测试会失败。
 
 ### 2.4 领导人讲话表述规范
 

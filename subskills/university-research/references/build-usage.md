@@ -58,7 +58,7 @@ python build.py --data data.json --out output.docx --version enhanced
   ],
 
   "policy_citations": [
-    {"issuer": "教育部", "doc_no": "教高〔2024〕3 号",
+    {"issuer": "教育部", "doc_no": "教高函〔2019〕13 号",
      "title": "关于进一步加强大学生课堂管理的指导意见",
      "publish_date": "2024-03-15",
      "key_excerpt": "严禁课堂手机使用，构建良好学习生态",

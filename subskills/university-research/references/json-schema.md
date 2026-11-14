@@ -54,7 +54,7 @@
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | issuer | string | 是 | 发文机关（教育部/国务院/中办国办） |
-| doc_no | string | 否 | 文号（教高〔2024〕3 号） |
+| doc_no | string | 否 | 文号（教高函〔2019〕13 号） |
 | title | string | 是 | 文件标题 |
 | publish_date | string | 是 | 发布时间（2024-03-15） |
 | key_excerpt | string | 是 | 关键表述摘录（2~3 句） |

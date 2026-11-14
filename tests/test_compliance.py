@@ -437,3 +437,69 @@ def test_sync_version_meta_is_idempotent():
 
     changes, _ = sync(dry_run=True)
     assert not changes, "version.json 元数据漂移：" + "；".join(changes)
+
+
+# --- 已核实政策文号不得被改回错误值 ---
+
+# 2026-11-15 通过中国政府网 / 教育部官网逐条核实
+VERIFIED_DOC_NUMBERS = {
+    "《\"十四五\"国家应急体系规划》": "国发〔2021〕36 号",
+    "《中国制造 2025》": "国发〔2015〕28 号",
+    "《2030 年前碳达峰行动方案》": "国发〔2021〕23 号",
+    "《新一代人工智能发展规划》": "国发〔2017〕35 号",
+    "《\"十四五\"数字经济发展规划》": "国发〔2021〕29 号",
+    "《关于进一步支持大学生创新创业的指导意见》": "国办发〔2021〕35 号",
+    "《国家级大学生创新创业训练计划管理办法》": "教高函〔2019〕13 号",
+    "《国家公派出国留学研究生管理规定（试行）》": "教外留〔2007〕46 号",
+    "《\"十四五\"推进农业农村现代化规划》": "国发〔2021〕25 号",
+    "《\"十四五\"医药工业发展规划》": "工信部联规〔2021〕217 号",
+    "《新能源汽车产业发展规划（2021—2035 年）》": "国办发〔2020〕39 号",
+}
+
+# 已确认的错误值，出现即失败
+KNOWN_WRONG_NUMBERS = {
+    "国发〔2021〕109 号": "应急体系规划应为 36 号",
+    "国发〔2025〕XX 号": "中国制造 2025 应为 2015 年 28 号",
+    "国办发〔2026〕12 号": "未来年份虚构文号",
+    "国办发〔2026〕8 号": "未来年份虚构文号",
+    "留金发〔2007〕3010 号": "公派研究生管理规定应为教外留〔2007〕46 号",
+    "工信部联规〔2021〕208 号": "医药工业发展规划应为 217 号",
+    "国发〔2022〕6 号": "农业农村现代化规划应为 2021 年 25 号",
+    "教高〔2024〕3 号": "国创计划管理办法应为教高函〔2019〕13 号",
+}
+
+
+def _all_skill_text() -> str:
+    parts = []
+    for p in sorted((ROOT / "subskills").glob("*/SKILL.md")):
+        parts.append(p.read_text(encoding="utf-8"))
+    for p in sorted((ROOT / "subskills").glob("*/references/*.md")):
+        parts.append(p.read_text(encoding="utf-8"))
+    for p in sorted((ROOT / "references").glob("*.md")):
+        parts.append(p.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
+
+def test_verified_doc_numbers_stay_correct():
+    """已核实的政策文号必须保持正确（防止被改回错误值）。"""
+    text = _all_skill_text()
+    wrong = []
+    for title, doc_no in VERIFIED_DOC_NUMBERS.items():
+        if title in text and doc_no not in text:
+            wrong.append(f"{title} 缺少正确文号 {doc_no}")
+    assert not wrong, "；".join(wrong)
+
+
+def test_known_wrong_doc_numbers_absent():
+    """已确认的错误文号不得再次出现。"""
+    text = _all_skill_text()
+    found = [f"{bad}（{why}）" for bad, why in KNOWN_WRONG_NUMBERS.items() if bad in text]
+    assert not found, "出现已知错误文号：" + "；".join(found)
+
+
+def test_verified_doc_numbers_documented():
+    """已核实文号清单必须写入合规文档，供贡献者查阅。"""
+    doc = (ROOT / "docs" / "design" / "SKILL_LANGUAGE_AND_COMPLIANCE.md").read_text(
+        encoding="utf-8")
+    missing = [d for d in VERIFIED_DOC_NUMBERS.values() if d not in doc]
+    assert not missing, f"合规文档缺少已核实文号：{missing}"
