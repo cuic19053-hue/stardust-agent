@@ -570,3 +570,48 @@ def test_cross_skill_doc_number_consistency():
             pairs[m.group(1)].add(m.group(2))
     conflicts = {k: v for k, v in pairs.items() if len(v) > 1}
     assert not conflicts, f"跨 skill 文号冲突：{conflicts}"
+
+
+# --- description 锚点唯一性（历史上出现过叠加两个 EN 锚点）---
+
+def test_exactly_one_english_anchor_per_description():
+    """每条 description 有且仅有一个英文锚点，不得叠加。"""
+    import yaml
+
+    bad = []
+    for md in sorted((ROOT / "subskills").glob("*/SKILL.md")):
+        text = md.read_text(encoding="utf-8")
+        m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+        fm = yaml.safe_load(m.group(1)) or {}
+        desc = str(fm.get("description", "") or "")
+        n = desc.count("（EN: ")
+        if n != 1:
+            bad.append(f"{md.parent.name}: {n} 个锚点")
+    assert not bad, "锚点数量异常：" + "；".join(bad)
+
+
+def test_description_has_no_double_period():
+    """description 不得出现「。 。」这类标点冗余（重复替换的痕迹）。"""
+    import yaml
+
+    bad = []
+    for md in sorted((ROOT / "subskills").glob("*/SKILL.md")):
+        text = md.read_text(encoding="utf-8")
+        m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+        fm = yaml.safe_load(m.group(1)) or {}
+        desc = str(fm.get("description", "") or "")
+        if "。 。" in desc or "。。" in desc:
+            bad.append(md.parent.name)
+    assert not bad, f"description 标点冗余：{bad}"
+
+
+# --- 每个 skill 都要说明与相邻 skill 的区别，防止误路由 ---
+
+def test_each_skill_states_disambiguation():
+    """35 个 skill 必须说明「不适用/区别/请走其他」，避免路由歧义。"""
+    missing = []
+    for md in sorted((ROOT / "subskills").glob("*/SKILL.md")):
+        text = md.read_text(encoding="utf-8")
+        if not re.search(r"不适用|区别|区分|走其他|请走|不触发", text):
+            missing.append(md.parent.name)
+    assert not missing, f"缺少区分说明：{missing}"

@@ -90,9 +90,9 @@ DOCNO_FIXES: List[Tuple[str, str, str]] = [
      "| 制造强国 | 国发〔2015〕28 号《中国制造 2025》 | 智能制造项目 |"),
     # 未来年份文号 → 占位
     ("challenge-cup/build.py",
-     '"doc_no": "国办发〔2026〕12 号"', '"doc_no": "国办发〔20XX〕XX 号"'),
+     '"doc_no": "国办发〔2026〕12 号"', '"doc_no": "〔示例：填入真实文号〕"'),
     ("innovation-research/build.py",
-     '"doc_no": "国办发〔2026〕8 号"', '"doc_no": "国办发〔20XX〕XX 号"'),
+     '"doc_no": "国办发〔2026〕8 号"', '"doc_no": "〔示例：填入真实文号〕"'),
     ("innovation-research/references/case-spec.md",
      '"doc_no": "国办发〔2026〕8 号"', '"doc_no": "国办发〔20XX〕XX 号"'),
 ]
@@ -233,7 +233,7 @@ EN_ANCHOR = {
     "entrepreneurship-practice": "startup practice project proposal",
     "entrepreneurship-training": "entrepreneurship training project proposal",
     "exchange-program": "exchange program application",
-    "graduate-recommendation": "graduate school recommendation personal statement",
+    "graduate-recommendation": "graduate recommendation personal statement / graduate school recommendation",
     "grant-application": "national financial aid grant application",
     "innovation-research": "undergraduate innovation research proposal",
     "internet-plus": "China International College Students Innovation Competition business plan",
@@ -333,7 +333,10 @@ def _add_english_anchor(dry_run: bool) -> Tuple[int, List[str]]:
             problems.append(f"{sid}: frontmatter 解析失败 {exc}")
             continue
         desc = str(fm.get("description", "") or "")
-        if anchor.lower() in desc.lower():
+        # 已有任一别名锚点即视为已处理，避免重复追加。
+        # 锚点可能是「A / B」形式，只比整串会漏判（历史上因此叠加过两次）。
+        aliases = [a.strip().lower() for a in anchor.split("/") if a.strip()]
+        if "（en: " in desc.lower() and any(a in desc.lower() for a in aliases):
             continue
         # 超长描述先精简，再追加锚点
         base = DESC_COMPACT.get(sid, desc)
