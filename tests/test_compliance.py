@@ -264,3 +264,42 @@ def test_business_section_names_keep_core_word_first():
             if re.match(r"^§?\d*\s*\d+\s*段结构", title.strip()):
                 bad.append(f"{md.parent.name}: {title.strip()}")
     assert not bad, "业务化章节名未前置核心词：" + "；".join(bad)
+
+
+# --- 根级 references 不得闲置（I8）---
+
+def test_root_references_are_all_indexed():
+    """根目录 references/*.md 必须至少被 1 个 skill 索引，否则是死知识。"""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from verify_skill_integrity import check_root_references
+
+    problems = check_root_references()
+    assert not problems, "；".join(p.detail for p in problems)
+
+
+def test_root_references_idle_detection_works(tmp_path, monkeypatch):
+    """反向测试：新增一个无人引用的根级 reference，I8 必须报出来。"""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import verify_skill_integrity as v
+
+    probe = v.ROOT / "references" / "_probe_idle_test.md"
+    probe.write_text("# probe\n", encoding="utf-8")
+    try:
+        problems = v.check_root_references()
+        assert any("_probe_idle_test.md" in p.detail for p in problems)
+    finally:
+        probe.unlink()
+
+
+def test_all_reference_links_resolve():
+    """所有 references 指针（含 ../../references/ 根级）必须可达。"""
+    bad = []
+    for md in sorted((ROOT / "subskills").glob("*/SKILL.md")):
+        text = md.read_text(encoding="utf-8")
+        for rel in re.findall(r"\]\((\.\./\.\./references/[a-z_]+\.md)\)", text):
+            if not (md.parent / rel).resolve().exists():
+                bad.append(f"{md.parent.name}: {rel}")
+        for rel in re.findall(r"\]\(references/([a-z0-9_.-]+\.md)\)", text):
+            if not (md.parent / "references" / rel).exists():
+                bad.append(f"{md.parent.name}: references/{rel}")
+    assert not bad, "断链：" + "；".join(bad[:10])

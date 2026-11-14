@@ -34,6 +34,11 @@ metadata:
 > 📚 **按需加载的参考资料**（渐进式披露，不需要时不要读）：
 > - [`references/json-schema.md`](references/json-schema.md) — §11 JSON Schema 完整字段（必加章节 7）
 > - [`references/intake-checklist.md`](references/intake-checklist.md) — §5 信息采集清单
+> - [根级共享：8 类申报书栏目结构详解](../../references/types.md) — 需要对照其他赛道的栏目结构、或确认本赛道栏目归属时
+> - [根级共享：高频踩坑案例与避坑指南](../../references/pitfalls.md) — 怀疑踩坑、需要看正反例对照时
+> - [根级共享：评审维度 + 加分技巧 + 自检清单](../../references/review_criteria.md) — 按评审视角做交付前自检时
+> - [根级共享：排版硬指标（可机器验证）](../../references/layout_standard.md) — 导出 docx 后核对排版，或 layout_audit 报错时
+> - [根级共享：撰写规范、格式标准、信息采集清单](../../references/writing_guide.md) — 需要通用格式标准（字体字号/序号体系）时
 
 ## §0 适用场景与定位
 
