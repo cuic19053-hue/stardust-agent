@@ -503,3 +503,52 @@ def test_verified_doc_numbers_documented():
         encoding="utf-8")
     missing = [d for d in VERIFIED_DOC_NUMBERS.values() if d not in doc]
     assert not missing, f"合规文档缺少已核实文号：{missing}"
+
+
+# --- 奖助金额不得串位（国奖 10000 / 励志 6000）---
+
+AMOUNT_RULES = {
+    "国家奖学金": {"10000"},
+    "国家励志奖学金": {"6000"},
+}
+
+
+def test_scholarship_amounts_not_crossed():
+    """同一句内，国家奖学金只能配 10000，国家励志奖学金只能配 6000。
+
+    两个奖项常在同一句并列出现（「国家奖学金（10000 元）与国家励志奖学金（6000 元）」），
+    所以按句子切分后，含两个奖项的并列句跳过，只校验单奖项句。
+    """
+    import re as _re
+
+    wrong = []
+    for md in sorted((ROOT / "subskills").glob("*/SKILL.md")):
+        text = md.read_text(encoding="utf-8")
+        for sent in _re.split(r"[。；\n]", text):
+            has_nat = "国家奖学金" in sent
+            has_mot = "国家励志奖学金" in sent
+            if has_nat and has_mot:
+                continue
+            for name, allowed in AMOUNT_RULES.items():
+                if name not in sent:
+                    continue
+                # 跳过「非本 skill 处理」的指引句（那是分流说明，不陈述标准）
+                m = _re.search(r"(\d{4,5})\s*元", sent)
+                if m and m.group(1) not in allowed:
+                    wrong.append(f"{md.parent.name}: {name} 配 {m.group(1)} 元")
+    assert not wrong, "金额串位：" + "；".join(wrong)
+
+
+def test_cross_skill_doc_number_consistency():
+    """同一文件名在不同 skill 中不得对应不同文号。"""
+    import collections
+    import re as _re
+
+    pairs = collections.defaultdict(set)
+    pat = _re.compile(
+        r"《([^》]{4,60})》[^。；\n]{0,12}?([\u4e00-\u9fa5]{2,8}〔20\d{2}〕\d+\s*号)")
+    for md in sorted((ROOT / "subskills").glob("*/SKILL.md")):
+        for m in pat.finditer(md.read_text(encoding="utf-8")):
+            pairs[m.group(1)].add(m.group(2))
+    conflicts = {k: v for k, v in pairs.items() if len(v) > 1}
+    assert not conflicts, f"跨 skill 文号冲突：{conflicts}"
