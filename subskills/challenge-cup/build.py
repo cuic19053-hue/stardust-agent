@@ -1487,12 +1487,12 @@ DEFAULT_DATA = {
 
     # A. 国家政策引用（8 项）
     "policy_citations": [
-        {"issuer": "国务院办公厅", "doc_no": "国办发〔20XX〕XX 号",
-         "title": "关于加强基层消防工作的意见", "publish_date": "2026.03",
+        {"issuer": "（示例）国务院办公厅", "doc_no": "〔示例：填入真实文号〕",
+         "title": "（示例）关于加强基层消防工作的意见", "publish_date": "（示例：YYYY.MM）",
          "key_excerpt": "加强基层消防力量建设，推广无人机、机器人等智能装备在基层消防救援中的应用",
          "relevance": "直接对应项目无人机消防应用方向"},
-        {"issuer": "国家层面", "doc_no": "",
-         "title": "关于低空经济发展部署", "publish_date": "2026.02",
+        {"issuer": "（示例：填写真实发文机关）", "doc_no": "",
+         "title": "（示例）关于低空经济发展的相关部署", "publish_date": "（示例：YYYY.MM）",
          "key_excerpt": "推动低空经济高质量发展，鼓励无人机在应急救援等公共服务领域创新应用",
          "relevance": "项目消防无人机属低空经济应用场景"},
         {"issuer": "工信部等", "doc_no": "",
@@ -1523,8 +1523,8 @@ DEFAULT_DATA = {
          "title": "《\"十四五\"国家应急体系规划》", "publish_date": "2021.12",
          "key_excerpt": "推广运用智能机器人、无人机等高技术配送装备，提升应急运输调度效率",
          "relevance": "项目消防无人机属国家应急体系高技术装备"},
-        {"issuer": "习近平", "doc_no": "",
-         "title": "国家综合性消防救援队伍授旗致辞", "publish_date": "2018.11",
+        {"issuer": "习近平总书记", "doc_no": "",
+         "title": "为国家综合性消防救援队伍授旗并致训词", "publish_date": "2018.11",
          "key_excerpt": "组建国家综合性消防救援队伍是构建新时代国家应急救援体系的重要举措",
          "relevance": "项目响应国家应急救援体系建设"}
     ],
