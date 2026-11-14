@@ -668,3 +668,44 @@ def test_section_numbering_has_no_duplicates():
         if dups:
             offenders.append(f"{md.parent.name}: {dups}")
     assert not offenders, "小节号重复：" + "；".join(offenders)
+
+
+# --- 质检清单必须可查（外移后指针要指到真实内容）---
+
+def test_qa_checklist_is_reachable():
+    """每个 skill 的质检清单要么内联有内容，要么外移指针指向的文件真的含清单。"""
+    import re as _re
+
+    offenders = []
+    for md in sorted((ROOT / "subskills").glob("*/SKILL.md")):
+        text = md.read_text(encoding="utf-8")
+        m = _re.search(r"^## .*质检清单.*$", text, _re.M)
+        if not m:
+            offenders.append(f"{md.parent.name}: 无质检清单章节")
+            continue
+        title = m.group(0)
+        seg = text[m.end():]
+        nxt = _re.search(r"^## ", seg, _re.M)
+        body = seg[:nxt.start()] if nxt else seg
+
+        inline = (len(_re.findall(r"^\s*(?:\d+\.|[-*])\s+", body, _re.M))
+                  + len(_re.findall(r"^\|\s*(?:Q\d+|\d+)\s*\|", body, _re.M)))
+        if inline >= 3:
+            continue
+
+        # 内联条目少 → 必须靠外移文件承载，且该文件要真含「质检」字样
+        if "已外移至" not in title:
+            offenders.append(f"{md.parent.name}: 仅 {inline} 条且无外移指针")
+            continue
+        refs = _re.findall(r"\]\(references/([a-z0-9_.-]+\.md)\)", body)
+        if not refs:
+            offenders.append(f"{md.parent.name}: 外移指针缺失")
+            continue
+        # 指针本身要提到「质检」，否则读者不知道该去那个文件找交付门槛
+        if "质检" not in body:
+            offenders.append(f"{md.parent.name}: 外移指针未提及质检清单")
+            continue
+        if not any("质检" in (md.parent / "references" / r).read_text(encoding="utf-8")
+                   for r in refs if (md.parent / "references" / r).exists()):
+            offenders.append(f"{md.parent.name}: 外移文件不含质检清单")
+    assert not offenders, "质检清单不可达：" + "；".join(offenders)

@@ -4,7 +4,7 @@
   "description": "35 个大学生竞赛与立项 AI Skill 集合 | 覆盖大创/挑战杯/互联网+/国家级项目/答辩模拟等 | 零门槛即用 | Agent Skills 标准",
   "generated_at": "2026-11-15",
   "total_skills": 35,
-  "total_lines": 35292,
+  "total_lines": 35294,
   "categories_count": 9,
   "categories_breakdown": {
     "scholarship": {
@@ -14,7 +14,7 @@
     },
     "honor": {
       "count": 6,
-      "lines": 6067,
+      "lines": 6069,
       "display": "评优"
     },
     "political": {

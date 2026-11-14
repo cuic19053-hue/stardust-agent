@@ -927,9 +927,11 @@ python3 utils/review_simulator.py --skill grant_application --text-file draft.tx
 <!-- WRITING-STYLE:END -->
 ## §13 build.py 接口 + 质检清单（必加章节 8/9/10）（已外移至 references/build-usage.md）
 
-> 📎 **build.py 接口说明** 已移至 [`references/build-usage.md`](references/build-usage.md)，保持 SKILL.md 精简。
-> **何时阅读**：需要调用 build.py 或了解接口参数时。
-> 其余情况下不需要读取该文件。
+> 📎 本节含两部分，均已移至 [`references/build-usage.md`](references/build-usage.md)：
+> - **build.py 接口说明**（§13.1–13.5）：需要调用 build.py 或了解接口参数时阅读
+> - **质检清单 30 项**（§13.6）：**交付前必读**，逐项排查后才可导出
+>
+> ⚠️ 质检清单是交付门槛，不是可选参考——不要因为它在 references 里就跳过。
 
 ## §14 红线规则与免责声明
 
