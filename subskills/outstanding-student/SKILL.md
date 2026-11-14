@@ -1,6 +1,6 @@
 ---
 name: outstanding-student
-description: "生成\"优秀学生申请书\"或\"优秀团员申请书\"docx。通过 category 字段切换两种评优类别：outstanding_student 侧重学业+综合素质+学生工作；outstanding_youth_league 侧重政治表现+团组织生活+志愿活动。评审跨度为本学年（不是 4 年），书信体格式，正文 1500~2000 字。必写五段：思想方面、学习方面、科研与实践、学生工作（或团务工作）、生活方面。学生干部履职必须用表格呈现（职务/任期/主要工作/成效）。直接输出可提交 Word 文档。（EN: outstanding student application）"
+description: "生成\"优秀学生申请书\"或\"优秀团员申请书\"docx。通过 category 字段切换两种评优类别：outstanding_student 侧重学业+综合素质+学生工作；outstanding_youth_league 侧重政治表现+团组织生活+志愿活动。评审跨度为本学年（不是 4 年），书信体格式，正文 1500~2000 字。必写五段：思想方面、学习方面、科研与实践、学生工作（或团务工作）、生活方面。学生干部履职必须用表格呈现（职务/任期/主要工作/成效）。（EN: outstanding student application）"
 metadata:
   category:
   - outstanding_student: 优秀学生申请书（学业+综合素质主导，学生干部履职为必填重点）

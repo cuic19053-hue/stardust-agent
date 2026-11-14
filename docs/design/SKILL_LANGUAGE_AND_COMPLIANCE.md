@@ -65,6 +65,14 @@
 - 只写**检索锚点**，不写完整翻译（翻译会让 description 膨胀到 500+ 字符）。
 - 已由 `scripts/apply_skill_fixes.py` 的 `EN_ANCHOR` 表统一维护。
 
+**召回实测**：用 12 条英文核心查询测试，加锚点后 **12/12 命中**对应 skill
+（`challenge cup` → `challenge-cup`、`western plan` → `western-plan` 等）。
+该结果已固化为 `tests/test_compliance.py::test_english_anchor_queries_hit_expected_skill`，
+锚点被改动导致召回退化时测试会失败。
+
+> 注意：这是**字面召回**的下界验证。真实触发由语义模型完成，
+> 字面命中说明锚点提供了确定性的英文锚点，不保证语义模型一定选中。
+
 ---
 
 ## 二、内容合规：七条底线

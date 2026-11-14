@@ -1,6 +1,6 @@
 ---
 name: entrepreneurship-training
-description: "生成\"大学生创新创业训练计划-创业训练项目\"申报书 docx（结构参考一份 79 页示例范本）。覆盖国家级/省级/校级三级模板，含 11 章必加结构（国家政策 10+/科学挑战 3 段/文献 30+/算法对比表/技术路线图 3 张/数学公式/社会效益 12 项/4P+3C+SWOT+5 年三表 10 张/实践过程 5 照片/技术壁垒专利+软件/进度甘特），含 JSON Schema + build.py 接口 + 3 档字数 + 30 项质检。直接输出可提交 Word 文档。（EN: entrepreneurship training project proposal）"
+description: "生成\"大学生创新创业训练计划-创业训练项目\"申报书 docx（结构参考一份 79 页示例范本）。覆盖国家级/省级/校级三级模板，含 11 章必加结构（国家政策 10+/科学挑战 3 段/文献 30+/算法对比表/技术路线图 3 张/数学公式/社会效益 12 项/4P+3C+SWOT+5 年三表 10 张/实践过程 5 照片/技术壁垒专利+软件/进度甘特），含 JSON Schema + build.py 接口 + 3 档字数 + 30 项质检。（EN: entrepreneurship training project proposal）"
 metadata:
   triggers:
   - 大创

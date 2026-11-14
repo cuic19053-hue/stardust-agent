@@ -1,9 +1,6 @@
 ---
 name: graduate-recommendation
-description: "生成保研推免申请书（表格体 + 个人陈述）。
-评审重点：学业硬指标（GPA+排名+英语）+ 科研软实力（论文/专利/大创）+ 匹配度。
-输出 A4 docx，宋体小四正文，黑体三号标题，1.5 倍行距，首行缩进 2 字符。
-。（EN: graduate school recommendation personal statement）"
+description: "生成保研推免申请书（表格体 + 个人陈述）。 评审重点：学业硬指标（GPA+排名+英语）+ 科研软实力（论文/专利/大创）+ 匹配度。 输出 A4 docx，宋体小四正文，黑体三号标题，1.5 倍行距，首行缩进 2 字符。 。（EN: graduate recommendation personal statement / graduate school recommendation）。（EN: graduate school recommendation personal statement）"
 metadata:
   version: 1.0.0
   category: awesome-student-ai-skills/subskills

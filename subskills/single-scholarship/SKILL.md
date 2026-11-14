@@ -1,6 +1,6 @@
 ---
 name: single-scholarship
-description: "生成\"单项奖学金申请书\"docx，覆盖科研/社工/文体/学习进步 4 个子方向。单项奖学金不要求全面发展，评审侧重单项突出表现（70%权重）；正文 800~1500 字书信体，含该单项的具体成绩（论文/专利/大创表，或学生干部履职表，或获奖作品表，或 GPA 提升表）；其他方面可简略。直接输出可提交的 Word 文档。（EN: single-category scholarship application）"
+description: "生成\"单项奖学金申请书\"docx，覆盖科研/社工/文体/学习进步 4 个子方向。单项奖学金不要求全面发展，评审侧重单项突出表现（70%权重）；正文 800~1500 字书信体，含该单项的具体成绩（论文/专利/大创表，或学生干部履职表，或获奖作品表，或 GPA 提升表）；其他方面可简略。（EN: single-category scholarship application）"
 metadata:
   category: research/social_work/art_sport/progress
   triggers:

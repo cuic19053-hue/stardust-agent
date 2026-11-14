@@ -303,3 +303,56 @@ def test_all_reference_links_resolve():
             if not (md.parent / "references" / rel).exists():
                 bad.append(f"{md.parent.name}: references/{rel}")
     assert not bad, "断链：" + "；".join(bad[:10])
+
+
+# --- 英文检索锚点（分层语言策略的可验证部分）---
+
+EN_ANCHOR_QUERIES = {
+    "challenge cup": "challenge-cup",
+    "national scholarship": "national-scholarship",
+    "csc government scholarship": "csc-scholarship",
+    "innovation research proposal": "innovation-research",
+    "graduate recommendation personal statement": "graduate-recommendation",
+    "china international college students innovation competition": "internet-plus",
+    "volunteer teaching": "volunteer-teaching",
+    "military enlistment": "military-enlistment",
+    "major transfer": "major-transfer",
+    "red tour": "internet-plus-red-tour",
+    "youth league": "youth-league-application",
+    "western plan": "western-plan",
+}
+
+
+def _descriptions() -> dict:
+    import yaml
+
+    out = {}
+    for md in sorted((ROOT / "subskills").glob("*/SKILL.md")):
+        text = md.read_text(encoding="utf-8")
+        m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+        fm = yaml.safe_load(m.group(1)) or {}
+        out[md.parent.name] = str(fm.get("description", "") or "")
+    return out
+
+
+def test_every_description_has_english_anchor():
+    """每条 description 末尾必须有 `（EN: ...）` 锚点，补齐英文 query 召回。"""
+    missing = [sid for sid, d in _descriptions().items() if "（EN: " not in d]
+    assert not missing, f"缺少英文锚点：{missing}"
+
+
+def test_english_anchor_queries_hit_expected_skill():
+    """英文核心词必须能字面命中对应 skill（英文用户的可发现性）。"""
+    descs = _descriptions()
+    misses = []
+    for query, expected in EN_ANCHOR_QUERIES.items():
+        hits = [sid for sid, d in descs.items() if query in d.lower()]
+        if expected not in hits:
+            misses.append(f"{query!r} → 期望 {expected}，实际 {hits[:3]}")
+    assert not misses, "英文锚点召回失败：" + "；".join(misses)
+
+
+def test_anchor_stays_within_length_budget():
+    """加锚点后 description 仍须 ≤300 字符。"""
+    over = [(sid, len(d)) for sid, d in _descriptions().items() if len(d) > 300]
+    assert not over, f"超 300 字符：{over}"

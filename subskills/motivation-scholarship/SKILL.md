@@ -1,6 +1,6 @@
 ---
 name: motivation-scholarship
-description: "生成\"国家励志奖学金申请书\"docx。国家励志奖学金（6000 元，2024年起执行财教〔2024〕181号新标准）评审侧重学习 + 家庭经济困难，必须先获得学校家庭经济困难认定。书信体格式，1200~2000 字正文，含家庭成员表、勤工助学经历、建档立卡/低保号、家庭年收入数据。与国奖关键区别：增加家庭经济情况段落，弱化科研要求。直接输出可提交的 Word 文档。（EN: national inspirational scholarship application）"
+description: "生成\"国家励志奖学金申请书\"docx。国家励志奖学金（6000 元，2024年起执行财教〔2024〕181号新标准）评审侧重学习 + 家庭经济困难，必须先获得学校家庭经济困难认定。书信体格式，1200~2000 字正文，含家庭成员表、勤工助学经历、建档立卡/低保号、家庭年收入数据。与国奖关键区别：增加家庭经济情况段落，弱化科研要求。（EN: national inspirational scholarship application）"
 metadata:
   triggers:
   - 国家励志奖学金
