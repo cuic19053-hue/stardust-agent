@@ -615,3 +615,56 @@ def test_each_skill_states_disambiguation():
         if not re.search(r"不适用|区别|区分|走其他|请走|不触发", text):
             missing.append(md.parent.name)
     assert not missing, f"缺少区分说明：{missing}"
+
+
+# --- 「金句」命名门禁：诱导照抄的章节名不得存在 ---
+
+# 允许提及「金句」的上下文：反模式警告、说明已废弃
+GOLDEN_PHRASE_ALLOW = ("❌", "已移除", "已废弃", "不是可照抄", "当范文")
+
+
+def test_no_section_titled_with_golden_phrase():
+    """章节标题不得叫「金句」——会诱导模型照抄套话。
+
+    正文里在反模式警告中提及「金句模板」是允许的（那是禁止性说明）。
+    """
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from verify_skill_integrity import H2_RE
+
+    offenders = []
+    for md in sorted((ROOT / "subskills").glob("*/SKILL.md")):
+        for title in H2_RE.findall(md.read_text(encoding="utf-8")):
+            t = title.strip()
+            if "金句" in t and not any(a in t for a in GOLDEN_PHRASE_ALLOW):
+                offenders.append(f"{md.parent.name}: {t[:40]}")
+    assert not offenders, "章节标题仍含「金句」：" + "；".join(offenders)
+
+
+def test_skeleton_sections_have_placeholder_warning():
+    """名为「骨架/填空」的章节必须带「占位必填」警告，防止被当范文。"""
+    offenders = []
+    for md in sorted((ROOT / "subskills").glob("*/SKILL.md")):
+        text = md.read_text(encoding="utf-8")
+        for m in re.finditer(r"^## .*(骨架|填空式).*$", text, re.M):
+            # 取该章节到下一个 ## 之间的内容
+            start = m.end()
+            nxt = re.search(r"^## ", text[start:], re.M)
+            body = text[start:start + (nxt.start() if nxt else len(text))]
+            if "必填" not in body and "占位" not in body:
+                offenders.append(f"{md.parent.name}: {m.group(0)[:40]}")
+    assert not offenders, "骨架章节缺占位警告：" + "；".join(offenders)
+
+
+def test_section_numbering_has_no_duplicates():
+    """同一 skill 内 §N.M 形式的小节号不得重复（复制粘贴易产生）。"""
+    offenders = []
+    for md in sorted((ROOT / "subskills").glob("*/SKILL.md")):
+        text = md.read_text(encoding="utf-8")
+        nums = re.findall(r"^### §(\d+\.\d+) ", text, re.M)
+        seen = {}
+        for n in nums:
+            seen[n] = seen.get(n, 0) + 1
+        dups = [k for k, v in seen.items() if v > 1]
+        if dups:
+            offenders.append(f"{md.parent.name}: {dups}")
+    assert not offenders, "小节号重复：" + "；".join(offenders)
