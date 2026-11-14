@@ -10,6 +10,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import re
+
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -232,3 +234,33 @@ def test_no_duplicated_currency_suffix():
             if pat in text:
                 offenders.append(md.parent.name)
     assert not offenders, f"时效后缀重复叠加：{offenders}"
+
+
+# --- 核心章节命名（I7）---
+
+def test_core_sections_present_in_all_skills():
+    """35 个 skill 必须含 4 个核心 H2，允许业务括注。"""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from verify_skill_integrity import CORE_H2, H2_RE
+
+    missing = []
+    for md in sorted((ROOT / "subskills").glob("*/SKILL.md")):
+        titles = [t.strip() for t in H2_RE.findall(md.read_text(encoding="utf-8"))]
+        for core in CORE_H2:
+            if not any(core in t for t in titles):
+                missing.append(f"{md.parent.name}: {core}")
+    assert not missing, "缺少核心章节：" + "；".join(missing)
+
+
+def test_business_section_names_keep_core_word_first():
+    """业务化命名须保留核心词（如「工作流程总览：5 段结构」而非「5 段结构」）。"""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from verify_skill_integrity import H2_RE
+
+    bad = []
+    for md in sorted((ROOT / "subskills").glob("*/SKILL.md")):
+        for title in H2_RE.findall(md.read_text(encoding="utf-8")):
+            # 「§N 5 段结构」「N 段结构」这类纯业务命名应已改为「工作流程总览：…」
+            if re.match(r"^§?\d*\s*\d+\s*段结构", title.strip()):
+                bad.append(f"{md.parent.name}: {title.strip()}")
+    assert not bad, "业务化章节名未前置核心词：" + "；".join(bad)

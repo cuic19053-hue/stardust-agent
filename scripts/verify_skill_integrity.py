@@ -12,6 +12,8 @@ I3 frontmatter name 必须与目录名一致（skills-ref 规范）
 I4 无重复标题 同一 SKILL.md 内不得出现重复的 H2 标题（改造易产生重复章节）
 I5 结构完整   每个 SKILL.md 至少含「质检清单」章节
 I6 空章节     不得出现标题后紧跟另一个标题的空章节（改造误删内容会这样）
+I7 核心章节   必须含「适用场景 / 工作流程 / 信息采集 / 质检清单」四个核心 H2
+              （允许业务括注，如「工作流程总览：5 段结构」，核心词须在标题中）
 
 用法
 ----
@@ -36,6 +38,10 @@ PROTECT_START = "<!-- WRITING-STYLE:START -->"
 PROTECT_END = "<!-- WRITING-STYLE:END -->"
 H2_RE = re.compile(r"^##\s+(.+?)\s*$", re.M)
 FRONTMATTER = re.compile(r"^---\n(.*?)\n---\n", re.S)
+
+# I7：4 个核心章节。允许业务括注（「工作流程总览：5 段结构」），
+# 但核心词必须出现，便于正则门禁与模型定位。
+CORE_H2 = ("适用场景", "工作流程", "信息采集", "质检清单")
 
 
 @dataclass
@@ -103,6 +109,13 @@ def check_skill(md_path: Path) -> List[Problem]:
         if nxt < len(lines) and re.match(r"^##\s", lines[nxt]):
             problems.append(Problem(skill, "I6", f"空章节：「{line.strip()[:40]}」"))
 
+    # I7 核心章节命名（允许业务括注，核心词须在标题中）
+    for core in CORE_H2:
+        if not any(core in t for t in titles):
+            problems.append(Problem(
+                skill, "I7",
+                f"缺少核心章节「{core}」（可加业务括注，如「{core}：5 段结构」）"))
+
     return problems
 
 
@@ -136,11 +149,12 @@ def main(argv: List[str] | None = None) -> int:
     labels = {
         "I1": "受保护块", "I2": "索引指针", "I3": "frontmatter name",
         "I4": "重复标题", "I5": "质检清单", "I6": "空章节",
+        "I7": "核心章节命名",
     }
 
     print(f"验收 {len(files)} 个 SKILL.md\n")
     if not all_problems:
-        print("✅ 全部通过（I1~I6 六项检查）")
+        print("✅ 全部通过（I1~I7 七项检查）")
         return 0
 
     for code in sorted(by_code):
