@@ -170,7 +170,7 @@ ollama pull bge-m3
 
 ## 项目与社区
 
-项目源自团队参加挑战杯、反复修改申报书的实践。感谢完成了本项目绝大部分编写工作的 [@richyhu](https://github.com/richyhu)。欢迎通过 Issue 提供学校模板的差异、更新的申报要求和能够复现的问题。[项目演示视频](https://www.douyin.com/video/7692700167341985051) · [贡献指南](./CONTRIBUTING.md)
+项目源自团队参加挑战杯、反复修改申报书的实践。同时感谢[@richyhu](https://github.com/richyhu)的帮助。欢迎通过 Issue 提供学校模板的差异、更新的申报要求和能够复现的问题。[项目演示视频](https://www.douyin.com/video/7692700167341985051) · [贡献指南](./CONTRIBUTING.md)
 
 ### 交流与合作
 
