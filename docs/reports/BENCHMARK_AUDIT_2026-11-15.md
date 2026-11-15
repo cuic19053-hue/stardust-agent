@@ -305,9 +305,7 @@ C10 的设计要避免误报：只判「写错了」，不判「没写」——�
 3. **「评委平均停留 4.6 分钟」这类数据未采用**。调研中有此说法，但溯源只到自媒体转述，
    无一手出处，因此没有写进 skill 作为依据。
 
-4. **仅深度审计了 innovation-research**。challenge-cup / internet-plus /
-   entrepreneurship-training 只修了自动查出的同类错误（英文占比、训练声明），
-   未做同等深度的对标。这三个 skill 值得用同样方法再走一遍。
+4. ~~仅深度审计了 innovation-research~~ —— 已在第 2 轮补齐，见第九节。
 
 5. **未验证「AI 味」检测**。调研显示 AI 检测工具误伤率高（有学生自写内容被判 97% AI 率），
    且「去 AI 味」不是正确目标函数——真正的判别信号是**信息颗粒度**
@@ -327,3 +325,70 @@ C10 的设计要避免误报：只判「写错了」，不判「没写」——�
 3. **补齐真实模板的栏目映射**。真实模板是「二、立项依据」下固定 8 个子栏，
    而 build.py 输出的是 13 个一级栏目。两者不匹配，用户需要手工搬栏目。
    建议增加 `--template 8col` 模式输出真实模板结构。
+
+
+---
+
+## 九、第二轮：另外 3 个竞赛类 skill 的对标
+
+第一轮遗留「只深度审计了 innovation-research」。本轮用同一套方法补齐
+`challenge-cup` / `internet-plus` / `entrepreneurship-training`。
+
+### 9.1 主题污染排查
+
+方法：把 build.py 在 DEFAULT_DATA 之前的部分按 AST 拆出**字符串字面量**
+（注释与 docstring 不算，因为它们不进入输出），检查是否含特定主题词。
+
+| skill | 渲染代码硬编码 | 实测非消防选题产物 |
+|-------|----------------|--------------------|
+| challenge-cup | 无 | 干净 ✅ |
+| internet-plus | 无 | 干净 ✅ |
+| entrepreneurship-training | **22 处** | **消防 13 次 / 无人机 4 次 / 火场 1 次** ❌ |
+
+`entrepreneurship-training` 比 innovation-research 更严重。用一份「社区旧衣回收
+再利用平台」的创业训练数据跑，输出被写成消防无人机方案：
+
+```
+（1）降低消防员暴露风险……系统通过无人机替代消防员执行高危侦察任务
+（3）推动消防救援现代化转型……从'经验驱动'向'数据驱动'转型
+（1）构建'空地一体'应急体系……契合国家'智慧消防'与'低空经济'战略部署
+理性主题：突出体现消防救援无人机群及多机协同系统的独特性
+目前该项目已经与河南工业大学安保科签订合作巡逻协议……校园火灾防卫安全巡逻
+```
+
+已改为数据驱动：新增 `tech_need` / `demand_data` / `social_benefits` /
+`strategic_benefits` / `ad_themes` / `current_progress` 等可选字段，
+未提供时输出中性占位提示。修复后同一选题产物：**残留 0**。
+
+### 9.2 门槛问题（C9 扩容后自动查出）
+
+把 C9 从「英文占比 / 文献篇数 / 字数」扩到「效益指标数 / 政策条数」后，
+**又查出 14 处**同类问题，分布在这 3 个 skill：
+
+| 类型 | 出现位置 | 处理 |
+|------|----------|------|
+| 政策引用 ≥8/10 条 | challenge-cup、entrepreneurship-training、innovation-research、internet-plus | 改为「1~3 句注脚，文号可查」 |
+| 社会经济效益 ≥10/12 项 | challenge-cup、internet-plus、entrepreneurship-training、innovation-research | 改为「3~6 项并注明测算口径」 |
+| build.py 校验逻辑 | challenge-cup（3 处）、entrepreneurship-training（3 处） | 改为只校验可客观判定的比例指标 |
+
+### 9.3 本轮新增测试（8 项）
+
+- `test_other_skill_builders_have_no_foreign_topic_in_render_code`（3 个 skill 各一项）
+  —— 按 AST 检查字符串字面量，注释与 docstring 放行
+- `test_other_skills_accept_non_fire_topic`（3 个 skill 各一项）—— 端到端生成后查产物
+- `test_no_skill_requires_policy_count_threshold`
+- `test_no_skill_requires_benefit_count_threshold`
+
+### 9.4 第二轮验证
+
+```
+六道门禁全绿
+测试：13 failed, 1930 passed（新增 8 项，累计新增 163 项）
+13 项失败均为环境缺失（matplotlib 等），与本次改动无关
+```
+
+### 9.5 关于「注释里提到示例主题」
+
+`challenge-cup` 与 `entrepreneurship-training` 的文件头注释仍写着
+「DEFAULT_DATA: 消防无人机主题 demo」。这些是**说明示例数据是什么主题**，
+不进入输出，保留是对的——测试也按此区分（AST 只查字符串字面量）。

@@ -775,7 +775,7 @@ python build.py --demo --out demo.docx
 ### 11.3 v3.0 新增字段处理
 
 build.py 自动识别 v3.0 新增 8 字段，缺字段时使用合理占位文本：
-- `policy_citations` 缺失 → 提示"请填写国家政策引用，≥8 条"
+- `policy_citations` 缺失 → 提示"请填写政策依据（1~3 句注脚即可）"
 - `scientific_challenges` 缺失 → 提示"请填写 3 段科学挑战"
 - `literature_review` 缺失 → 提示"请填写文献综述"
 - `algorithm_comparison` 缺失 → 提示"请填写算法对比表"
@@ -905,7 +905,7 @@ python3 utils/review_simulator.py --skill grant_application --text-file draft.tx
 
 ### 12.2 v3.0 案例规范新增 15 项
 
-16. 政策引用 ≥8 条（国家级）/ ≥5 条（省级）/ ≥3 条（校级）
+16. 政策依据与选题确有对应关系；引用文件时文号真实可查（不堆砌清单）
 17. 政策引用按时间倒序排列
 18. 政策引用含 4 要素（发文机关+文号+标题+时间）+ 关键表述摘录
 19. 政策引用含习近平总书记重要讲话

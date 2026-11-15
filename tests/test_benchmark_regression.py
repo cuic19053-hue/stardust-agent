@@ -323,3 +323,133 @@ def test_thresholds_reference_document_exists_and_cites_sources():
     # 必须写明三类数值的效力区分
     for key in ("国家规定", "高校形式审查", "默认值"):
         assert key in text, f"依据文件缺少「{key}」分类"
+
+
+# --- 跨 skill：另外 3 个竞赛类 skill 的同类缺陷 ---
+
+OTHER_BUILDERS = ["challenge-cup", "internet-plus", "entrepreneurship-training"]
+
+# 各 skill 的「无关主题词」——用于检测硬编码污染
+FOREIGN_TOPIC_WORDS = {
+    "challenge-cup": ["消防", "无人机", "火场"],
+    "internet-plus": ["消防", "无人机", "火场"],
+    "entrepreneurship-training": ["消防", "无人机", "火场", "河南工业大学"],
+}
+
+NON_FIRE_DATA = {
+    "project_name": "社区旧衣回收再利用平台",
+    "project_level": "国家级",
+    "project_type": "创业训练项目",
+    "leader_name": "张三", "leader_id": "202212345", "leader_major": "工商管理",
+    "leader_grade": "2022 级", "leader_phone": "138XXXXXXXX",
+    "advisor_name": "李教授", "advisor_title": "教授",
+    "advisor_research": "循环经济", "college": "商学院",
+    "apply_date": "2026 年 3 月",
+    "basic_info": {
+        "project_name": "社区旧衣回收再利用平台",
+        "project_type": "创业训练项目", "project_source": "A 学生自主选题",
+        "discipline": "1202 工商管理", "duration": "2026.04-2027.03（12 个月）",
+        "budget": "20000",
+        "leader_info": "张三 / 202212345 / 工商管理 / 大三 / 138XXXXXXXX",
+        "team_members": "李四（运营）、王五（供应链）",
+        "advisor_info": "李教授 / 教授 / 循环经济 / 139XXXXXXXX",
+    },
+    "abstract": "本项目面向社区旧衣回收环节的低效问题，搭建线上预约与线下"
+                "分拣结合的回收平台。",
+    "background": ["我国每年产生废旧纺织品数量可观，回收利用率偏低。"],
+    "research_content": ["设计社区回收网络与分拣流程"],
+    "innovations": ["模式创新：以社区为最小回收单元替代传统集中回收点。"],
+    "team_foundation": "团队修读《运营管理》《供应链管理》。",
+    "advisor_foundation": "指导教师主持省级循环经济课题 1 项。",
+    "lab_condition": "学院提供创业孵化场地。",
+    "budget_items": [{"item": "调研差旅", "amount": "20000",
+                      "basis": "10 次社区调研 × 2000 元"}],
+    "budget_total": "20000",
+}
+
+
+@pytest.mark.parametrize("skill", OTHER_BUILDERS)
+def test_other_skill_builders_have_no_foreign_topic_in_render_code(skill):
+    """渲染代码（DEFAULT_DATA 之前的部分）不得硬编码某一主题的措辞。
+
+    注释里提到示例主题是允许的，这里只检查会进入输出的字符串字面量。
+    """
+    src = (ROOT / "subskills" / skill / "build.py").read_text(encoding="utf-8")
+    lines = src.splitlines()
+    cut = None
+    for i, line in enumerate(lines):
+        if re.match(r"^(DEFAULT_DATA|DEMO_DATA|SAMPLE_DATA)\s*=", line):
+            cut = i
+            break
+    render_code = "\n".join(lines[:cut] if cut else lines)
+
+    # 只看会进入输出的字符串字面量：先剥掉注释与 docstring
+    import ast
+
+    tree = ast.parse(render_code)
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef,
+                             ast.AsyncFunctionDef)):
+            doc = ast.get_docstring(node, clean=False)
+            if doc:
+                docstrings.add(doc)
+
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        if node.value in docstrings:
+            continue  # docstring 不进入输出
+        for word in FOREIGN_TOPIC_WORDS[skill]:
+            if word in node.value:
+                offenders.append(
+                    f"{skill}.py:{node.lineno} 字符串含「{word}」："
+                    f"{node.value[:60]}")
+    assert not offenders, "渲染代码硬编码了特定主题：\n" + "\n".join(offenders)
+
+
+@pytest.mark.parametrize("skill", OTHER_BUILDERS)
+def test_other_skills_accept_non_fire_topic(skill, tmp_path):
+    """给一个完全无关的选题，产物里不得出现消防/无人机措辞。"""
+    data_file = tmp_path / "nonfire.json"
+    data_file.write_text(json.dumps(NON_FIRE_DATA, ensure_ascii=False),
+                         encoding="utf-8")
+    out = tmp_path / f"{skill}.docx"
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "subskills" / skill / "build.py"),
+         "--data", str(data_file), "--out", str(out)],
+        capture_output=True, text=True, timeout=240)
+    if proc.returncode != 0:
+        pytest.skip(f"{skill} 无法用最小数据构建：{proc.stderr[-300:]}")
+    text = _docx_text(out)
+    found = [(w, text.count(w)) for w in FOREIGN_TOPIC_WORDS[skill] if w in text]
+    assert not found, f"{skill} 把无关选题写成了消防主题：{found}"
+
+
+def test_no_skill_requires_policy_count_threshold():
+    """政策引用条数门槛无官方依据，不得再作为必检项出现。"""
+    bad = re.compile(r"政策(?:引用|数)?[^\n]{0,8}[≥>＞]\s*(?:[89]|1[02])\s*(?:条|项)")
+    hits = []
+    for path in _skill_files():
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if any(x in line for x in EXEMPT_CONTEXT):
+                continue
+            if bad.search(line):
+                hits.append(f"{path.name}:{i}")
+    assert not hits, "仍有政策条数硬门槛：" + "；".join(hits)
+
+
+def test_no_skill_requires_benefit_count_threshold():
+    """社会经济效益指标数量门槛对人文社科选题不成立，不得作为必检项。"""
+    bad = re.compile(
+        r"(?:经济效益|社会经济效益)[^\n]{0,12}[≥>＞]\s*1[02]\s*项"
+        r"|(?:指标数|指标数量)\s*[≥>＞]\s*1[02]\s*项")
+    hits = []
+    for path in _skill_files():
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if any(x in line for x in EXEMPT_CONTEXT):
+                continue
+            if bad.search(line):
+                hits.append(f"{path.name}:{i}")
+    assert not hits, "仍有效益指标数量硬门槛：" + "；".join(hits)

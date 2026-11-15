@@ -1321,13 +1321,13 @@ python3 utils/review_simulator.py --skill grant_application --text-file draft.tx
 - [ ] 三级评审意见栏已预留
 
 ### 20.3 v2.1 必加章节检查（10 项）
-- [ ] 政策引用 ≥ 8 项，4 要素齐全，时序倒序
+- [ ] 政策依据用 1~3 句点明对应哪项国家战略的具体需求；若引用文件，文号可查、时序倒序
 - [ ] 科学挑战 3 段，层层递进，含文献支撑
 - [ ] 文献综述 ≥ 30 篇，含 SCI 一区/二区，三段结构
 - [ ] 算法对比表 ≥ 1 张，≥3 维度，含选型结论
 - [ ] 技术路线图 ≥ 3 张，自含说明，节点对应章节
 - [ ] 数学公式（自然 ≥3，发明 ≥2），编号+变量解释
-- [ ] 社会经济效益 ≥ 10 项，4 列对比，双重表达
+- [ ] 社会经济效益按选题类型给 3~6 项可量化指标（人文社科可定性），注明测算口径
 - [ ] 答辩 PPT 10 页大纲，5+5 分钟
 - [ ] 字数档符合类别（自然 8k / 哲社 15k / 发明 10k）
 - [ ] JSON Schema 字段完整，质检清单通过
@@ -1372,11 +1372,11 @@ checks = [
     ("abstract", len(data.get("abstract", "")) <= L["abstract"], f"作品简介≤{L['abstract']}字"),
     ("innovations", 3 <= len(data.get("innovations", [])) <= 5, "创新点3~5个"),
     ("references", len(data.get("references", [])) >= 5, "参考文献≥5条"),
-    ("policy_citations", len(data.get("policy_citations", [])) >= 8, "政策引用≥8项(v2.1)"),
+    ("policy_citations", len(data.get("policy_citations", [])) >= 1, "已填政策依据"),
     ("scientific_challenges", len(data.get("scientific_challenges", [])) == 3, "科学挑战3段(v2.1)"),
     ("literature_review", len(data.get("literature_review", [])) >= 5, "文献综述≥5段(v2.1)"),
     ("tech_roadmap", len(data.get("tech_roadmap", [])) >= 3, "技术路线≥3张(v2.1)"),
-    ("economic_benefits", len(data.get("economic_benefits", [])) >= 10, "经济效益≥10项(v2.1)"),
+    ("economic_benefits", len(data.get("economic_benefits", [])) >= 1, "已填经济效益量化"),
     ("defense_ppt", len(data.get("defense_ppt", [])) == 10, "答辩PPT 10页(v2.1)"),
 ]
 for field, ok, msg in checks:

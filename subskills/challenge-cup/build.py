@@ -779,11 +779,17 @@ class ApplicationDocBuilder:
                 add_reference_paragraph(self.doc, ref_text)
             if len(references) < 5:
                 self.warnings.append(f"参考文献 {len(references)} 条少于 5 条下限")
-            if len(references) < 30:
-                self.warnings.append(f"参考文献 {len(references)} 条少于 v2.1 推荐 30 条")
+            # 文献数量按学科定，无全国统一下限；只校验可客观判定的比例指标
+            if references:
+                _en = sum(1 for r in references
+                          if isinstance(r, dict)
+                          and str(r.get("language", "")).lower() in ("en", "english"))
+                if _en == len(references) or _en == 0:
+                    self.warnings.append(
+                        "参考文献只有英文或只有中文，多校形式审查按一票否决处理")
         else:
             add_reference_paragraph(self.doc, "[1] 张三, 李四. 示例文献题名[J]. 期刊名, 2024, 48(3): 45-52.")
-            add_reference_paragraph(self.doc, "（请按 GB/T 7714 格式补 5~30 条参考文献，v2.1 推荐 30+。）")
+            add_reference_paragraph(self.doc, "（请按 GB/T 7714 格式补参考文献：近五年 ≥80%、英文不超过 50%、不得只有中文或只有英文。）")
 
     # --------------------------------------------------------
     # 十一、附录
@@ -1057,10 +1063,10 @@ class ApplicationDocBuilder:
                     rows,
                     col_widths=[1.0, 3.5, 3.0, 3.0, 4.5],
                 )
-            if len(benefits) < 10:
-                self.warnings.append(f"v2.1：经济效益 {len(benefits)} 项少于 10 项下限")
+            # 效益指标数量不设门槛（对人文社科选题不成立）
         else:
-            self.add_para("（v2.1：请补充 ≥ 10 项社会经济效益指标，每项 4 列对比。）")
+            self.add_para("（请补充社会经济效益 3~6 项，每项 4 列对比并注明测算口径；"
+                          "人文社科选题可定性描述。）")
 
     # --------------------------------------------------------
     # v2.1 新增：H. 答辩 PPT 框架（10 页）
@@ -1241,11 +1247,7 @@ class ApplicationDocBuilder:
                     self.warnings.append(f"v2.1：{wt} 类公式 {n} 个少于 {min_n} 个下限")
 
         if not self._get("economic_benefits"):
-            self.warnings.append("v2.1：缺少 经济效益量化（economic_benefits），必须 ≥ 10 项")
-        else:
-            n = len(self._get_list("economic_benefits"))
-            if n < 10:
-                self.warnings.append(f"v2.1：经济效益 {n} 项少于 10 项下限")
+            self.warnings.append("缺少 社会经济效益量化（economic_benefits）")
 
         if not self._get("defense_ppt"):
             self.warnings.append("v2.1：缺少 答辩 PPT（defense_ppt），必须 10 页")
