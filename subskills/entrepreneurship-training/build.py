@@ -529,17 +529,22 @@ class ApplicationDocBuilder:
                           "发文机关+文号+标题+时间，并摘录与项目相关的关键表述。）")
 
         self.add_h3("（2）技术需求")
-        self.add_para(
-            "随着我国城市化进程的加速，高层建筑、地下空间、大型综合体等复杂结构日益增多，"
-            "给城市火灾应急救援带来了前所未有的挑战。在这些'信息孤岛'式的灾害现场，迫切"
-            "需要发展新型技术手段，以应对传统侦察模式面临的严峻技术瓶颈。"
-        )
-        self.add_para(
-            "国家消防救援局数据显示，截至 2024 年 8 月，全国共接报高层建筑火灾 3.6 万起，"
-            "共造成 203 人死亡，超过 2023 年全年总和；高层建筑火灾起数虽然仅占火灾起数的 5.4%，"
-            "但死亡人数占 15%以上。该组数据说明，高层建筑火灾在发生数量上并非占比最高，"
-            "但其致死风险和救援难度明显高于一般火灾，具有典型的'小比例、高危害'特征。"
-        )
+        _tech_need = self._get("tech_need", default="")
+        if _tech_need:
+            self.add_para(_tech_need)
+        else:
+            self.add_para(
+                "（请填写技术需求：当前行业面临的具体技术瓶颈是什么、"
+                "现有手段为何不足、本项目要解决哪一环。）"
+            )
+        _demand_data = self._get("demand_data", default="")
+        if _demand_data:
+            self.add_para(_demand_data)
+        else:
+            self.add_para(
+                "（请填写支撑需求的数据：行业规模、问题发生频率或损失统计，"
+                "并注明数据来源与年份；无可靠来源时不要写具体数字。）"
+            )
 
         # 科学挑战 3 段
         self._add_scientific_challenges()
@@ -621,8 +626,8 @@ class ApplicationDocBuilder:
                 text = r.get("text", "")
                 self.add_para(f"[{no}] {text}", indent=False)
         else:
-            self.add_para("（请填写参考文献，≥ 30 篇（国家级）/ ≥ 20 篇（省级）/ ≥ 10 篇（校级），"
-                          "GB/T 7714-2015 格式，英文 ≥ 60%。）", indent=False)
+            self.add_para("（请填写与选题相关的真实参考文献，按 GB/T 7714-2015 格式标注；"
+                          "数量、语种和年份比例以本校当年通知为准，未提供通知时不设比例门槛。）", indent=False)
 
     # --------------------------------------------------------
     # 四、研究内容、研究目标、关键科学问题
@@ -690,11 +695,18 @@ class ApplicationDocBuilder:
             ts = {}
 
         self.add_h2("3.1 研究方法和思路")
-        self.add_para(
-            "本申请旨在研究和开发一套集多模态智能感知、鲁棒三维重建、目标检测与态势理解"
-            "耦合以及自适应路径规划于一体的消防无人机火场救援创新系统。本课题将综合模拟"
-            "计算、实验和测试分析等多种研究方法结合开展研究工作。"
-        )
+        # 主题必须来自数据：早期版本在此硬编码「消防无人机火场救援」，
+        # 使任何其他选题的创业训练申报书都被写入消防措辞。
+        _route = self._get("tech_route", default="")
+        if _route:
+            self.add_para(_route)
+        else:
+            _name = self._get("project_name", default="本项目")
+            self.add_para(
+                f"本申请围绕{_name}展开，将综合文献调研、方案设计、原型验证与"
+                "测试分析等多种研究方法开展研究工作。下文说明技术路线、方法"
+                "对比与创新之处。"
+            )
 
         # 算法对比表
         self._add_algorithm_comparison(ts.get("algorithm_comparison", {}))
@@ -792,15 +804,22 @@ class ApplicationDocBuilder:
         self.add_h2("6.1 综合效益概述")
         self.add_para(
             "该项目的研发与应用将在社会、经济、政治与战略等多个维度产生显著的综合效益。"
-            "通过对比系统模式与传统模式在火灾应急救援全流程各阶段的表现，系统模式凭借"
-            "'多模态融合透视烟雾'的核心技术突破，有效破解了传统模式面临的'信息孤岛'与"
-            "'复杂环境受限'困境。"
+            "（请填写系统模式与传统模式在各阶段的对比结论：系统在哪些环节改善了"
+            "传统做法的具体短板，改善幅度如何。）"
         )
 
         self.add_h2("6.2 社会效益")
-        self.add_para("（1）降低消防员暴露风险，践行'生命至上'：系统通过无人机替代消防员执行高危侦察任务，配合安全约束路径规划为地面人员提供精准引导，从根本上降低救援人员的职业风险。")
-        self.add_para("（2）提升被困人员生还概率：系统的小目标智能识别（召回率 ≥ 92%）与三维实时重构能力，可将救援响应时间缩短至传统模式的 30%-50%，在'黄金救援期'内最大限度提升生存几率。")
-        self.add_para("（3）推动消防救援现代化转型：构建'感知-认知-决策-行动'智能闭环，推动消防救援从'经验驱动'向'数据驱动'转型。")
+        _social = self._get("social_benefits", default=[])
+        if isinstance(_social, str):
+            _social = [_social]
+        if _social:
+            for _i, _item in enumerate(_social, 1):
+                self.add_para(f"（{_i}）{_item}")
+        else:
+            self.add_para(
+                "（请填写社会效益 2~4 条：分别说明对哪类人群、哪类公共问题"
+                "产生改善；可定性描述，但不得编造无来源的百分比。）"
+            )
 
         self.add_h2("6.3 经济效益（量化评估表 12 项）")
         benefits = self._get("economic_benefits", default=[])
@@ -826,9 +845,17 @@ class ApplicationDocBuilder:
             self.add_para("（请填写经济效益量化评估表，≥ 12 项，每项 4 列：指标名/传统基准/系统预期/提升幅度。）")
 
         self.add_h2("6.4 政治与战略效益")
-        self.add_para("（1）构建'空地一体'应急体系，提升城市韧性：契合国家'智慧消防'与'低空经济'战略部署，推动城市应急管理智能化升级。")
-        self.add_para("（2）服务国家安全与社会稳定：践行'人民至上、生命至上'理念，保障人民生命财产安全，维护社会和谐稳定。")
-        self.add_para("（3）技术辐射与迁移潜力：核心技术可迁移至地震搜救、危化品处置、森林防火等领域，全面赋能应急救援体系智能化升级。")
+        _strategic = self._get("strategic_benefits", default=[])
+        if isinstance(_strategic, str):
+            _strategic = [_strategic]
+        if _strategic:
+            for _i, _item in enumerate(_strategic, 1):
+                self.add_para(f"（{_i}）{_item}")
+        else:
+            self.add_para(
+                "（请填写战略契合点 1~3 条：说明本项目对应哪一项国家战略/产业"
+                "政策的具体需求，以及技术的可迁移方向。）"
+            )
 
     # --------------------------------------------------------
     # 七、市场分析（5 小节）
@@ -844,22 +871,26 @@ class ApplicationDocBuilder:
         self.add_h2("（一）市场需求")
         demand = ma.get("market_demand", "")
         self.add_para(demand if demand else
-                      "（请填写市场需求，含高层建筑、地下空间、大型综合体等复杂场景增多带来的消防救援需求。）")
+                      "（请填写市场需求：哪类客户在什么场景下存在什么未被满足的需求，"
+                      "需求规模有多大、依据是什么。）")
 
         self.add_h2("（二）目标市场")
         target = ma.get("target_market", "")
         self.add_para(target if target else
-                      "（请填写目标市场，B/G 端专业客户为主：消防救援部门、应急管理机构、政府相关单位、园区安全管理单位。）")
+                      "（请填写目标市场：首批客户是谁（B 端/G 端/C 端）、"
+                      "为什么先做这类客户、如何触达。）")
 
         self.add_h2("（三）市场前景")
         prospect = ma.get("market_prospect", "")
         self.add_para(prospect if prospect else
-                      "（请填写市场前景，智慧消防、应急管理现代化、低空经济和智能装备发展。）")
+                      "（请填写市场前景：驱动该市场增长的因素是什么，"
+                      "并给出可核查的规模与增速来源。）")
 
         self.add_h2("（四）产品或服务前景")
         product_p = ma.get("product_prospect", "")
         self.add_para(product_p if product_p else
-                      "（请填写产品或服务前景，含设备交付、系统部署、操作培训、日常维护、算法升级、应急演练支持。）")
+                      "（请填写产品或服务前景：交付形态是什么、后续有哪些"
+                      "可持续的增值服务环节。）")
 
         self.add_h2("（五）SWOT 分析")
         swot = ma.get("swot", {})
@@ -961,8 +992,17 @@ class ApplicationDocBuilder:
         """促销策略详述"""
         self.add_h2("8.3 促销策略详述")
         self.add_h3("（1）广告促销")
-        self.add_para("理性主题：突出体现消防救援无人机群及多机协同系统的独特性，展示本产品对比传统消防速度效果的优势。")
-        self.add_para("情感主题：通过讲述真实的火灾案例和消防救援无人机群的成功应用，让大众了解产品在实际应用中的效果和价值。")
+        _ads = self._get("ad_themes", default={})
+        if not isinstance(_ads, dict):
+            _ads = {}
+        _rational = _ads.get("rational", "")
+        _emotional = _ads.get("emotional", "")
+        self.add_para(
+            f"理性主题：{_rational}" if _rational else
+            "理性主题：（请填写：突出产品在哪个可量化指标上优于现有方案。）")
+        self.add_para(
+            f"情感主题：{_emotional}" if _emotional else
+            "情感主题：（请填写：用哪类真实场景或用户故事说明产品价值。）")
 
         self.add_h3("（2）社会公共关系促销")
         pr_rows = [
@@ -1216,11 +1256,10 @@ class ApplicationDocBuilder:
             self.add_para("（请填写 4 阶段甘特图：第一阶段调研设计/第二阶段硬件算法/第三阶段集成验证/第四阶段总结结题。）")
 
         self.add_h2("2. 项目目前进展")
-        self.add_para(
-            "目前该项目已经与河南工业大学安保科签订合作巡逻协议，主要是负责校园火灾防卫安全巡逻，"
-            "同时还与杭州英诺唯、郑州新鼎自动化、河南瞰宇科技等智能装备企业签订战略合作协议。"
-            "原型机组装已完成，首次试飞验证通过，火灾监测识别算法原型在模拟场景下达到预期技术指标。"
-        )
+        _progress = self._get("current_progress", default="")
+        self.add_para(_progress if _progress else
+                      "（请填写项目目前进展：已与谁达成何种合作、原型做到什么程度、"
+                      "已完成哪些验证。只写真实发生的事，不要写计划。）")
 
     # --------------------------------------------------------
     # 十二、经费预算
@@ -1410,20 +1449,13 @@ class ApplicationDocBuilder:
 
         # 政策数量校验
         policies = self._get("policy_citations", default=[])
-        if isinstance(policies, list) and len(policies) < 10:
-            warnings.append(f"政策引用数量 {len(policies)} < 10，建议补充至 10+ 条")
+        # 政策条数不设门槛：没有任何高校评分表设有「政策引用」评分项
 
-        # 文献数量校验
-        lit = self._get("literature_review", default={})
-        if isinstance(lit, dict):
-            refs = lit.get("references", [])
-            if isinstance(refs, list) and len(refs) < 10:
-                warnings.append(f"参考文献数量 {len(refs)} < 10，建议补充至 30+ 篇")
+        # 文献语种及比例以本校当年通知为准，不预设双语或比例门槛。
 
         # 经济效益指标校验
         eb = self._get("economic_benefits", default=[])
-        if isinstance(eb, list) and len(eb) < 12:
-            warnings.append(f"经济效益指标 {len(eb)} < 12，建议补充至 12 项")
+        # 效益指标数量不设门槛（对人文社科选题不成立）
 
         if warnings:
             print("⚠️ 数据校验警告：", file=sys.stderr)
@@ -1490,12 +1522,12 @@ DEFAULT_DATA = {
     ],
 
     "policy_citations": [
-        {"order": 1, "date": "2026 年 3 月", "agency": "国务院办公厅",
-         "doc_number": "国办发〔2026〕XX 号", "title": "关于加强基层消防工作的意见",
+        {"order": 1, "date": "（示例：YYYY 年 M 月）", "agency": "（示例）国务院办公厅",
+         "doc_number": "〔示例：填入真实文号〕", "title": "（示例）关于加强基层消防工作的意见",
          "key_excerpt": "强化基层消防科技支撑，推广智能化消防装备",
          "relevance": "为消防无人机下沉基层、提升一线处置能力提供政策导向与实施路径"},
-        {"order": 2, "date": "2026 年 2 月", "agency": "国家层面",
-         "doc_number": "", "title": "关于低空经济发展的相关部署",
+        {"order": 2, "date": "（示例：YYYY 年 M 月）", "agency": "（示例：填写真实发文机关）",
+         "doc_number": "", "title": "（示例）关于低空经济发展的相关部署",
          "key_excerpt": "低空飞行器在公共安全、应急救援、城市治理等领域的应用价值",
          "relevance": "为消防无人机在复杂城市空间中的常态化部署、快速响应和协同作业提供更加清晰的产业环境与应用场景"},
         {"order": 3, "date": "2025 年 12 月", "agency": "工业和信息化部等",

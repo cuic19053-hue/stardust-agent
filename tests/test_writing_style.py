@@ -120,15 +120,22 @@ def test_inject_script_is_idempotent():
 # ===========================================================================
 
 def _parse_desc(skill_id: str):
+    """按 YAML 解析取 description 真值。
+
+    规范按字符数（len）计预算；正则直取原始文本会把 YAML 折行符与
+    引号算进长度，导致与规范口径不一致（实测偏差可达 79 字符）。
+    """
     import re as _re
+
+    import yaml
 
     text = (SUBSKILLS / skill_id / "SKILL.md").read_text(encoding="utf-8")
     m = _re.match(r"^---\n(.*?)\n---\n", text, _re.S)
     assert m, f"{skill_id}: 缺少前置块"
-    fm = m.group(1)
-    d = _re.search(r"^description:\s*(.+?)(?=\n[a-z_]+:|\Z)", fm, _re.S | _re.M)
-    assert d, f"{skill_id}: 缺少 description"
-    return " ".join(d.group(1).split())
+    parsed = yaml.safe_load(m.group(1)) or {}
+    desc = str(parsed.get("description", "") or "")
+    assert desc, f"{skill_id}: 缺少 description"
+    return desc
 
 
 @pytest.mark.parametrize("skill_id", SKILL_IDS)

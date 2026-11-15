@@ -59,8 +59,8 @@ if candidates:
 
 | 子 skill | 中文名 | 触发关键词 |
 |----------|--------|------------|
-| `subskills/national-scholarship/` | 国家奖学金 | "国家奖学金""国奖""10000元" |
-| `subskills/motivation-scholarship/` | 国家励志奖学金 | "励志""6000元""家庭经济困难" |
+| `subskills/national-scholarship/` | 国家奖学金 | "国家奖学金""国奖""10000元"（2024 年起标准，以当年通知为准） |
+| `subskills/motivation-scholarship/` | 国家励志奖学金 | "励志""6000元""家庭经济困难"（2024 年起标准，以当年通知为准） |
 | `subskills/university-scholarship/` | 校级奖学金 | "校奖""一等奖学金" |
 | `subskills/enterprise-scholarship/` | 企业专项奖学金 | "企业奖""专项奖""华为奖" |
 | `subskills/single-scholarship/` | 单项奖学金 | "单项奖""科研单项""文体单项" |

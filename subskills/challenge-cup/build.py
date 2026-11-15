@@ -779,11 +779,9 @@ class ApplicationDocBuilder:
                 add_reference_paragraph(self.doc, ref_text)
             if len(references) < 5:
                 self.warnings.append(f"参考文献 {len(references)} 条少于 5 条下限")
-            if len(references) < 30:
-                self.warnings.append(f"参考文献 {len(references)} 条少于 v2.1 推荐 30 条")
         else:
             add_reference_paragraph(self.doc, "[1] 张三, 李四. 示例文献题名[J]. 期刊名, 2024, 48(3): 45-52.")
-            add_reference_paragraph(self.doc, "（请按 GB/T 7714 格式补 5~30 条参考文献，v2.1 推荐 30+。）")
+            add_reference_paragraph(self.doc, "（请按 GB/T 7714 格式补相关真实文献；语种和年份比例以本校或本届赛事通知为准，未提供通知时不设比例门槛。）")
 
     # --------------------------------------------------------
     # 十一、附录
@@ -901,7 +899,7 @@ class ApplicationDocBuilder:
         self.add_h1("C. 国内外研究现状综述（v2.1 必加）")
         review = self._get_list("literature_review")
         if review:
-            self.add_para(f"本综述共引用 {len(review)} 段，覆盖 30+ 篇文献（英文 ≥ 60%，含 SCI 一区/二区期刊），"
+            self.add_para(f"本综述共引用 {len(review)} 段，覆盖与选题相关的文献，"
                          "按研究意义 → 国内外现状 → 总结分析三段结构撰写。")
             current_section = ""
             for seg in review:
@@ -1057,10 +1055,10 @@ class ApplicationDocBuilder:
                     rows,
                     col_widths=[1.0, 3.5, 3.0, 3.0, 4.5],
                 )
-            if len(benefits) < 10:
-                self.warnings.append(f"v2.1：经济效益 {len(benefits)} 项少于 10 项下限")
+            # 效益指标数量不设门槛（对人文社科选题不成立）
         else:
-            self.add_para("（v2.1：请补充 ≥ 10 项社会经济效益指标，每项 4 列对比。）")
+            self.add_para("（请补充社会经济效益 3~6 项，每项 4 列对比并注明测算口径；"
+                          "人文社科选题可定性描述。）")
 
     # --------------------------------------------------------
     # v2.1 新增：H. 答辩 PPT 框架（10 页）
@@ -1241,11 +1239,7 @@ class ApplicationDocBuilder:
                     self.warnings.append(f"v2.1：{wt} 类公式 {n} 个少于 {min_n} 个下限")
 
         if not self._get("economic_benefits"):
-            self.warnings.append("v2.1：缺少 经济效益量化（economic_benefits），必须 ≥ 10 项")
-        else:
-            n = len(self._get_list("economic_benefits"))
-            if n < 10:
-                self.warnings.append(f"v2.1：经济效益 {n} 项少于 10 项下限")
+            self.warnings.append("缺少 社会经济效益量化（economic_benefits）")
 
         if not self._get("defense_ppt"):
             self.warnings.append("v2.1：缺少 答辩 PPT（defense_ppt），必须 10 页")
@@ -1487,12 +1481,12 @@ DEFAULT_DATA = {
 
     # A. 国家政策引用（8 项）
     "policy_citations": [
-        {"issuer": "国务院办公厅", "doc_no": "国办发〔2026〕12 号",
-         "title": "关于加强基层消防工作的意见", "publish_date": "2026.03",
+        {"issuer": "（示例）国务院办公厅", "doc_no": "〔示例：填入真实文号〕",
+         "title": "（示例）关于加强基层消防工作的意见", "publish_date": "（示例：YYYY.MM）",
          "key_excerpt": "加强基层消防力量建设，推广无人机、机器人等智能装备在基层消防救援中的应用",
          "relevance": "直接对应项目无人机消防应用方向"},
-        {"issuer": "国家层面", "doc_no": "",
-         "title": "关于低空经济发展部署", "publish_date": "2026.02",
+        {"issuer": "（示例：填写真实发文机关）", "doc_no": "",
+         "title": "（示例）关于低空经济发展的相关部署", "publish_date": "（示例：YYYY.MM）",
          "key_excerpt": "推动低空经济高质量发展，鼓励无人机在应急救援等公共服务领域创新应用",
          "relevance": "项目消防无人机属低空经济应用场景"},
         {"issuer": "工信部等", "doc_no": "",
@@ -1519,12 +1513,12 @@ DEFAULT_DATA = {
          "title": "《\"十四五\"应急救援力量建设规划》", "publish_date": "2022.06",
          "key_excerpt": "加快构建大型固定翼灭火飞机、灭火直升机与无人机高低搭配的应急救援航空器体系",
          "relevance": "项目消防无人机属应急救援航空器体系"},
-        {"issuer": "国务院", "doc_no": "国发〔2021〕109 号",
+        {"issuer": "国务院", "doc_no": "国发〔2021〕36 号",
          "title": "《\"十四五\"国家应急体系规划》", "publish_date": "2021.12",
          "key_excerpt": "推广运用智能机器人、无人机等高技术配送装备，提升应急运输调度效率",
          "relevance": "项目消防无人机属国家应急体系高技术装备"},
-        {"issuer": "习近平", "doc_no": "",
-         "title": "国家综合性消防救援队伍授旗致辞", "publish_date": "2018.11",
+        {"issuer": "习近平总书记", "doc_no": "",
+         "title": "为国家综合性消防救援队伍授旗并致训词", "publish_date": "2018.11",
          "key_excerpt": "组建国家综合性消防救援队伍是构建新时代国家应急救援体系的重要举措",
          "relevance": "项目响应国家应急救援体系建设"}
     ],

@@ -137,7 +137,7 @@
     "policy_citations": {
       "type": "array",
       "minItems": 8,
-      "description": "国家政策引用，≥8 项",
+      "description": "政策依据注脚，1~3 句即可",
       "items": {
         "type": "object",
         "properties": {
@@ -265,7 +265,7 @@
     "economic_benefits": {
       "type": "array",
       "minItems": 10,
-      "description": "社会经济效益量化，≥10 项",
+      "description": "社会经济效益量化，3~6 项并注明测算口径",
       "items": {
         "type": "object",
         "properties": {
