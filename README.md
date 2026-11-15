@@ -100,7 +100,7 @@ ollama pull bge-m3
 
 | # | 赛道 | 编码 | 内容量 |
 |---|---|---|---|
-| 1 | 大创 · 创新训练项目 | `innovation-research` | 60 KB |
+| 1 | 大创 · 创新训练项目 | `innovation-research` | 64 KB |
 | 2 | 大创 · 创业训练项目 | `entrepreneurship-training` | 47 KB |
 | 3 | 大创 · 创业实践项目 | `entrepreneurship-practice` | 53 KB |
 | 4 | 校级科研立项 | `university-research` | 62 KB |
@@ -121,7 +121,7 @@ ollama pull bge-m3
 | 14 | 单项奖学金 | `single-scholarship` | 46 KB |
 | 15 | 国家助学金 | `grant-application` | 14 KB |
 | 16 | 优秀毕业生 | `outstanding-graduate` | 46 KB |
-| 17 | 优秀学生 / 三好学生 / 优秀团员 | `outstanding-student` | 62 KB |
+| 17 | 优秀学生 / 三好学生 / 优秀团员 | `outstanding-student` | 61 KB |
 | 18 | 优秀学生干部 | `outstanding-cadre` | 72 KB |
 | 19 | 文明大学生 | `civilized-student` | 62 KB |
 | 20 | 优秀班集体 | `class-collective` | 57 KB |
@@ -164,7 +164,7 @@ ollama pull bge-m3
 | # | 赛道 | 编码 | 内容量 |
 |---|---|---|---|
 | 34 | 转专业申请 | `major-transfer` | 67 KB |
-| 35 | 应征入伍申请书 | `military-enlistment` | 61 KB |
+| 35 | 应征入伍申请书 | `military-enlistment` | 62 KB |
 
 </details>
 

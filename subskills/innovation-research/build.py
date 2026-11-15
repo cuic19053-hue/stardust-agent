@@ -29,7 +29,12 @@ JSON 字段定义详见 SKILL.md 第十一章。
 import argparse
 import json
 import os
+import re
 import sys
+from datetime import date
+
+# 校验用的「当前年份」：文献近五年占比按它计算
+CURRENT_YEAR = date.today().year
 
 # 统一标准流编码容错（兼容 Windows 默认 GBK 终端，防 UnicodeEncodeError）
 for _stream in (getattr(sys, 'stdout', None), getattr(sys, 'stderr', None)):
@@ -543,10 +548,16 @@ class ApplicationDocBuilder:
     def _add_policy_citations(self):
         """3.1 国家规划与技术需求 - 国家政策引用规范"""
         self.add_h2("3.1 国家规划与技术需求")
-        self.add_para("本项目立项紧扣国家应急救援、智慧消防、无人机产业发展"
-                      "战略导向。下文按时间倒序梳理 8+ 项相关政策文件，"
-                      "摘录与项目相关的关键表述，论证项目立项的政策合规性"
-                      "与战略必要性。")
+        # 引言必须由数据驱动：早期版本在此硬编码「应急救援、智慧消防、无人机」，
+        # 导致非消防主题的申报书被写入消防措辞（实测社科主题稿残留「消防」3 次）。
+        policy_intro = self._get("policy_intro", default="")
+        if policy_intro:
+            self.add_para(policy_intro)
+        else:
+            name = self._get("project_name", default="本项目")
+            self.add_para(f"本项目（{name}）的选题紧扣国家相关战略导向。"
+                          "下文按时间倒序梳理相关政策文件，摘录与项目相关的"
+                          "关键表述，说明选题的政策依据。")
 
         policies = self._get("policy_citations", default=[])
         if not policies:
@@ -577,9 +588,15 @@ class ApplicationDocBuilder:
     def _add_scientific_challenges(self):
         """3.2 科学挑战 3 段结构"""
         self.add_h2("3.2 科学挑战")
-        self.add_para("本项目针对消防无人机多模态融合目标检测任务，提炼 3 个"
-                      "层层递进的科学挑战：数据层（多模态融合）→ 算法层"
-                      "（3D 目标检测）→ 系统层（能耗与实时性）。")
+        # 引言同样不得硬编码主题：早期版本固定写「消防无人机多模态融合」，
+        # 使任何非该主题的稿子都被套上不相干的科学挑战描述。
+        challenge_intro = self._get("challenge_intro", default="")
+        if challenge_intro:
+            self.add_para(challenge_intro)
+        else:
+            name = self._get("project_name", default="本项目")
+            self.add_para(f"{name}拟突破的关键问题按层次递进展开，"
+                          "下文逐条说明各层挑战及其子问题。")
 
         challenges = self._get("scientific_challenges", default=[])
         if not challenges:
@@ -628,9 +645,8 @@ class ApplicationDocBuilder:
         else:
             self.add_h3("3.3.1 研究意义")
             self.add_para("（请填写研究意义，3-5 段，每段一个小方向："
-                          "无人机目标跟踪与智慧消防的重要意义 / 多模态融合技术"
-                          "为 3D 目标跟踪与检测开辟新途径 / 构建并行运算构架对"
-                          "多模态深度学习的重要意义。）")
+                          "选题的现实必要性 / 对现有研究的补充 / 对应用场景的"
+                          "价值。每段须有具体对象或数据，不写通用意义句。）")
 
         # 国内外研究现状
         self.add_h3("3.3.2 国内外研究现状")
@@ -643,7 +659,7 @@ class ApplicationDocBuilder:
                 self.add_para(review_text)
         else:
             self.add_para("（请填写国内外研究现状，按技术方向分段，每段引用"
-                          "3-5 篇文献。国家级 ≥30 篇，英文 ≥60%，含 SCI 一区/二区"
+                          "3-5 篇文献。近五年 ≥80%，英文占比 ≤50%，且不得只有中文或只有英文"
                           "≥5 篇，近 3 年 ≥50%。GB/T 7714-2015 格式。）")
 
         # 研究现状总结
@@ -702,9 +718,10 @@ class ApplicationDocBuilder:
                 self.add_h3("选型结论")
                 self.add_para(conclusion)
         else:
-            self.add_para("（请填写算法对比表，≥3 算法 × ≥4 维度"
-                          "（技术特点/优势/劣势/适用场景）。每算法有文献引用，"
-                          "最后给选型结论，如『基于上表，本项目选用 YOLOv8 算法』。）")
+            self.add_para("（请填写算法/方法对比表：≥3 个候选方法 × ≥4 个维度"
+                          "（技术特点/优势/劣势/适用场景）。每个方法须有文献引用，"
+                          "最后给出选型结论并说明取舍理由。非技术类选题可改为"
+                          "「方法/路径对比表」。）")
 
     # --------------------------------------------------------
     # 研究内容、目标与关键科学问题
@@ -776,8 +793,8 @@ class ApplicationDocBuilder:
             self.add_para(route)
         else:
             self.add_para("（请填写研究方法和思路，1 段文字 + 图 1 项目研究方法图。"
-                          "总体技术路线分阶段展开，含大模型串联小模型、轻量化"
-                          "卷积神经网络、CPU/GPU 异构并行运算三大核心技术。）")
+                          "说明总体技术路线如何分阶段展开、每阶段用什么方法、"
+                          "为什么选这个方法而不选替代方案。）")
 
         # 6.2 技术路线图（v3.0 新增 tech_roadmap 字段）
         self.add_h2("（二）技术路线图")
@@ -1185,10 +1202,68 @@ class ApplicationDocBuilder:
         if isinstance(challenges, list) and len(challenges) < 3:
             warnings.append(f"科学挑战仅 {len(challenges)} 段，需 ≥3 段")
 
-        lit_min = 30 if level == "国家级" else (20 if level == "省级" else 10)
+        # 文献：数量按学科定，无全国统一下限；只校验可客观判定的两项——
+        # 近五年占比 ≥80%、英文占比 ≤50%（多校形式审查标准，见
+        # references/thresholds-and-sources.md §2）。
         refs = self._get("literature_review", default=[])
-        if isinstance(refs, list) and len(refs) < lit_min:
-            warnings.append(f"文献仅 {len(refs)} 篇，{level}需 ≥{lit_min} 篇")
+        if isinstance(refs, list) and refs:
+            years = []
+            en = 0
+            for r in refs:
+                if not isinstance(r, dict):
+                    continue
+                try:
+                    years.append(int(str(r.get("year", ""))[:4]))
+                except (ValueError, TypeError):
+                    pass
+                if str(r.get("language", "")).lower() in ("en", "english"):
+                    en += 1
+            if years:
+                recent = [y for y in years if y >= CURRENT_YEAR - 5]
+                ratio = len(recent) / len(years)
+                if ratio < 0.8:
+                    warnings.append(
+                        f"近五年文献占比 {ratio:.0%}，常见高校形式审查要求 ≥80%"
+                        f"（{len(recent)}/{len(years)}）")
+            en_ratio = en / len(refs)
+            if en_ratio > 0.5:
+                warnings.append(
+                    f"英文文献占比 {en_ratio:.0%}，常见高校形式审查要求 ≤50%"
+                    f"（{en}/{len(refs)}）")
+            if en == len(refs) or en == 0:
+                warnings.append("参考文献只有英文或只有中文，多校形式审查按一票否决处理")
+
+        # 创新点：常见形式审查「3 条为宜，每条不超过 3 行」。
+        innovations = self._get("innovations", default=[])
+        if isinstance(innovations, list) and innovations:
+            if len(innovations) > 5:
+                warnings.append(
+                    f"创新点 {len(innovations)} 条，常见形式审查以 3 条为宜"
+                    "（超过 5 条易被判为堆砌）")
+            long_ones = [
+                i + 1 for i, x in enumerate(innovations)
+                if isinstance(x, str)
+                and len(re.findall(r"[\u4e00-\u9fff]", x)) > 200
+            ]
+            if long_ones:
+                warnings.append(
+                    f"创新点第 {long_ones} 条超过 200 字，常见形式审查要求"
+                    "「每条不超过 3 行」")
+
+        # 经费：教高函〔2019〕13 号国家级下限 2 万；形式审查常见区间 5000~30000
+        _bt = str(self._get("budget_total", default="")).strip()
+        try:
+            _budget_num = int(_bt)
+        except (ValueError, TypeError):
+            _budget_num = -1
+        if _budget_num >= 0:
+            if level == "国家级" and _budget_num < 20000:
+                warnings.append(
+                    f"申请经费 {_budget_num} 元低于教高函〔2019〕13 号第九条（六）"
+                    "规定的国家级创新训练项目「平均不低于 2 万元/项」")
+            if _budget_num < 5000 or _budget_num > 30000:
+                warnings.append(
+                    f"申请经费 {_budget_num} 元超出常见形式审查区间 5000~30000 元")
 
         comp = self._get("algorithm_comparison", default={})
         if isinstance(comp, dict) and comp:
@@ -1204,9 +1279,8 @@ class ApplicationDocBuilder:
         if isinstance(formulas, list) and len(formulas) < 1:
             warnings.append("数学公式缺失，每个核心算法需 ≥1 个公式")
 
-        benefits = self._get("economic_benefits", default=[])
-        if isinstance(benefits, list) and len(benefits) < 10:
-            warnings.append(f"社会经济效益仅 {len(benefits)} 项，需 ≥10 项")
+        # 社会经济效益不设指标数量门槛（对人文社科选题不成立），
+        # 只提示「不要编造无来源的百分比」这一硬约束由生成侧保证。
 
         schedule = self._get("project_schedule", default=[])
         if isinstance(schedule, list) and len(schedule) != 4:
@@ -1239,8 +1313,20 @@ class ApplicationDocBuilder:
 
 
 # ============================================================
-# 默认示例数据（v3.0 消防无人机多模态融合主题，对齐案例 1）
+# 默认示例数据（消防无人机多模态融合主题）
 # ============================================================
+#
+# ⚠️ 定位：**结构示范**，不是「达标范例」。
+#
+# 这份数据用于演示 build.py 的字段结构与排版效果。它的文献列表是真实存在的
+# 文献（未改年份以避免伪造），因此**不满足常见高校形式审查的两项硬指标**：
+#   - 近五年文献占比 40%（常见要求 ≥80%）
+#   - 英文文献占比 80%（常见要求 ≤50%）
+# 运行 `--demo` 时 build.py 会如实打印这两条警告。
+#
+# 使用者应当把文献换成自己领域、近五年为主、中英文混合的真实文献；
+# 不要照抄本示例的文献列表，也不要因为「示例里是 80% 英文」就以为英文越多越好。
+# 门槛依据见 references/thresholds-and-sources.md。
 
 DEFAULT_DATA = {
     "project_name": "多模态融合的无人机消防目标检测系统",
@@ -1299,54 +1385,55 @@ DEFAULT_DATA = {
         "响应时间从 48 小时缩短至 1 小时，单次火灾损失降低 20%~40%；"
         "社会上助力国家智慧消防与应急救援体系现代化建设。",
     ],
+    # 政策引用示例：全部文号已核对官方发布页。
+    # 2026-11 审计发现原示例 10 条中有 5 条的文号是编造的或写错了年份/序号，
+    # 已逐条替换为可查证的版本；无公开发文字号的文件直接留空并在摘录中说明。
+    # 错误值清单见 references/thresholds-and-sources.md 与 tests/test_benchmark_regression.py。
+    # 使用规则见 SKILL.md §4.3：政策是选题来源的注脚，不是独立章节。
     "policy_citations": [
-        {"issuer": "（示例）国务院办公厅", "doc_no": "〔示例：填入真实文号〕",
-         "title": "（示例）关于加强基层消防工作的意见", "date": "（示例：YYYY.MM）",
-         "key_quote": "强调要充分发挥无人机、机器人等新型装备在基层消防救援"
-                     "中的作用，推动基层消防装备智能化升级，构建『早发现、"
-                     "早预警、早处置』的基层消防新格局。"},
-        {"issuer": "工信部等三部门", "doc_no": "工信部联装〔2025〕198 号",
-         "title": "应急装备产业重点产品发展指导目录（2025 版）", "date": "2025.12",
-         "key_quote": "将多模态融合无人机、3D 火场重构系统、智能目标识别"
-                     "装备列入重点发展方向，鼓励产学研协同攻关。"},
-        {"issuer": "国务院新闻办公室", "doc_no": "",
-         "title": "新时代的中国国家安全》白皮书", "date": "2025.05",
-         "key_quote": "明确指出要构建『大安全、大应急』框架，加强应急救援"
-                     "装备智能化、无人化升级，提升重特大灾害事故应对能力。"},
-        {"issuer": "中共中央办公厅、国务院办公厅", "doc_no": "中办发〔2024〕23 号",
-         "title": "关于推进新型城市基础设施建设打造韧性城市的意见", "date": "2024.12",
-         "key_quote": "强调发展智慧消防，利用物联网、人工智能、无人机等"
-                     "技术提升城市消防安全水平，推动消防装备与城市基础"
-                     "设施深度融合。"},
-        {"issuer": "工信部等四部门", "doc_no": "工信部联重装〔2024〕12 号",
-         "title": "通用航空装备创新应用实施方案（2024-2030 年）", "date": "2024.03",
-         "key_quote": "提出到 2030 年通用航空装备及相关产业形成万亿级"
-                     "市场规模，重点推动无人机在应急救援、消防灭火等"
-                     "公共服务领域的应用。"},
-        {"issuer": "应急管理部、工业和信息化部", "doc_no": "应急〔2023〕116 号",
+        {"issuer": "工业和信息化部办公厅",
+         "doc_no": "工信厅安全函〔2025〕283 号",
+         "title": "安全应急装备产业分类指导目录（2025 版）", "date": "2025.07",
+         "key_quote": "将消防灭火无人机、搜救无人机、消防侦察无人机等低空"
+                     "应急装备列入产业分类目录，为安全应急装备研发提供"
+                     "产业分类依据。"},
+        {"issuer": "中共中央办公厅、国务院办公厅", "doc_no": "",
+         "title": "关于推进新型城市基础设施建设打造韧性城市的意见",
+         "date": "2024.11",
+         "key_quote": "提出推动新一代信息技术与城市基础设施建设深度融合，"
+                     "提升城市设施韧性、管理韧性、空间韧性。（该意见由中办、"
+                     "国办印发，公开文本未标注发文字号）"},
+        {"issuer": "工业和信息化部、科技部、财政部、中国民航局",
+         "doc_no": "工信部联重装〔2024〕52 号",
+         "title": "通用航空装备创新应用实施方案（2024—2030 年）",
+         "date": "2024.03",
+         "key_quote": "提出扩大航空应急救援示范应用，加快通用航空技术和"
+                     "装备迭代升级，培育低空经济新增长极。"},
+        {"issuer": "应急管理部、工业和信息化部",
+         "doc_no": "应急〔2023〕148 号",
          "title": "关于加快应急机器人发展的指导意见", "date": "2023.12",
-         "key_quote": "提到突出建设测试基地及公共服务平台，研发全国应急"
-                     "管理系统无人机综合信息平台，服务应急管理需求。"},
-        {"issuer": "应急管理部", "doc_no": "应急〔2022〕15 号",
-         "title": "『十四五』应急救援力量建设规划", "date": "2022.06",
-         "key_quote": "提出加快构建大型固定翼灭火飞机、灭火直升机与无人机"
-                     "高低搭配、布局合理、功能互补的应急救援航空器体系。"},
+         "key_quote": "提出突破无人机、机器人等装备集群协同作业关键技术，"
+                     "重点攻关无人机群组飞行技术、灾区快速全景建模技术、"
+                     "灾区环境感知多源信息融合技术。"},
+        {"issuer": "应急管理部", "doc_no": "",
+         "title": "「十四五」应急救援力量建设规划", "date": "2022.06",
+         "key_quote": "提出构建大型固定翼灭火飞机、灭火直升机与无人机"
+                     "高低搭配、布局合理、功能互补的应急救援航空器体系。"
+                     "（该规划由应急管理部印发，公开文本未标注发文字号）"},
         {"issuer": "国务院", "doc_no": "国发〔2021〕36 号",
-         "title": "『十四五』国家应急体系规划", "date": "2021.12",
-         "key_quote": "表明推广运用智能机器人、无人机等高技术配送装备，"
-                     "推动应急物资储运设备集装单元化发展，提升应急运输"
-                     "调度效率。"},
-        {"issuer": "习近平总书记", "doc_no": "",
-         "title": "向国家综合性消防救援队伍授旗并致训词", "date": "2018.11",
-         "key_quote": "指出组建国家综合性消防救援队伍，是构建新时代国家"
-                     "应急救援体系的重要举措，对提高防灾减灾救灾能力、"
-                     "维护社会公共安全、保护人民生命财产安全具有重大意义。"},
-        {"issuer": "习近平总书记", "doc_no": "",
-         "title": "在中共十九届中央政治局第十九次集体学习时的讲话", "date": "2019.11",
-         "key_quote": "要加强风险评估和检测预警，提升多灾种和灾害链综合"
-                     "监测、风险早期识别和预报预警能力。要加强应急预案"
-                     "管理，健全应急预案体系，落实各环节责任和措施。"},
+         "title": "「十四五」国家应急体系规划", "date": "2021.12",
+         "key_quote": "提出推广运用智能机器人、无人机等高技术装备，提升"
+                     "应急运输调度效率。"},
+        {"issuer": "工业和信息化部等十部门", "doc_no": "工信部联规〔2021〕179 号",
+         "title": "「十四五」机器人产业发展规划", "date": "2021.12",
+         "key_quote": "提出重点发展特种机器人，推动机器人在消防、救援等"
+                     "危险环境下的应用验证。"},
+        {"issuer": "国务院", "doc_no": "国发〔2017〕35 号",
+         "title": "新一代人工智能发展规划", "date": "2017.07",
+         "key_quote": "提出发展智能运载工具与智能机器人，推动人工智能在"
+                     "公共安全领域的应用。"},
     ],
+
     "scientific_challenges": [
         {"title": "大语言模型背景下多种模态信息融合技术的研究",
          "description": "在大语言模型背景下，模态（modality）是指一种表达或"
@@ -1648,25 +1735,24 @@ DEFAULT_DATA = {
         "如何在 CPU/GPU 异构计算体系下实现深度学习模型的高效能耗比？涉及"
         "异构编程模型、任务调度策略、显存管理优化等子问题。",
     ],
+    # 创新点示例：3 条，每条 90~150 字（对应高校形式审查「3 条为宜，每条不超过 3 行」）。
+    # 每条遵循「对比对象 → 本项目做法 → 可验证指标」三段式；数字均为示例占位，
+    # 使用者必须换成自己预实验的真实结果，不得照抄。
     "innovations": [
-        "方法创新。传统消防无人机目标检测依赖单一视觉传感器（准确率约 "
-        "75%~80%），本项目采用 Big-Little Model 多模态融合架构，大模型"
-        "处理视觉+红外+音频+点云异构数据，小模型 YOLO-LRP 进行轻量化识别。"
-        "预实验准确率已达 88%，目标达 92%，相比传统单模态提升 12~17 个"
-        "百分点。",
-        "方法创新。传统 YOLOv10 主干网络参数量大、推理慢（约 80M 参数、"
-        "45ms/帧），本项目引入重参数化 MobileOne 骨干网络 + OREPA 在线"
-        "卷积重参数化 + GhostConv 模块，参数量降至 25M、推理速度提升至 "
-        "12ms/帧，参数减少 69%、速度提升 3.75×。",
-        "方法创新。传统单核 CPU 处理多目标跟踪无法满足实时性（处理 1080p "
-        "视频约 200ms/帧），本项目构建 CPU/GPU 异构并行运算平台，采用 "
-        "MPI+OpenMP/CUDA 混合编程模型，并行加速比达 8×，能效比提升 3×，"
-        "支持 8 路 4K 视频并行处理。",
-        "数据创新。公开数据集多为实验室仿真（如 MIT Fire Dataset 仅含 "
-        "70 段视频），本项目与 XX 消防支队合作采集真实火场场景样本 "
-        "5000+，覆盖 8 类典型火场目标（被困人员/危险品/烟雾/火源/消防员/"
-        "装备/车辆/结构），是已有公开数据集规模的 70 倍。",
+        "方法创新。传统消防无人机目标检测只依赖可见光一路输入，烟雾遮挡下"
+        "准确率约 75%~80%；本项目用大模型串联小模型架构，把红外、音频与"
+        "点云并入同一特征空间，小模型只做轻量化识别。预实验准确率 88%，"
+        "目标 92%，较单模态基线提升 12~17 个百分点。",
+        "方法创新。YOLOv10 主干参数量大、单帧推理约 45ms，难以在机载"
+        "嵌入式平台稳定运行；本项目改用重参数化 MobileOne 骨干，并加入"
+        "GhostConv 轻量卷积与在线重参数化，在不降低召回的前提下把参数量"
+        "压到约 25M、单帧推理降到 12ms，参数减少约七成，速度提升约 3.7 倍。",
+        "数据创新。公开火场数据集多为实验室燃烧仿真，烟雾浓度、光照与"
+        "遮挡分布都与真实火场差异较大；本项目拟与合作消防单位采集真实"
+        "场景样本 5000 段以上，覆盖被困人员、烟雾、火源等 8 类目标，并在"
+        "同一测试协议下与公开数据集对比泛化表现。",
     ],
+
     "tech_route": "本申请旨在研究和开发一种新型的大模型结合小模型"
                   "（Big-Little Model）结构，通过大模型处理复杂的多模态"
                   "数据融合，小模型负责针对具体任务的高效识别与检测。这种"
@@ -1886,26 +1972,38 @@ DEFAULT_DATA = {
          "basis": "图书 20 本 × 50 元 + 数据库订阅 280 元"},
         {"item": "调研差旅费", "amount": "4500",
          "basis": "3 次实地调研 × 1500 元（含交通、住宿）"},
-        {"item": "实验材料费", "amount": "9320",
-         "basis": "GPU 服务器租赁 1200 元/月 × 7 月 + 红外相机耗材 320 元 + 3D 打印耗材 600 元"},
+        {"item": "实验材料费", "amount": "11320",
+         "basis": "GPU 服务器租赁 1200 元/月 × 7 月 + 红外相机耗材 320 元 + 3D 打印耗材 600 元 + 机载电池与桨叶耗材 2000 元"},
         {"item": "会议费", "amount": "2400",
          "basis": "参加 ICASSP 国际会议 1 次 + 全国无人机大会 1 次"},
         {"item": "印刷复印", "amount": "500",
          "basis": "论文版面费 300 元 + 报告印刷 200 元"},
     ],
-    "team_foundation": "团队 4 名成员已修读《机器学习》《数字图像处理》"
-                       "《自动控制原理》《计算机视觉》等核心课程，3 人有"
-                       "校级大创参与经验。负责人张三掌握 Python/PyTorch/CUDA，"
-                       "曾参与校级『无人机目标检测』项目并获优秀。",
-    "advisor_foundation": "指导教师李教授主持国家自然科学基金 1 项（62373011），"
-                          "近 3 年发表 SCI 论文 8 篇（含 IEEE TGRS 2 篇、"
-                          "Neurocomputing 3 篇），研究方向为多模态融合与"
-                          "无人机智能感知，与本项目高度契合。",
-    "lab_condition": "自动化工程学院智能感知实验室配备 GPU 服务器"
-                     "（RTX 4090 ×4）、红外热成像仪 FLIR T630、激光雷达 "
-                     "Velodyne VLP-16、大疆经纬 M300 RTK 无人机、3D 打印机，"
-                     "可满足本项目研发与测试需求。",
-    "budget_total": "18000",
+    # 前期基础：按「学生基础 → 教师支持 → 条件保障」三节写，
+    # 重点落在学生已完成的动作上（高校形式审查明确要求弱化课题组成果）。
+    "team_foundation": "团队 4 名成员均为自动化与计算机相关专业本科生，"
+                       "已修读《机器学习》《数字图像处理》《计算机视觉》"
+                       "《自动控制原理》等课程，课程设计中完成过图像分类与"
+                       "目标检测的小规模复现。负责人张三熟悉 Python 与 "
+                       "PyTorch，参与过校级无人机目标检测项目，负责数据标注"
+                       "与模型训练环节；成员李四承担过数据采集与清洗，王五"
+                       "做过嵌入式平台部署，赵六负责过实验记录与文档整理。"
+                       "团队已共同完成一轮 500 段样本的预训练实验，能在本"
+                       "项目周期内按分工推进。",
+    "advisor_foundation": "指导教师李教授研究方向为多模态融合与智能感知，"
+                          "主持国家自然科学基金项目 1 项，近三年在相关领域"
+                          "发表论文若干，具备指导本项目所需的学术积累。指导"
+                          "方式上，李教授已与团队建立每周例会机制，前期参与"
+                          "了研究方案讨论与预实验设计评审，并协调实验室设备"
+                          "与数据采集渠道；后续将在方法选型、实验设计与论文"
+                          "撰写环节持续指导。",
+    "lab_condition": "学院智能感知实验室可提供 GPU 服务器、红外热成像仪、"
+                     "激光雷达与无人机平台等设备，满足模型训练与外场采集"
+                     "需要；实验室已具备数据存储与标注环境，可支撑本项目"
+                     "的样本管理与版本追溯。尚缺的条件是真实火场场景的"
+                     "采集许可与安全防护装备，拟通过与合作消防单位签订"
+                     "数据使用协议、由对方提供现场安全指导的方式解决。",
+    "budget_total": "20000",
     "include_school_approval": False,
 }
 
@@ -1942,7 +2040,9 @@ def main():
 
     if args.demo:
         data = DEFAULT_DATA
-        print("ℹ️ 使用内置 v3.0 示例数据（消防无人机多模态融合主题）生成演示文档")
+        print("ℹ️ 使用内置示例数据（消防无人机多模态融合主题）生成演示文档")
+        print("   注意：示例数据仅示范结构，其文献年份分布与英文占比不满足"
+              "常见形式审查要求，请勿照抄文献列表。")
     elif args.data:
         if not os.path.exists(args.data):
             sys.stderr.write(f"❌ 数据文件不存在：{args.data}\n")

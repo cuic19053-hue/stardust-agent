@@ -901,7 +901,7 @@ class ApplicationDocBuilder:
         self.add_h1("C. 国内外研究现状综述（v2.1 必加）")
         review = self._get_list("literature_review")
         if review:
-            self.add_para(f"本综述共引用 {len(review)} 段，覆盖 30+ 篇文献（英文 ≥ 60%，含 SCI 一区/二区期刊），"
+            self.add_para(f"本综述共引用 {len(review)} 段，覆盖与选题相关的文献（中英文兼有，英文占比不超过 50%），"
                          "按研究意义 → 国内外现状 → 总结分析三段结构撰写。")
             current_section = ""
             for seg in review:

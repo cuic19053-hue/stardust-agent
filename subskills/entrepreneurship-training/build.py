@@ -622,7 +622,7 @@ class ApplicationDocBuilder:
                 self.add_para(f"[{no}] {text}", indent=False)
         else:
             self.add_para("（请填写参考文献，≥ 30 篇（国家级）/ ≥ 20 篇（省级）/ ≥ 10 篇（校级），"
-                          "GB/T 7714-2015 格式，英文 ≥ 60%。）", indent=False)
+                          "GB/T 7714-2015 格式，英文占比不超过 50%。）", indent=False)
 
     # --------------------------------------------------------
     # 四、研究内容、研究目标、关键科学问题
