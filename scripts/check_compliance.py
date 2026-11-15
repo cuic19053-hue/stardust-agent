@@ -21,8 +21,7 @@ C5 绝对化承诺   禁止「包过」「保证获奖」「稳过」「确保�
 C6 诚信底线     每个 SKILL.md 必须含「不代写」边界声明
 C7 时效标注     出现具体金额（元/美元）的行须带「以…为准」或「现行标准」
 C8 公文误用     不得以《党政机关公文处理工作条例》作为申请书格式依据
-C9 无依据门槛   不得把无官方出处的数值写成「硬规则」（如「英文文献 ≥60%」，
-                与高校形式审查「英文不超过 50%」相反）
+C9 无依据门槛   不得把无官方出处的数值写成通用「硬规则」；学校明确要求只在本校适用
 C10 已核实文号  已核对的文号不得被改回错误值，已知错误值不得再次出现
 
 用法
@@ -99,6 +98,7 @@ UNGROUNDED_EXEMPT = (
     "反模式", "早期版本", "不要套用", "无官方依据", "无依据",
     "不成立", "相反", "曾在本 skill", "早期", "冲突", "不设",
     "UNGROUNDED", "C9",
+    "本校通知明确要求", "本校模板明确要求",
 )
 
 # C10 已核实 / 已知错误文号（与 tests/test_compliance.py 保持同源）
@@ -121,6 +121,9 @@ VERIFIED_DOC_NUMBERS = {
 }
 KNOWN_WRONG_DOC_NUMBERS = {
     "国发〔2021〕109 号": "应急体系规划应为 36 号",
+    "国发〔2025〕XX 号": "中国制造 2025 应为 2015 年 28 号",
+    "国办发〔2026〕12 号": "未核实的示例文号，不能作为真实政策引用",
+    "国办发〔2026〕8 号": "未核实的示例文号，不能作为真实政策引用",
     "留金发〔2007〕3010 号": "公派研究生管理规定应为教外留〔2007〕46 号",
     "工信部联规〔2021〕208 号": "医药工业发展规划应为 217 号",
     "国发〔2022〕6 号": "农业农村现代化规划应为 2021 年 25 号",
@@ -131,6 +134,46 @@ KNOWN_WRONG_DOC_NUMBERS = {
     "中办发〔2024〕23 号": "韧性城市意见公开文本无文号，属编造",
     "应急〔2022〕15 号": "应急救援力量建设规划公开文本无文号，属编造",
 }
+
+# 只允许在明确的修订对照表里展示已核实的「错误值 → 正确值」。
+# 这不是文件级白名单：同一报告的正文、正确值列仍需接受扫描。
+DOC_NUMBER_CORRECTIONS = {
+    "国发〔2021〕109 号": "国发〔2021〕36 号",
+    "国发〔2025〕XX 号": "国发〔2015〕28 号",
+    "留金发〔2007〕3010 号": "教外留〔2007〕46 号",
+    "工信部联规〔2021〕208 号": "工信部联规〔2021〕217 号",
+    "国发〔2022〕6 号": "国发〔2021〕25 号",
+    "教高〔2024〕3 号": "教高函〔2019〕13 号",
+    "工信部联重装〔2024〕12 号": "工信部联重装〔2024〕52 号",
+    "应急〔2023〕116 号": "应急〔2023〕148 号",
+    "工信部联装〔2025〕198 号": "工信厅安全函〔2025〕283 号",
+    "中办发〔2024〕23 号": "公开文本未标注发文字号",
+    "应急〔2022〕15 号": "公开文本未标注发文字号",
+}
+
+
+def find_wrong_doc_numbers(text: str) -> List[tuple[int, str, str]]:
+    """返回错误引用；仅豁免修订表错误值列中有正确配对的单次出现。"""
+    hits = []
+    columns = None
+    for number, line in enumerate(text.splitlines(), 1):
+        cells = None
+        if line.strip().startswith("|") and line.strip().endswith("|"):
+            cells = [cell.strip().strip("`* ") for cell in line.strip().split("|")[1:-1]]
+            if "错误值" in cells and "正确值" in cells:
+                columns = (cells.index("错误值"), cells.index("正确值"))
+        else:
+            columns = None
+        for bad, why in KNOWN_WRONG_DOC_NUMBERS.items():
+            if bad not in line:
+                continue
+            if columns and cells and len(cells) > max(columns):
+                wrong, correct = (cells[i] for i in columns)
+                expected = DOC_NUMBER_CORRECTIONS.get(bad)
+                if (wrong == bad and correct == expected and line.count(bad) == 1):
+                    continue
+            hits.append((number, bad, why))
+    return hits
 
 
 @dataclass
@@ -277,19 +320,18 @@ def check_file(path: Path) -> List[Issue]:
                 issues.append(Issue(
                     rel, i, "C9",
                     f"「{m.group(0)}」无官方依据却被当作门槛；"
-                    "常见高校形式审查为「英文不超过 50%」等相反口径，"
+                    "文献比例等要求须按本校或本届赛事通知核对，不设通用方向；"
                     "详见 references/thresholds-and-sources.md",
                     "error"))
 
     # C10 已核实文号（整份文本级检查）
     # 只判「写错了」，不判「没写」：很多 skill 只提文件名不标文号，属正常写法；
     # 只有该文件已经给出文号、却给了错值时才是错误。
-    for bad, why in KNOWN_WRONG_DOC_NUMBERS.items():
-        if bad in text:
-            issues.append(Issue(
-                rel, 0, "C10",
-                f"出现已知错误文号 {bad}（{why}）",
-                "error"))
+    for number, bad, why in find_wrong_doc_numbers(text):
+        issues.append(Issue(
+            rel, number, "C10",
+            f"出现已知错误文号 {bad}（{why}）",
+            "error"))
     for title, doc_no in VERIFIED_DOC_NUMBERS.items():
         if title not in text or doc_no in text:
             continue

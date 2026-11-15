@@ -5,10 +5,10 @@
 ----------------
 2026-11 做了一次「真实案例对标」审计：收集真实申报书、高校形式审查标准与
 评分表，再让 skill 实际生成一份稿子对照。结论是 skill 里有一批「硬规则」
-**没有官方出处，其中两条与官方口径方向相反**：
+**没有全国统一依据，部分还与特定学校示例标准冲突**：
 
-  - 「英文文献 ≥60%」←→ 多校形式审查要求「英文不超过 50%」
-  - 「国家级经费 1~2 万」←→ 教高函〔2019〕13 号要求「平均不低于 2 万元/项」
+  - 「英文文献 ≥60%」←→ 山东理工大学示例标准要求「英文不超过 50%」（仅在本校确认适用时使用）
+  - 单项预算不能套用教高函〔2019〕13 号的平均资助标准
 
 同时发现 DEFAULT_DATA 的 10 条政策引用里有 5 条文号是编造的，以及
 build.py 把「消防无人机」主题硬编码进渲染方法，导致任何非该主题的稿子
@@ -35,22 +35,18 @@ BUILD = SUBSKILL / "build.py"
 
 sys.path.insert(0, str(SUBSKILL))
 
-# 官方口径（教高函〔2019〕13 号第九条（六））
-NATIONAL_FUNDING_FLOOR = 20000
-
-# 形式审查常见口径（山东理工《大学生创新训练项目申报书形式审查标准》）
-RECENT_LIT_RATIO = 0.80
-EN_LIT_RATIO_MAX = 0.50
-
-
-def _load_default_data():
-    """导入 build.py 的 DEFAULT_DATA（不触发 argparse）。"""
+def _load_build_module():
+    """导入真实生成器（不触发 argparse）。"""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location("_ir_build", BUILD)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.DEFAULT_DATA
+    return mod
+
+
+def _load_default_data():
+    return _load_build_module().DEFAULT_DATA
 
 
 def _cn_len(text: str) -> int:
@@ -75,6 +71,7 @@ EXEMPT_CONTEXT = (
     "反模式", "早期版本", "不要套用", "无官方依据", "无依据", "不成立",
     "相反", "冲突", "不设", "早期", "曾在本 skill", "thredholds",
     "thresholds", "已知错误", "错误值", "UNGROUNDED",
+    "本校通知明确要求", "本校模板明确要求",
 )
 
 
@@ -99,24 +96,46 @@ def test_no_ungrounded_thresholds_regress(path):
     assert not hits, "出现无依据门槛：" + "；".join(hits)
 
 
-def test_english_ratio_direction_is_correct():
-    """英文文献方向必须是「不超过 50%」，不能是「≥60%」。"""
-    text = (SUBSKILL / "SKILL.md").read_text(encoding="utf-8")
-    assert "英文不超过 50%" in text or "英文占比 ≤50%" in text or "≤50%" in text
-    # 不应再出现把英文占比当加分项的正向表述
-    assert not re.search(r"英文\s*[≥>＞]\s*60\s*%(?!\s*」)", text) or \
-        "早期版本" in text or "不要套用" in text
+# --- 学校比例与单项预算：不把样本或平均标准当成统一门槛 ---
+
+@pytest.mark.parametrize("english_count,year", [(0, 2026), (6, 2026), (10, 2010)])
+def test_unspecified_school_does_not_impose_literature_ratios(english_count, year):
+    builder = _load_build_module().ApplicationDocBuilder()
+    builder.data = {
+        "literature_review": [
+            {"year": year, "language": "en" if i < english_count else "zh"}
+            for i in range(10)
+        ],
+    }
+    warnings = builder._validate_data()
+    assert not any("文献" in warning for warning in warnings), warnings
 
 
-# --- 经费：不得低于教高函〔2019〕13 号下限 ---
+@pytest.mark.parametrize("budget", [1500, 15000, 40000])
+def test_individual_budget_is_not_judged_against_average_or_other_school(budget):
+    builder = _load_build_module().ApplicationDocBuilder()
+    builder.data = {
+        "project_level": "国家级", "budget_total": str(budget),
+        "budget_items": [{"item": "调研", "amount": str(budget)}],
+    }
+    warnings = builder._validate_data()
+    assert not any("经费" in warning or "预算" in warning for warning in warnings), warnings
 
-def test_default_data_meets_national_funding_floor():
-    """DEFAULT_DATA 是国家级示例，经费不得低于国家规定下限。"""
-    data = _load_default_data()
-    total = int(data["budget_total"])
-    assert total >= NATIONAL_FUNDING_FLOOR, (
-        f"示例申请经费 {total} 元低于教高函〔2019〕13 号规定的"
-        f"「平均不低于 {NATIONAL_FUNDING_FLOOR} 元/项」")
+
+def test_budget_validation_still_reports_item_total_mismatch():
+    builder = _load_build_module().ApplicationDocBuilder()
+    builder.data = {
+        "project_level": "国家级", "budget_total": "15000",
+        "budget_items": [{"item": "调研", "amount": "14000"}],
+    }
+    assert any("预算合计 14000 元" in w and "15000" in w
+               for w in builder._validate_data())
+
+
+def test_school_sample_does_not_impose_innovation_count_or_length():
+    builder = _load_build_module().ApplicationDocBuilder()
+    builder.data = {"innovations": ["研究方法与验证依据" * 40] * 6}
+    assert not any("创新点" in w for w in builder._validate_data())
 
 
 def test_default_data_budget_items_sum_matches_total():
@@ -125,41 +144,18 @@ def test_default_data_budget_items_sum_matches_total():
     assert total == int(data["budget_total"]), "预算明细合计与申请经费不一致"
 
 
-def test_budget_validation_flags_below_floor():
-    """低于国家下限时，校验必须报出来。"""
-    text = BUILD.read_text(encoding="utf-8")
-    assert "教高函〔2019〕13 号第九条（六）" in text
-    assert "平均不低于 2 万元/项" in text
-
-
-# --- 文献指标 ---
-
-def test_default_data_literature_ratios_are_reported_not_hidden():
-    """示例文献不满足形式审查时，build.py 必须如实警告而不是静默通过。"""
-    out = Path("/tmp") / "_lit_check.docx"
+def test_demo_explains_school_validation_boundary(tmp_path):
+    out = tmp_path / "literature.docx"
     proc = subprocess.run(
         [sys.executable, str(BUILD), "--demo", "--out", str(out)],
         capture_output=True, text=True, timeout=180)
     assert proc.returncode == 0, proc.stderr[-800:]
+    assert out.exists()
     combined = proc.stdout + proc.stderr
-    data = _load_default_data()
-    refs = data["literature_review"]
-    en = sum(1 for r in refs if str(r.get("language", "")).lower() in ("en", "english"))
-    if en / len(refs) > EN_LIT_RATIO_MAX:
-        assert "英文文献占比" in combined, "英文超限未被警告"
-    assert "示例数据仅示范结构" in combined, "示例数据缺少定位说明"
-
-
-def test_literature_ratio_helpers_agree_with_thresholds():
-    """用一组构造数据验证 80% / 50% 两条判据的方向。"""
-    def recent_ratio(years, current=2026):
-        recent = [y for y in years if y >= current - 5]
-        return len(recent) / len(years)
-
-    assert recent_ratio([2024, 2025, 2026]) == 1.0
-    assert recent_ratio([2010, 2011, 2012]) == 0.0
-    assert recent_ratio([2024, 2010]) == 0.5
-    assert recent_ratio([2024, 2010]) < RECENT_LIT_RATIO
+    assert "示例数据仅示范结构" in combined
+    assert "本生成器不作学校规则合规判定" in combined
+    assert "常见高校形式审查要求" not in combined
+    assert "不满足常见形式审查" not in combined
 
 
 # --- 文号：已核实的不得被改回错误值 ---
@@ -420,8 +416,7 @@ def test_other_skills_accept_non_fire_topic(skill, tmp_path):
         [sys.executable, str(ROOT / "subskills" / skill / "build.py"),
          "--data", str(data_file), "--out", str(out)],
         capture_output=True, text=True, timeout=240)
-    if proc.returncode != 0:
-        pytest.skip(f"{skill} 无法用最小数据构建：{proc.stderr[-300:]}")
+    assert proc.returncode == 0, proc.stderr[-800:]
     text = _docx_text(out)
     found = [(w, text.count(w)) for w in FOREIGN_TOPIC_WORDS[skill] if w in text]
     assert not found, f"{skill} 把无关选题写成了消防主题：{found}"
@@ -453,3 +448,38 @@ def test_no_skill_requires_benefit_count_threshold():
             if bad.search(line):
                 hits.append(f"{path.name}:{i}")
     assert not hits, "仍有效益指标数量硬门槛：" + "；".join(hits)
+
+
+@pytest.mark.parametrize("skill", ["innovation-research", "challenge-cup", "entrepreneurship-training"])
+def test_generated_document_does_not_impose_other_school_thresholds(skill, tmp_path):
+    data_file = tmp_path / "project.json"
+    data_file.write_text(json.dumps(SOCIO_DATA, ensure_ascii=False), encoding="utf-8")
+    out = tmp_path / f"{skill}.docx"
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "subskills" / skill / "build.py"),
+         "--data", str(data_file), "--out", str(out)],
+        capture_output=True, text=True, timeout=180)
+    assert proc.returncode == 0, proc.stderr[-800:]
+    text = _docx_text(out)
+    assert not re.search(r"(?:英文|文献|近五年)[^。；]{0,30}(?:50%|80%)", text)
+    assert "一票否决" not in proc.stderr
+    assert "国家级 1~2 万" not in text
+    assert "以本校" in text
+
+
+@pytest.mark.parametrize("skill", ["challenge-cup", "entrepreneurship-training"])
+@pytest.mark.parametrize("language", ["en", "zh"])
+def test_single_language_references_do_not_trigger_foreign_school_veto(skill, language, tmp_path):
+    data = dict(SOCIO_DATA)
+    refs = [{"text": "真实文献占位", "language": language} for _ in range(5)]
+    data["references"] = refs
+    data["literature_review"] = {"references": refs} if skill == "entrepreneurship-training" else []
+    data_file = tmp_path / "project.json"
+    data_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    out = tmp_path / f"{skill}.docx"
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "subskills" / skill / "build.py"),
+         "--data", str(data_file), "--out", str(out)],
+        capture_output=True, text=True, timeout=180)
+    assert proc.returncode == 0, proc.stderr[-800:]
+    assert "一票否决" not in proc.stderr

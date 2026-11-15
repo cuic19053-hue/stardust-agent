@@ -779,17 +779,9 @@ class ApplicationDocBuilder:
                 add_reference_paragraph(self.doc, ref_text)
             if len(references) < 5:
                 self.warnings.append(f"参考文献 {len(references)} 条少于 5 条下限")
-            # 文献数量按学科定，无全国统一下限；只校验可客观判定的比例指标
-            if references:
-                _en = sum(1 for r in references
-                          if isinstance(r, dict)
-                          and str(r.get("language", "")).lower() in ("en", "english"))
-                if _en == len(references) or _en == 0:
-                    self.warnings.append(
-                        "参考文献只有英文或只有中文，多校形式审查按一票否决处理")
         else:
             add_reference_paragraph(self.doc, "[1] 张三, 李四. 示例文献题名[J]. 期刊名, 2024, 48(3): 45-52.")
-            add_reference_paragraph(self.doc, "（请按 GB/T 7714 格式补参考文献：近五年 ≥80%、英文不超过 50%、不得只有中文或只有英文。）")
+            add_reference_paragraph(self.doc, "（请按 GB/T 7714 格式补相关真实文献；语种和年份比例以本校或本届赛事通知为准，未提供通知时不设比例门槛。）")
 
     # --------------------------------------------------------
     # 十一、附录
@@ -907,7 +899,7 @@ class ApplicationDocBuilder:
         self.add_h1("C. 国内外研究现状综述（v2.1 必加）")
         review = self._get_list("literature_review")
         if review:
-            self.add_para(f"本综述共引用 {len(review)} 段，覆盖与选题相关的文献（中英文兼有，英文占比不超过 50%），"
+            self.add_para(f"本综述共引用 {len(review)} 段，覆盖与选题相关的文献，"
                          "按研究意义 → 国内外现状 → 总结分析三段结构撰写。")
             current_section = ""
             for seg in review:

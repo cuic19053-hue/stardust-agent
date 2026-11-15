@@ -626,8 +626,8 @@ class ApplicationDocBuilder:
                 text = r.get("text", "")
                 self.add_para(f"[{no}] {text}", indent=False)
         else:
-            self.add_para("（请填写参考文献，≥ 30 篇（国家级）/ ≥ 20 篇（省级）/ ≥ 10 篇（校级），"
-                          "GB/T 7714-2015 格式，英文占比不超过 50%。）", indent=False)
+            self.add_para("（请填写与选题相关的真实参考文献，按 GB/T 7714-2015 格式标注；"
+                          "数量、语种和年份比例以本校当年通知为准，未提供通知时不设比例门槛。）", indent=False)
 
     # --------------------------------------------------------
     # 四、研究内容、研究目标、关键科学问题
@@ -1451,17 +1451,7 @@ class ApplicationDocBuilder:
         policies = self._get("policy_citations", default=[])
         # 政策条数不设门槛：没有任何高校评分表设有「政策引用」评分项
 
-        # 文献数量校验
-        lit = self._get("literature_review", default={})
-        if isinstance(lit, dict):
-            refs = lit.get("references", [])
-            if isinstance(refs, list) and refs:
-                _en = sum(1 for r in refs
-                          if isinstance(r, dict)
-                          and str(r.get("language", "")).lower() in ("en", "english"))
-                if _en == len(refs) or _en == 0:
-                    warnings.append(
-                        "参考文献只有英文或只有中文，多校形式审查按一票否决处理")
+        # 文献语种及比例以本校当年通知为准，不预设双语或比例门槛。
 
         # 经济效益指标校验
         eb = self._get("economic_benefits", default=[])

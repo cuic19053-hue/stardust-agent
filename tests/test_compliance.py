@@ -456,19 +456,6 @@ VERIFIED_DOC_NUMBERS = {
     "《新能源汽车产业发展规划（2021—2035 年）》": "国办发〔2020〕39 号",
 }
 
-# 已确认的错误值，出现即失败
-KNOWN_WRONG_NUMBERS = {
-    "国发〔2021〕109 号": "应急体系规划应为 36 号",
-    "国发〔2025〕XX 号": "中国制造 2025 应为 2015 年 28 号",
-    "国办发〔2026〕12 号": "未来年份虚构文号",
-    "国办发〔2026〕8 号": "未来年份虚构文号",
-    "留金发〔2007〕3010 号": "公派研究生管理规定应为教外留〔2007〕46 号",
-    "工信部联规〔2021〕208 号": "医药工业发展规划应为 217 号",
-    "国发〔2022〕6 号": "农业农村现代化规划应为 2021 年 25 号",
-    "教高〔2024〕3 号": "国创计划管理办法应为教高函〔2019〕13 号",
-}
-
-
 def _all_skill_text() -> str:
     """所有面向用户/维护者的内容：skill 正文、references、根级参考、docs。"""
     parts = []
@@ -509,10 +496,39 @@ def test_known_wrong_doc_numbers_absent():
         if any(a in path.name for a in WRONG_NUMBER_ALLOWLIST):
             continue
         text = path.read_text(encoding="utf-8")
-        for bad, why in KNOWN_WRONG_NUMBERS.items():
-            if bad in text:
-                offenders.append(f"{path.name}: {bad}（{why}）")
+        for line, bad, why in cc.find_wrong_doc_numbers(text):
+            offenders.append(f"{path.name}:{line}: {bad}（{why}）")
     assert not offenders, "出现已知错误文号：" + "；".join(offenders)
+
+
+@pytest.mark.parametrize("bad,correct", cc.DOC_NUMBER_CORRECTIONS.items())
+def test_verified_correction_table_is_allowed(tmp_path, bad, correct):
+    text = f"| 文件 | 错误值 | 正确值 |\n|---|---|---|\n| 修订 | {bad} | {correct} |\n"
+    assert not cc.find_wrong_doc_numbers(text)
+    assert "C10" not in _codes(_write(tmp_path, text))
+
+
+@pytest.mark.parametrize("extra", [
+    "\n依据国发〔2021〕109 号执行。\n",
+    "| 再次引用国发〔2021〕109 号 | 无 | 无 |\n",
+    "| 修订 | 国发〔2021〕109 号 | 国发〔2021〕109 号 |\n",
+    "| 修订 | 国发〔2021〕109 号 | 教高函〔2019〕13 号 |\n",
+])
+def test_correction_table_does_not_hide_other_wrong_citations(tmp_path, extra):
+    table = "| 文件 | 错误值 | 正确值 |\n|---|---|---|\n| 修订 | 国发〔2021〕109 号 | 国发〔2021〕36 号 |\n"
+    text = table + extra
+    assert cc.find_wrong_doc_numbers(text)
+    assert "C10" in _codes(_write(tmp_path, text, "SKILLS_UPDATE_2026-11-15.md"))
+
+
+def test_wrong_number_without_correction_header_is_rejected(tmp_path):
+    text = "| 文件 | 文号 |\n|---|---|\n| 应急体系规划 | 国发〔2021〕109 号 |\n"
+    assert "C10" in _codes(_write(tmp_path, text))
+
+
+def test_sourced_school_requirement_is_not_a_universal_threshold(tmp_path):
+    text = "本校通知明确要求英文 ≥60%；仅对该校本届申报适用。\n"
+    assert "C9" not in _codes(_write(tmp_path, text))
 
 
 def test_verified_doc_numbers_documented():

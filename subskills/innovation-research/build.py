@@ -29,12 +29,7 @@ JSON 字段定义详见 SKILL.md 第十一章。
 import argparse
 import json
 import os
-import re
 import sys
-from datetime import date
-
-# 校验用的「当前年份」：文献近五年占比按它计算
-CURRENT_YEAR = date.today().year
 
 # 统一标准流编码容错（兼容 Windows 默认 GBK 终端，防 UnicodeEncodeError）
 for _stream in (getattr(sys, 'stdout', None), getattr(sys, 'stderr', None)):
@@ -658,9 +653,10 @@ class ApplicationDocBuilder:
             else:
                 self.add_para(review_text)
         else:
-            self.add_para("（请填写国内外研究现状，按技术方向分段，每段引用"
-                          "3-5 篇文献。近五年 ≥80%，英文占比 ≤50%，且不得只有中文或只有英文"
-                          "≥5 篇，近 3 年 ≥50%。GB/T 7714-2015 格式。）")
+            self.add_para("（请填写国内外研究现状，按研究方向组织真实、相关的文献，"
+                          "并综合评价已有成果与不足。文献数量、语种和年份比例"
+                          "以本校当年通知为准；未提供通知时不设比例门槛。"
+                          "按 GB/T 7714-2015 格式标注引用。）")
 
         # 研究现状总结
         self.add_h3("3.3.3 对现有研究现状的总结与分析")
@@ -1037,7 +1033,8 @@ class ApplicationDocBuilder:
         else:
             self.add_para("（请填写经费预算，5 类标准科目：资料费/调研差旅费/"
                           "实验材料费/会议费/印刷复印。每项金额非整数，附计算依据。"
-                          "国家级 1~2 万 / 省级 5 千~1 万 / 校级 2~3 千。）")
+                          "申请额度及可列支科目以本校当年通知为准；"
+                          "未提供通知时不预设额度范围。）")
 
     # --------------------------------------------------------
     # 前期工作基础
@@ -1202,68 +1199,11 @@ class ApplicationDocBuilder:
         if isinstance(challenges, list) and len(challenges) < 3:
             warnings.append(f"科学挑战仅 {len(challenges)} 段，需 ≥3 段")
 
-        # 文献：数量按学科定，无全国统一下限；只校验可客观判定的两项——
-        # 近五年占比 ≥80%、英文占比 ≤50%（多校形式审查标准，见
-        # references/thresholds-and-sources.md §2）。
-        refs = self._get("literature_review", default=[])
-        if isinstance(refs, list) and refs:
-            years = []
-            en = 0
-            for r in refs:
-                if not isinstance(r, dict):
-                    continue
-                try:
-                    years.append(int(str(r.get("year", ""))[:4]))
-                except (ValueError, TypeError):
-                    pass
-                if str(r.get("language", "")).lower() in ("en", "english"):
-                    en += 1
-            if years:
-                recent = [y for y in years if y >= CURRENT_YEAR - 5]
-                ratio = len(recent) / len(years)
-                if ratio < 0.8:
-                    warnings.append(
-                        f"近五年文献占比 {ratio:.0%}，常见高校形式审查要求 ≥80%"
-                        f"（{len(recent)}/{len(years)}）")
-            en_ratio = en / len(refs)
-            if en_ratio > 0.5:
-                warnings.append(
-                    f"英文文献占比 {en_ratio:.0%}，常见高校形式审查要求 ≤50%"
-                    f"（{en}/{len(refs)}）")
-            if en == len(refs) or en == 0:
-                warnings.append("参考文献只有英文或只有中文，多校形式审查按一票否决处理")
+        # 文献语种/年份比例由本校当年通知决定。本生成器只排版，不读取、
+        # 验证学校通知，不能用某一学校的比例对所有项目作合规判定。
 
-        # 创新点：常见形式审查「3 条为宜，每条不超过 3 行」。
-        innovations = self._get("innovations", default=[])
-        if isinstance(innovations, list) and innovations:
-            if len(innovations) > 5:
-                warnings.append(
-                    f"创新点 {len(innovations)} 条，常见形式审查以 3 条为宜"
-                    "（超过 5 条易被判为堆砌）")
-            long_ones = [
-                i + 1 for i, x in enumerate(innovations)
-                if isinstance(x, str)
-                and len(re.findall(r"[\u4e00-\u9fff]", x)) > 200
-            ]
-            if long_ones:
-                warnings.append(
-                    f"创新点第 {long_ones} 条超过 200 字，常见形式审查要求"
-                    "「每条不超过 3 行」")
-
-        # 经费：教高函〔2019〕13 号国家级下限 2 万；形式审查常见区间 5000~30000
-        _bt = str(self._get("budget_total", default="")).strip()
-        try:
-            _budget_num = int(_bt)
-        except (ValueError, TypeError):
-            _budget_num = -1
-        if _budget_num >= 0:
-            if level == "国家级" and _budget_num < 20000:
-                warnings.append(
-                    f"申请经费 {_budget_num} 元低于教高函〔2019〕13 号第九条（六）"
-                    "规定的国家级创新训练项目「平均不低于 2 万元/项」")
-            if _budget_num < 5000 or _budget_num > 30000:
-                warnings.append(
-                    f"申请经费 {_budget_num} 元超出常见形式审查区间 5000~30000 元")
+        # 教高函〔2019〕13 号规定的是平均资助标准，并明确由高校根据学科
+        # 特点确定额度；不据此推导单项申请的下限。下文仍检查预算明细合计。
 
         comp = self._get("algorithm_comparison", default={})
         if isinstance(comp, dict) and comp:
@@ -1319,10 +1259,8 @@ class ApplicationDocBuilder:
 # ⚠️ 定位：**结构示范**，不是「达标范例」。
 #
 # 这份数据用于演示 build.py 的字段结构与排版效果。它的文献列表是真实存在的
-# 文献（未改年份以避免伪造），因此**不满足常见高校形式审查的两项硬指标**：
-#   - 近五年文献占比 40%（常见要求 ≥80%）
-#   - 英文文献占比 80%（常见要求 ≤50%）
-# 运行 `--demo` 时 build.py 会如实打印这两条警告。
+# 文献（未改年份以避免伪造），未按任何学校的当年通知验收。
+# 不把文献比例或单项预算与某一学校的示例门槛直接比较。
 #
 # 使用者应当把文献换成自己领域、近五年为主、中英文混合的真实文献；
 # 不要照抄本示例的文献列表，也不要因为「示例里是 80% 英文」就以为英文越多越好。
@@ -2041,8 +1979,8 @@ def main():
     if args.demo:
         data = DEFAULT_DATA
         print("ℹ️ 使用内置示例数据（消防无人机多模态融合主题）生成演示文档")
-        print("   注意：示例数据仅示范结构，其文献年份分布与英文占比不满足"
-              "常见形式审查要求，请勿照抄文献列表。")
+        print("   注意：示例数据仅示范结构，文献年份、语种比例与经费额度"
+              "须按本校当年通知核对；本生成器不作学校规则合规判定。")
     elif args.data:
         if not os.path.exists(args.data):
             sys.stderr.write(f"❌ 数据文件不存在：{args.data}\n")
