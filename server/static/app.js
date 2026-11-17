@@ -109,6 +109,7 @@
   // tab, under its account and project, and never submit it automatically.
   const chatRecoveryStorageKey = "stardust-chat-recovery-v1";
   const interruptedChatMessages = new Map();
+  const pendingChatRequests = new Map();
   const interruptedMessagesRendered = new Set();
   const recoveredChatInputs = new Map();
   let loadedRecoveryOwner = null;
@@ -205,6 +206,13 @@
   function clearInterruptedChatMessages() {
     chatRecoveryEpoch++;
     interruptedChatMessages.clear();
+    pendingChatRequests.clear();
+    try {
+      for (let i = sessionStorage.length - 1; i >= 0; i--) {
+        const key = sessionStorage.key(i);
+        if (key?.startsWith("agent-chat-request:")) sessionStorage.removeItem(key);
+      }
+    } catch {}
     interruptedMessagesRendered.clear();
     recoveredChatInputs.clear();
     loadedRecoveryOwner = null;
@@ -1361,6 +1369,16 @@
       if (window.MaterialPilot) await window.MaterialPilot.mount({ api, state, toast, reload: loadProject, isProjectActive: chatProjectIsActive });
       if (revision !== projectLoadRevision) return;
       if (window.DraftReview) void window.DraftReview.mount({ api, state, toast,
+        focusSection: sectionId => {
+          handleTabNavigation("panel-draft");
+          const section = document.getElementById(`draft-sec-${sectionId}`);
+          section?.scrollIntoView({ behavior: "smooth", block: "center" });
+          section?.querySelector("textarea")?.focus();
+        },
+        focusMaterials: () => {
+          handleTabNavigation("panel-materials");
+          document.getElementById("panel-materials")?.scrollIntoView({ behavior: "smooth" });
+        },
         flushEdits: async () => {
           await flushDraftEdits();
           if (window.MaterialPilot?.active()) await window.MaterialPilot.flushEdits();
@@ -4133,6 +4151,18 @@
     const projectId = state.project.id;
     const accountId = state.authSession?.user?.id || null;
     const requestEpoch = chatRecoveryEpoch;
+    // Keep the request id with the same recoverable input; never store API keys.
+    const requestStorageKey = "agent-chat-request:" + JSON.stringify([
+      accountId, projectId, message, state.llmConfig.provider, state.llmConfig.model, state.llmConfig.base_url,
+      state.llmConfig.api_key?.slice(-4),
+    ]);
+    let idempotencyKey = pendingChatRequests.get(requestStorageKey);
+    try { idempotencyKey ||= sessionStorage.getItem(requestStorageKey); } catch {}
+    if (!idempotencyKey) {
+      idempotencyKey = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      try { sessionStorage.setItem(requestStorageKey, idempotencyKey); } catch {}
+    }
+    pendingChatRequests.set(requestStorageKey, idempotencyKey);
     const sameAccount = () => chatRecoveryEpoch === requestEpoch && (state.authSession?.user?.id || null) === accountId;
     if (messageOverride === null) {
       updateRecoveredChatInput();
@@ -4165,6 +4195,8 @@
           throw new Error("模型未返回可用正文，请勿连续重试；请先查看积分流水并联系管理员核对。");
         }
         if (messageOverride === null) forgetInterruptedChatMessage(projectId, message);
+        try { sessionStorage.removeItem(requestStorageKey); } catch {}
+        pendingChatRequests.delete(requestStorageKey);
         appendMessage("assistant", result.message);
         state.messages.push({ role: "user", content: message }, { role: "assistant", content: result.message });
         if (result.free_chat) {
@@ -4179,7 +4211,7 @@
           state.freeChatsRemaining = Number(result.free_chats_remaining || 0);
           renderFreeChatsIndicator();
         }
-        if (result.setup_updated || (result.tool_calls || []).some((name) => ["save_project_fact", "save_section"].includes(name))) {
+        if (result.replayed || result.setup_updated || (result.tool_calls || []).some((name) => ["save_project_fact", "save_section"].includes(name))) {
           await loadProject(state.project.id);
         }
         void refreshProjects().catch(() => {});
@@ -4265,6 +4297,7 @@
       }
       const body = {
         message,
+        idempotency_key: idempotencyKey,
         stream: true,
         llm_config: { ...state.llmConfig },
       };
@@ -4350,6 +4383,8 @@
         throw new Error("模型未返回可用正文，请勿连续重试；请先查看积分流水并联系管理员核对。");
       }
       if (messageOverride === null) forgetInterruptedChatMessage(projectId, message);
+      try { sessionStorage.removeItem(requestStorageKey); } catch {}
+      pendingChatRequests.delete(requestStorageKey);
 
       if (assistantRow && bubble) {
         bubble.innerHTML = renderMarkdownSafe(finalText);
@@ -4385,7 +4420,7 @@
         state.freeChatsRemaining = Number(finalResult.free_chats_remaining || 0);
         renderFreeChatsIndicator();
       }
-      if (finalResult?.setup_updated || (finalResult?.tool_calls || []).some((name) => ["save_project_fact", "save_section"].includes(name))) {
+      if (finalResult?.replayed || finalResult?.setup_updated || (finalResult?.tool_calls || []).some((name) => ["save_project_fact", "save_section"].includes(name))) {
         await refreshChatAfterError(projectId);
       }
       void refreshProjects().catch(() => {});

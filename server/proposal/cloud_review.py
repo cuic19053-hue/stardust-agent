@@ -23,7 +23,7 @@ from .storage import InsufficientCreditsError
 from .supabase_http import supabase_urlopen
 from .workbench_metering import WorkbenchMeter
 
-CLOUD_GRAPH_VERSION = "proposal-review-cloud-v1"
+CLOUD_GRAPH_VERSION = "proposal-review-cloud-v2"
 NODES = ["load_snapshot", "retrieve", "rules", "semantic", "verify", "save_report"]
 logger = logging.getLogger(__name__)
 
@@ -51,8 +51,9 @@ class CloudReviewRuns:
     def get(self, project_id, run_id):
         return self.call("get", project_id, id=run_id)
 
-    def submit(self, project_id, key, fingerprint, mode, _model=""):
-        result = self.call("submit", project_id, key=key, fingerprint=fingerprint, mode=mode)
+    def submit(self, project_id, key, fingerprint, mode, _model="", *, parent_id=None, origin="manual"):
+        result = self.call("submit", project_id, key=key, fingerprint=fingerprint, mode=mode,
+                           parent_id=parent_id, origin=origin, graph_version=CLOUD_GRAPH_VERSION)
         if result.get("conflict"):
             raise ReviewConflict("正文、材料或本次提交的输入已变化，请刷新后重新检查")
         if result.get("insufficient_credits"):
@@ -255,12 +256,15 @@ def run_delivery(store, delivery_id, *, rpc_factory=ReviewRPC, model_factory=Clo
     if not job:
         return {"status": "idle"}
     rpc.job = job
-    if job["graph_version"] != CLOUD_GRAPH_VERSION:
+    if job["graph_version"] not in {CLOUD_GRAPH_VERSION, "proposal-review-cloud-v1"}:
         rpc.call("fail")
         return {"status": "failed"}
     try:
-        graph = build_review_graph(LeasedReviewRuns(rpc), CloudReviewCheckpointer(rpc), model_factory(rpc),
-            graph_version=CLOUD_GRAPH_VERSION, interrupt_after=NODES)
+        builder = build_review_graph
+        if job["graph_version"] == "proposal-review-cloud-v1":
+            from .review_graph_v1 import build_review_graph as builder
+        graph = builder(LeasedReviewRuns(rpc), CloudReviewCheckpointer(rpc), model_factory(rpc),
+            graph_version=job["graph_version"], interrupt_after=NODES)
         config = {"configurable": {"thread_id": job["id"]}, "recursion_limit": 15}
         with tracing_context(enabled=False):
             previous = graph.get_state(config)

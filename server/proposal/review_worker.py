@@ -99,7 +99,7 @@ class ReviewWorker:
         if run is None:
             return None
         run_id, project_id = run["id"], run["project_id"]
-        if run["graph_version"] != GRAPH_VERSION:
+        if run["graph_version"] not in {GRAPH_VERSION, "proposal-review-v1"}:
             self.runs.update(run_id, status="needs_review", error="执行版本已变化，请核对后新建检查")
             return self.runs.get(project_id, run_id)
         conn = sqlite3.connect(self.store.db_path, timeout=30, check_same_thread=False)
@@ -107,7 +107,10 @@ class ReviewWorker:
         conn.execute("PRAGMA busy_timeout=30000")
         try:
             saver = SqliteSaver(conn)
-            graph = build_review_graph(self.runs, saver, self.model_call)
+            builder = build_review_graph
+            if run["graph_version"] == "proposal-review-v1":
+                from .review_graph_v1 import build_review_graph as builder
+            graph = builder(self.runs, saver, self.model_call, graph_version=run["graph_version"])
             config = {"configurable": {"thread_id": run_id}, "recursion_limit": 15}
             previous = graph.get_state(config)
             inputs = None if previous.values else {"run_id": run_id}

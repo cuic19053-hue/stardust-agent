@@ -29,6 +29,36 @@ function completedReader() {
     async cancel() {}, releaseLock() {} };
 }
 
+test("a recovered input uses the original turn id and a completed new send gets another id", async () => {
+  const session = new Map();
+  const first = context.makeHarness(session);
+  first.ui.state.project = { id: "project-one" };
+  first.ui.setChatRefresh(async () => {});
+  first.ui.setLoadProject(async () => {});
+  inputFor(first, "恢复同一轮项目分析");
+  let original;
+  first.context.fetch = async (_url, options) => {
+    original = JSON.parse(options.body);
+    throw new TypeError("disconnected");
+  };
+  await first.ui.sendChat(null);
+  assert.ok(original.idempotency_key);
+  const refreshed = context.makeHarness(session);
+  refreshed.ui.state.project = { id: "project-one" };
+  inputFor(refreshed);
+  refreshed.ui.restoreInterruptedChatMessage("project-one");
+  const sent = [];
+  refreshed.context.fetch = async (_url, options) => {
+    sent.push(JSON.parse(options.body));
+    return { ok: true, body: { getReader: completedReader } };
+  };
+  await refreshed.ui.sendChat(null);
+  assert.equal(sent[0].idempotency_key, original.idempotency_key);
+  inputFor(refreshed, "恢复同一轮项目分析");
+  await refreshed.ui.sendChat(null);
+  assert.notEqual(sent[1].idempotency_key, original.idempotency_key);
+});
+
 test("a refresh after a disconnect restores the draft without another request", async () => {
   const session = new Map();
   const first = context.makeHarness(session);

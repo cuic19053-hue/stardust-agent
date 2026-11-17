@@ -359,7 +359,11 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
             asset = {**result["asset"], "preview": str(folder / "figure.png"), "material_job_id": identifier}
             fields["diagrams"] = [d for d in project["diagrams"] if d["id"] != asset["id"]] + [asset]
         fields = prepare_update(project, fields) if fields else {}
-        return queue.apply(raw, fields)
+        applied = queue.apply(raw, fields)
+        if raw["kind"] == "section" and applied.get("applied"):
+            from .review_workflow import after_draft_saved
+            applied["review"] = after_draft_saved(store, project_id, "section_generation")
+        return applied
 
     @router.post("/figures/{figure_id}/confirm-text")
     def confirm_text(project_id: str, figure_id: str, payload: AcknowledgeInput):

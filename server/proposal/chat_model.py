@@ -7,6 +7,25 @@ from .agent import ModelUnavailable
 
 
 def model_events(agent: Any, project_id: str, payload: dict[str, Any], *, stream: bool) -> Iterator[dict[str, Any]]:
+    from .agent_journal import active_journal
+    journal = active_journal.get()
+    if not journal:
+        yield from _model_events(agent, project_id, payload, stream=stream)
+        return
+    idx, operation = journal.begin("model", {"payload": payload, "stream": stream})
+    if operation["cached"]:
+        response = operation["result"]
+        if stream and response["message"].get("content"):
+            yield {"type": "delta", "text": response["message"]["content"]}
+        yield response
+        return
+    for event in _model_events(agent, project_id, payload, stream=stream):
+        if event["type"] == "response":
+            journal.record(idx, event)
+        yield event
+
+
+def _model_events(agent: Any, project_id: str, payload: dict[str, Any], *, stream: bool) -> Iterator[dict[str, Any]]:
     """Preserve transport-owned billing and expose a single terminal response.
 
     A dropped consumer closes the upstream generator immediately; its own

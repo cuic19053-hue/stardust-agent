@@ -9,7 +9,8 @@ from typing import Any, Literal, TypedDict
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ConfigDict, Field
 
-from .retrieval import ProjectRetriever
+from .review_evidence import retrieve_claim_evidence
+from .review_verification import evidence_checks, follow_up_items, verify_model_issue
 from .review_runs import GRAPH_VERSION, PROMPT_VERSION, ReviewRuns
 from .tools import ProposalTools
 
@@ -39,9 +40,11 @@ class ReviewState(TypedDict, total=False):
     run_id: str
     snapshot: dict
     evidence: list[dict]
+    claims: list[dict]
     rule_issues: list[dict]
     model_issues: list[dict]
     issues: list[dict]
+    unverified_hypotheses: list[dict]
     model_status: str
     warnings: list[str]
     metrics: dict
@@ -81,20 +84,8 @@ def build_review_graph(runs: ReviewRuns, checkpointer, model_call=None, *, graph
 
     def retrieve(state):
         snapshot = state["snapshot"]
-        project = snapshot["project"]
-        retriever = ProjectRetriever(SnapshotStore(snapshot), NoEmbedding())
-        evidence = {}
-        # Bounded, deterministic keyword retrieval against captured chunks only.
-        for section in project["outline"][:30]:
-            query = f"{section.get('title', '')} 学校 申报 要求 字数 经费 预算 研究 方法"
-            for hit in retriever.search(project["id"], query, top_k=3)["results"]:
-                evidence[hit["chunk_id"]] = {"id": hit["chunk_id"], "document_id": hit["document_id"],
-                    "source_name": hit["source_name"], "source_ref": hit["source_ref"], "content": hit["text"]}
-                if len(evidence) >= 12:
-                    break
-            if len(evidence) >= 12:
-                break
-        return {"evidence": list(evidence.values())}
+        claims, evidence = retrieve_claim_evidence(snapshot, SnapshotStore(snapshot), NoEmbedding())
+        return {"claims": claims, "evidence": evidence}
 
     def rules(state):
         project = state["snapshot"]["project"]
@@ -116,7 +107,16 @@ def build_review_graph(runs: ReviewRuns, checkpointer, model_call=None, *, graph
         for warning in result["consistency_warnings"]:
             if warning in {f"章节“{title}”仍有待补充内容。" for title in result["placeholder_sections"]}:
                 continue  # Already reported with a concrete section_id above.
+            if warning.startswith("草稿可考虑补充："):
+                requested = warning.split("：", 1)[1].split("。", 1)[0].split("、")
+                remaining = [title for title in requested if title not in result["missing_sections"]]
+                if not remaining:
+                    continue
+                warning = "草稿可考虑补充：" + "、".join(remaining) + "。这是通用内容提示，具体以学校通知和模板为准。"
             add("", warning, "结合草稿及已确认材料核对；通用提示以学校要求为准。")
+            if warning.startswith("预算信息可能不一致"):
+                issues[-1]["section_id"] = next((s["id"] for s in project["outline"] if "预算" in s.get("title", "") or "budget" in s["id"]), "")
+                issues[-1]["check_code"] = "budget_total"
         for name in result["unconfirmed_documents"]:
             add("", f"材料“{name}”尚未确认", "先核对识别文字；未确认文字不会作为模型检查依据。")
         return {"rule_issues": issues}
@@ -127,7 +127,10 @@ def build_review_graph(runs: ReviewRuns, checkpointer, model_call=None, *, graph
             return {"model_issues": [], "model_status": "not_requested"}
         project = state["snapshot"]["project"]
         content = {"sections": project["sections"], "outline": project["outline"],
-                   "school": project["school"], "evidence": state["evidence"]}
+                   "school": project["school"], "facts": project.get("state", {}),
+                   "priority_claims": [{"section_id": c["section_id"], "quote": c["quote"], "type": c["type"]}
+                                       for c in state["claims"][:12]],
+                   "evidence": state["evidence"]}
         if len(json.dumps(content, ensure_ascii=False)) > 26_000:
             return {"model_issues": [], "model_status": "input_limit", "warnings": ["材料超过首版模型检查范围；本报告仅含规则检查。"]}
         if model_call is None:
@@ -149,43 +152,47 @@ def build_review_graph(runs: ReviewRuns, checkpointer, model_call=None, *, graph
 
     def verify(state):
         project = state["snapshot"]["project"]
-        allowed_sections = {item["id"] for item in project["outline"]}
         evidence = {item["id"]: item for item in state["evidence"]}
-        issues = list(state["rule_issues"])
+        issues = [*state["rule_issues"], *evidence_checks(state["snapshot"], state["claims"], state["evidence"])]
         warnings = list(state["warnings"])
+        hypotheses = []
         for issue in state["model_issues"]:
-            section = issue["section_id"]
-            if section not in allowed_sections or issue["draft_quote"] not in project["sections"].get(section, ""):
-                warnings.append("已过滤无法定位到指定草稿的模型意见。")
-                continue
-            citations = []
-            for citation in issue["citations"]:
-                hit = evidence.get(citation["id"])
-                if hit is None or citation["quote"] not in hit["content"]:
-                    warnings.append("已过滤不存在或引文不匹配的模型来源。")
+            verified, notices = verify_model_issue(project, issue, evidence)
+            warnings.extend(notices)
+            if verified:
+                duplicate = next((i for i in issues if i.get("section_id") == verified["section_id"] and i.get("check_code")
+                                  and i.get("check_code") == verified.get("check_code")), None)
+                if duplicate:
+                    existing = {(c["id"], c["quote"]) for c in duplicate["citations"]}
+                    duplicate["citations"] = (duplicate["citations"] + [c for c in verified["citations"]
+                        if (c["id"], c["quote"]) not in existing])[:2]
                     continue
-                citations.append({"id": hit["id"], "source_name": hit["source_name"],
-                                  "source_ref": hit["source_ref"], "quote": citation["quote"]})
-            # Exact-source matching is not entailment or an official eligibility decision.
-            if issue["kind"] == "school_requirement" and not citations:
-                issue = {**issue, "kind": "needs_evidence", "problem": "学校要求待核对：" + issue["problem"]}
-                warnings.append("模型提出的学校要求缺少有效来源，已降为待核对意见。")
-            issues.append({**issue, "citations": citations, "origin": "model",
-                           "verification": "needs_human_review"})
+                # A literal citation/lexical overlap is not an entailment proof.
+                # Keep unproven factual judgments outside discovered problems.
+                if verified["kind"] != "writing_suggestion" or verified["support_status"] == "insufficient":
+                    hypotheses.append(verified)
+                    continue
+                issues.append(verified)
         if not evidence:
             warnings.append("未检索到匹配的已确认材料，学校要求和事实依据仍需核对。")
-        return {"issues": issues, "warnings": list(dict.fromkeys(warnings))}
+        return {"issues": issues, "unverified_hypotheses": hypotheses, "warnings": list(dict.fromkeys(warnings))}
 
     def save(state):
         run = runs.raw(state["run_id"])
         project = state["snapshot"]["project"]
         report = {"run_id": run["id"], "fingerprint": run["fingerprint"],
+                  "parent_id": run.get("parent_id"), "origin": run.get("origin", "manual"),
                   "graph_version": graph_version, "prompt_version": PROMPT_VERSION,
                   "project_revision": project["material_revision"],
                   "section_titles": {item["id"]: item.get("title", item["id"]) for item in project["outline"]},
                   "model": run["model"], "model_status": state["model_status"],
                   "complete": state["model_status"] in {"not_requested", "completed"},
                   "issues": state["issues"], "warnings": state["warnings"], "metrics": state["metrics"],
+                  "follow_up": follow_up_items(state["issues"]),
+                  "unverified_hypotheses": state["unverified_hypotheses"],
+                  "claims": state["claims"],
+                  "workflow_stage": ("awaiting_input" if follow_up_items(state["issues"]) else
+                                     "awaiting_verification" if state["unverified_hypotheses"] else "reviewed"),
                   "notice": "本报告检查指定草稿快照。规则结果属于基础检查；模型意见及来源适用性待人工核对。"}
         runs.update(run["id"], report=report)
         return {"report": report}

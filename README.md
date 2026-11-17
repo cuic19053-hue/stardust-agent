@@ -59,8 +59,9 @@
 | 模型怎样选工具，何时结束？ | 同步答复与 SSE 流式答复共用对话循环。一轮对话最多迭代 6 次，工具调用预算为 8 次。服务端执行前再次检查工具授权，并绑定当前项目。 | [运行时](./server/proposal/chat_runtime.py) · [工具路由](./server/proposal/chat_tools.py) |
 | 回答里的材料从哪里来？ | 项目资料经用户确认后分段索引。RAG 检索结合关键词和可用的同版本向量，返回来源文件和段落位置。官方通知另按学校、年度和适用范围查找。 | [项目检索](./server/proposal/retrieval.py) · [知识来源与覆盖](./docs/rag-status.md) |
 | 聊天怎样变成 Word？ | 学生从对话中预览并选取章节草稿，编辑后保存。导出使用项目里已保存的正文，提交前仍可核对学校模板和引用。 | [对话草稿](./server/proposal/chat_drafts.py) · [Word 导出](./server/proposal/exporter.py) |
-| 长任务中途断开怎么办？ | 启用材料 worker 后，章节生成和导出等任务按项目入队。提交使用幂等键，写回前检查项目版本，付费任务租约中断时保留记录供核对。普通聊天仍依赖当前请求，断线续传与跨设备去重尚未完整接通。 | [任务队列](./server/proposal/material_jobs.py) · [执行进程](./server/material_worker.py) |
-| 大创草稿预审如何执行和计费？ | LangGraph 编排快照、证据召回、规则、模型检查和引用定位核验。云端用 Supabase 保存队列与检查点，Vercel 每次执行一个节点；实际模型调用绑定积分预留及用量结算，结果不明时保留待核对。 | [预审图](./server/proposal/review_graph.py) · [云端设计与恢复机制](./docs/design/LANGGRAPH_REVIEW_CLOUD.md) |
+| 长任务中途断开怎么办？ | 材料任务按项目入队并检查写回版本。网页聊天持久化已完成的模型和工具步骤；用原请求标识恢复时复用已知结果，未知调用不会自动重发。浏览器保留请求标识，换设备需重新提供该标识和模型配置。 | [对话执行记录](./server/proposal/agent_journal.py) · [任务队列](./server/proposal/material_jobs.py) |
+| 大创草稿预审如何执行和计费？ | LangGraph 保存草稿快照，围绕具体断言召回材料，核算预算并区分计划、成果和学校规定。尚无可验证支持的 AI 判断单列为待人工判断的线索。云端保存队列和检查点，实际模型调用绑定积分预留及用量结算。 | [预审图](./server/proposal/review_graph.py) · [云端设计与恢复机制](./docs/design/LANGGRAPH_REVIEW_CLOUD.md) |
+| 补资料后如何继续？ | 确认保存聊天草稿或生成章节后自动提交免费规则预审。报告列出待补项，支持跳转修改或确认资料，再从新快照接续检查；旧报告保留，AI 检查仍须主动勾选。 | [流程衔接](./server/proposal/review_workflow.py) · [修复与验收记录](./docs/reports/AGENT_REVIEW_LOOP_2026-11-18.md) |
 
 ## 预审效果怎样验证？
 

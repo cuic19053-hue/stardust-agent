@@ -53,7 +53,8 @@ def test_cloud_capabilities_and_submission_never_accept_browser_model_or_credent
     body = {"fingerprint": FINGERPRINT, "idempotency_key": "click", "mode": "model"}
     result = client.post("/api/projects/p/reviews", json=body)
     assert result.status_code == 202
-    assert calls[-1]["p_args"] == {"project_id": "p", "key": "click", "fingerprint": FINGERPRINT, "mode": "model"}
+    assert calls[-1]["p_args"] == {"project_id": "p", "key": "click", "fingerprint": FINGERPRINT, "mode": "model",
+                                  "parent_id": None, "origin": "manual", "graph_version": "proposal-review-cloud-v2"}
     assert calls[-1]["p_secret"] == "a" * 64
     assert client.post("/api/projects/p/reviews", json={**body, "model": "untrusted"}).status_code == 422
     assert client.post("/api/projects/other/reviews", json=body).status_code == 404
