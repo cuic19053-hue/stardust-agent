@@ -12,7 +12,7 @@ import pytest
 pytest.importorskip("langgraph.checkpoint.sqlite")
 
 from server.proposal.review_runs import ReviewConflict, ReviewRuns
-from server.proposal.review_worker import ReviewWorker
+from server.proposal.review_worker import LocalReviewModel, ReviewWorker
 from server.proposal.storage import Store
 
 
@@ -208,6 +208,20 @@ def test_invalid_model_json_preserves_rules_and_marks_semantic_incomplete(projec
     assert result["report"]["complete"] is False
     assert result["report"]["model_status"] == "invalid_response"
     assert result["report"]["issues"]
+
+
+def test_context_overflow_skips_inference_without_silently_truncating_material(project_store):
+    store, project = project_store
+    store.update_project(project["id"], sections={"method": "合成研究材料" * 1100})
+    submit(store, project, "model")
+    # A call would fail at this unavailable loopback port; preflight must stop it.
+    with ReviewWorker(store, model_call=LocalReviewModel("http://127.0.0.1:1")) as worker:
+        result = worker.run_once()
+    assert result["status"] == "completed"
+    assert result["report"]["model_status"] == "input_limit"
+    assert result["report"]["complete"] is False
+    with store.connect() as db:
+        assert db.execute("SELECT count(*) FROM review_model_calls").fetchone()[0] == 0
 
 
 def test_separate_process_exit_and_new_cli_worker_resume_without_repeating_steps(project_store):

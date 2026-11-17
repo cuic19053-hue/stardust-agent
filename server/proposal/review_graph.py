@@ -131,7 +131,11 @@ def build_review_graph(runs: ReviewRuns, checkpointer, model_call=None):
             return {"model_issues": [], "model_status": "input_limit", "warnings": ["材料超过首版模型检查范围；本报告仅含规则检查。"]}
         if model_call is None:
             raise ValueError("本地模型检查服务未配置")
-        response = runs.model_result(state["run_id"], lambda: model_call(run, content, ModelReview.model_json_schema()))
+        schema = ModelReview.model_json_schema()
+        accepts_input = getattr(model_call, "accepts_input", None)
+        if callable(accepts_input) and not accepts_input(content, schema):
+            return {"model_issues": [], "model_status": "input_limit", "warnings": ["材料超过本地模型上下文预算；本报告仅含规则检查。"]}
+        response = runs.model_result(state["run_id"], lambda: model_call(run, content, schema))
         try:
             reviewed = ModelReview.model_validate_json(response["content"])
         except (ValueError, TypeError, KeyError):

@@ -29,6 +29,9 @@ problem 和 suggestion 各不超过 80 个汉字；逐字引用只截取必要�
 
 
 class LocalReviewModel:
+    context_size = 16384
+    output_budget = 1400
+
     def __init__(self, base_url: str | None = None):
         self.base_url = (base_url or os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")).rstrip("/")
         parsed = urlsplit(self.base_url)
@@ -36,15 +39,28 @@ class LocalReviewModel:
                 or parsed.path or parsed.username or parsed.password or parsed.query or parsed.fragment):
             raise ValueError("本地预审模型必须使用本机回环地址")
 
+    @staticmethod
+    def messages(content):
+        return [{"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": json.dumps(content, ensure_ascii=False)}]
+
+    def accepts_input(self, content, schema):
+        # UTF-8 bytes conservatively upper-bound byte-tokenizer input, including
+        # schema text if a provider inserts it. Leave room for chat wrappers.
+        input_bytes = sum(len(json.dumps(value, ensure_ascii=False).encode())
+                          for value in (self.messages(content), schema))
+        return input_bytes + self.output_budget + 1024 <= self.context_size
+
     def __call__(self, run, content, schema):
+        if not self.accepts_input(content, schema):
+            raise ValueError("输入超过本地模型上下文预算")
         started = time.monotonic()
         # Ignore proxy variables; never follow even a loopback server's redirect.
         with httpx.Client(timeout=120, follow_redirects=False, trust_env=False) as client:
             response = client.post(self.base_url + "/api/chat", json={
                 "model": run["model"], "stream": False, "format": schema,
-                "messages": [{"role": "system", "content": SYSTEM_PROMPT},
-                             {"role": "user", "content": json.dumps(content, ensure_ascii=False)}],
-                "options": {"temperature": 0, "num_ctx": 16384, "num_predict": 1400},
+                "messages": self.messages(content),
+                "options": {"temperature": 0, "num_ctx": self.context_size, "num_predict": self.output_budget},
             })
             if response.status_code != 200 or len(response.content) > 100_000:
                 raise ReviewNeedsReview("模型响应未确认，需核对后重新检查")
