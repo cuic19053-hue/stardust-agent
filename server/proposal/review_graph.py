@@ -70,10 +70,11 @@ class NoEmbedding:
         return ""
 
 
-def build_review_graph(runs: ReviewRuns, checkpointer, model_call=None):
+def build_review_graph(runs: ReviewRuns, checkpointer, model_call=None, *, graph_version=GRAPH_VERSION,
+                       interrupt_after=None):
     def load_snapshot(state):
         run = runs.raw(state["run_id"])
-        if run["graph_version"] != GRAPH_VERSION:
+        if run["graph_version"] != graph_version:
             raise ValueError("预审执行版本不匹配")
         return {"snapshot": json.loads(run["snapshot"]), "warnings": [], "metrics": {},
                 "mode": run["mode"], "model_status": "not_requested", "model_issues": []}
@@ -136,6 +137,8 @@ def build_review_graph(runs: ReviewRuns, checkpointer, model_call=None):
         if callable(accepts_input) and not accepts_input(content, schema):
             return {"model_issues": [], "model_status": "input_limit", "warnings": ["材料超过本地模型上下文预算；本报告仅含规则检查。"]}
         response = runs.model_result(state["run_id"], lambda: model_call(run, content, schema))
+        if response.get("skip") == "insufficient_credits":
+            return {"model_issues": [], "model_status": "insufficient_credits", "warnings": ["积分不足，模型未调用；本报告仅含规则检查。"]}
         try:
             reviewed = ModelReview.model_validate_json(response["content"])
         except (ValueError, TypeError, KeyError):
@@ -177,7 +180,7 @@ def build_review_graph(runs: ReviewRuns, checkpointer, model_call=None):
         run = runs.raw(state["run_id"])
         project = state["snapshot"]["project"]
         report = {"run_id": run["id"], "fingerprint": run["fingerprint"],
-                  "graph_version": GRAPH_VERSION, "prompt_version": PROMPT_VERSION,
+                  "graph_version": graph_version, "prompt_version": PROMPT_VERSION,
                   "project_revision": project["material_revision"],
                   "section_titles": {item["id"]: item.get("title", item["id"]) for item in project["outline"]},
                   "model": run["model"], "model_status": state["model_status"],
@@ -209,4 +212,4 @@ def build_review_graph(runs: ReviewRuns, checkpointer, model_call=None):
     graph.add_edge("semantic", "verify")
     graph.add_edge("verify", "save_report")
     graph.add_edge(steps[-1][0], END)
-    return graph.compile(checkpointer=checkpointer)
+    return graph.compile(checkpointer=checkpointer, interrupt_after=interrupt_after)

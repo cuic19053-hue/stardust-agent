@@ -361,3 +361,16 @@ def test_byok_image_call_is_limited_to_one_per_confirmed_figure_job(sql):
     assert result["ok"]
     sql("set role anon; select public.material_worker_authorize_byok("
         f"'worker-test-secret','{JOB}','{job['lease']}','{'3' * 32}','image');", ok=False)
+
+
+# Keep the cloud review policy cases in the existing PostgreSQL CI entry point.
+# They share this module's disposable, network-isolated database fixture.
+from cloud_review_postgres_cases import (  # noqa: E402,F401
+    cloud_db,
+    test_authority_snapshot_submission_and_signed_notification as test_review_authority_and_dispatch,
+    test_cloud_graph_checkpoints_resume_and_project_delete_cascades as test_review_cloud_checkpoints_and_deletion,
+    test_real_credit_ledger_is_reserved_and_settled_once as test_review_actual_ledger_once,
+    test_unknown_inference_and_expired_lease_never_replay_or_refund as test_review_unknown_inference,
+    test_insufficient_credits_never_creates_paid_task as test_review_credit_preflight,
+    test_commit_then_timeout_reuses_response_and_never_rebills as test_review_cached_paid_response,
+)

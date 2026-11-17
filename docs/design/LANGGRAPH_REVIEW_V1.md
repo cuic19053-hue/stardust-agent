@@ -1,6 +1,6 @@
 # LangGraph 草稿预审第一版
 
-这是可在 macOS / Linux 运行的本地开发功能，默认关闭。仅支持大创创新训练项目；没有部署为云端生产任务，也没有接入生产计费。现有聊天、模拟评审与 Word 导出继续使用原来的入口。
+本文件说明可在 macOS / Linux 运行的本地预审，默认关闭，仅支持大创创新训练项目。另有 [云端队列与计费实现](LANGGRAPH_REVIEW_CLOUD.md)。现有聊天、模拟评审与 Word 导出继续使用原来的入口。
 
 ## 快速运行
 
@@ -85,6 +85,6 @@ POST 示例：
 
 运行 `python -m pytest tests/test_review_graph.py tests/test_review_api.py tests/test_review_transport.py -q` 和 `node --test tests/js/draft_review.test.js`。检查覆盖进程直接退出后恢复、模型结果不明时不重发、已记录响应复用、并发 worker 排斥、旧版草稿绑定、项目隔离、删除级联、非法引文过滤及页面请求去重。这些是工程行为验证，不是模型效果准确率。
 
-云端阶段需单独实现受账号和项目约束的持久化任务队列、数据库检查点、独立云端 worker、租约、授权读取及现有计费代理，再做迁移和真实故障验收。不能把这里的 SQLite 文件放进 Vercel `/tmp` 后声称云端可恢复。当前入口在 Supabase 云模式和 Vercel 环境中始终关闭。
+本地 SQLite 入口在 Supabase 云模式和 Vercel 环境中始终关闭。云端实现使用独立的 Supabase 持久队列、数据库检查点、签名调度和有界 serverless worker 步骤，见 [云端说明](LANGGRAPH_REVIEW_CLOUD.md)。
 
 后续效果评测应使用固定、授权的案例，分别记录检索命中、意见误报/漏检、引文支持程度、任务完成率、耗时与费用。人工补充材料的 `interrupt()` / `Command(resume=...)` 工作流及多 Agent 协作尚未实现。

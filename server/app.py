@@ -308,7 +308,7 @@ local_chat_service = LocalChatAPI(
 )
 register_local_chat_api(app, local_chat_service)
 from proposal.review_api import register_review_api
-register_review_api(app, lambda: store, lambda: CLOUD_MODE)
+register_review_api(app, lambda: store, lambda: CLOUD_MODE, lambda: _platform_bundle_ready(require_ledger=False))
 
 @app.exception_handler(RequestValidationError)
 async def validation_error(request: Request, exc: RequestValidationError):
@@ -370,6 +370,7 @@ async def _require_supabase_session(request: Request, call_next):
             "/api/admin/provider-usage",
             "/api/admin/reconcile-usage",
             "/api/admin/configure-reconcile-scheduler",
+            "/api/admin/configure-review-scheduler", "/api/reviews/internal/tick",
             "/api/auth/login", "/api/auth/signup",
             "/api/ping",
         }

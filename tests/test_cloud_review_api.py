@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+import hashlib
+import hmac
+import time
+import uuid
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from server.proposal import cloud_review
+from server.proposal.review_api import register_review_api
+
+SECRET = "b" * 64
+FINGERPRINT = "c" * 64
+
+
+@pytest.fixture
+def cloud_client(monkeypatch):
+    monkeypatch.setenv("CLOUD_REVIEW_ENABLED", "true")
+    monkeypatch.setenv("WORKBENCH_BACKEND_SECRET", "a" * 64)
+    monkeypatch.setenv("REVIEW_WORKER_SECRET", SECRET)
+    monkeypatch.setenv("REVIEW_CONFIGURE_SECRET", "d" * 64)
+    calls = []
+    class Store:
+        project_url = "https://synthetic.supabase.co"
+        publishable_key = "synthetic"
+        result = {"id": "a" * 32, "status": "pending", "fingerprint": FINGERPRINT}
+        def get_project(self, project_id):
+            return {"id": project_id} if project_id == "p" else None
+        def _rest(self, path, method, payload):
+            calls.append(payload)
+            action = payload["p_action"]
+            if action == "list":
+                return {"items": [], "current_fingerprint": FINGERPRINT}
+            return self.result
+    store = Store()
+    monkeypatch.setattr(cloud_review.ReviewRPC, "call", lambda _self, action, **args: {"enabled": True})
+    app = FastAPI()
+    register_review_api(app, lambda: store, lambda: True, lambda: True)
+    with TestClient(app) as client:
+        yield client, store, calls
+
+
+def test_cloud_capabilities_and_submission_never_accept_browser_model_or_credentials(cloud_client):
+    client, _store, calls = cloud_client
+    capabilities = client.get("/api/reviews/capabilities").json()
+    assert capabilities["enabled"] and capabilities["execution"] == "cloud_queue"
+    assert "2 积分" in capabilities["ai_label"]
+    body = {"fingerprint": FINGERPRINT, "idempotency_key": "click", "mode": "model"}
+    result = client.post("/api/projects/p/reviews", json=body)
+    assert result.status_code == 202
+    assert calls[-1]["p_args"] == {"project_id": "p", "key": "click", "fingerprint": FINGERPRINT, "mode": "model"}
+    assert calls[-1]["p_secret"] == "a" * 64
+    assert client.post("/api/projects/p/reviews", json={**body, "model": "untrusted"}).status_code == 422
+    assert client.post("/api/projects/other/reviews", json=body).status_code == 404
+
+
+def test_cloud_credit_failure_is_explicit_402(cloud_client):
+    client, store, _calls = cloud_client
+    store.result = {"insufficient_credits": True}
+    response = client.post("/api/projects/p/reviews", json={"fingerprint": FINGERPRINT, "idempotency_key": "click", "mode": "model"})
+    assert response.status_code == 402
+    assert "2 积分" in response.json()["detail"]
+
+
+def test_forged_scheduler_tick_never_claims_work(cloud_client, monkeypatch):
+    client, _store, _calls = cloud_client
+    claimed = []
+    monkeypatch.setattr(cloud_review, "run_delivery", lambda *_: claimed.append(1))
+    result = client.post("/api/reviews/internal/tick", json={"delivery_id": str(uuid.uuid4())})
+    assert result.status_code == 403 and claimed == []
+
+
+def test_valid_signed_delivery_can_run_without_user_jwt(cloud_client, monkeypatch):
+    client, _store, _calls = cloud_client
+    claimed = []
+    delivery, stamp = str(uuid.uuid4()), str(int(time.time()))
+    signature = hmac.new(SECRET.encode(), f"stardust-review:{delivery}:{stamp}".encode(), hashlib.sha256).hexdigest()
+    monkeypatch.setattr(cloud_review, "run_delivery", lambda _store, token: claimed.append(token) or {"status": "pending"})
+    result = client.post("/api/reviews/internal/tick", json={"delivery_id": delivery},
+                         headers={"x-review-timestamp": stamp, "x-review-signature": signature})
+    assert result.status_code == 200 and claimed == [delivery]
+    assert not cloud_review.valid_delivery(delivery, str(int(stamp) - 91), signature, SECRET, now=int(stamp))
+    assert not cloud_review.valid_delivery(str(uuid.uuid4()), stamp, signature, SECRET)
+
+
+def test_scheduler_configuration_requires_its_narrow_operator_capability(cloud_client, monkeypatch):
+    client, _store, _calls = cloud_client
+    configured = []
+    monkeypatch.setattr(cloud_review, "configure_scheduler", lambda _store, enabled: configured.append(enabled) or {"enabled": enabled})
+    path = "/api/admin/configure-review-scheduler"
+    assert client.post(path, json={"enabled": True}).status_code == 403
+    assert client.post(path, json={"enabled": True}, headers={"x-admin-token": "existing-admin"}).status_code == 403
+    assert configured == []
+    response = client.post(path, json={"enabled": True}, headers={"x-review-ops-token": "d" * 64})
+    assert response.status_code == 200 and configured == [True]
+
+
+def test_unavailable_database_keeps_the_cloud_entry_hidden(cloud_client, monkeypatch):
+    client, _store, _calls = cloud_client
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("synthetic transport failure")
+    monkeypatch.setattr(cloud_review.ReviewRPC, "call", fail)
+    assert client.get("/api/reviews/capabilities").json()["enabled"] is False

@@ -2,6 +2,7 @@
 (() => {
   "use strict";
   let host = null, generation = 0, timer = null, submitting = false;
+  let mountedProject = null;
   const terminal = new Set(["completed", "failed", "needs_review"]);
   const labels = { pending: "等待检查服务", running: "检查中", completed: "检查完成",
     failed: "检查未完成", needs_review: "调用结果待核对" };
@@ -26,6 +27,14 @@
       const title = `${labels[run.status] || "状态待确认"} · 草稿 ${run.fingerprint.slice(0, 8)}${stale ? "（历史版本）" : ""}`;
       details.append(text("summary", title));
       if (run.error) details.append(text("p", run.error));
+      if (run.billing) {
+        const billing = run.billing;
+        const points = value => (Number(value || 0) / 100000).toFixed(5).replace(/\.?0+$/, "");
+        if (billing.status === "settled") details.append(text("p", `本次 AI 预审费用：${points(billing.actual_micro_cny)} 积分（已结算）。`));
+        if (billing.status === "reserved") details.append(text("p", `本次已预留 ${points(billing.reserved_micro_cny)} 积分，用量确认后结算；不会自动重复调用。`));
+        if (billing.status === "refunded") details.append(text("p", "本次模型调用未完成，预留积分已退回。"));
+        if (billing.status === "needs_review") details.append(text("p", "本次用量账单待核对，请查看积分记录。"));
+      }
       const report = run.report;
       if (report) {
         details.append(text("p", report.notice));
@@ -117,6 +126,8 @@
     host = config;
     const revision = ++generation;
     const projectId = host.state.project?.id;
+    if (mountedProject !== projectId) document.querySelector("#draftReviewModel").checked = false;
+    mountedProject = projectId;
     clearTimeout(timer);
     const panel = document.querySelector("#draftReviewPanel");
     panel.classList.add("hidden");
@@ -125,6 +136,10 @@
     try {
       const capabilities = await host.api("/api/reviews/capabilities");
       if (!current(projectId, revision) || !capabilities.enabled) return;
+      const model = document.querySelector("#draftReviewModel");
+      model.disabled = capabilities.ai_available === false;
+      if (model.disabled) model.checked = false;
+      document.querySelector("#draftReviewModelLabel").textContent = capabilities.ai_label || "同时检查论证与事实依据（使用本地模型）";
       panel.classList.remove("hidden");
       document.querySelector("#draftReviewBtn").onclick = () => submit(projectId, revision);
       await refresh(projectId, revision);

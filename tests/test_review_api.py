@@ -53,6 +53,15 @@ def test_cloud_mode_cannot_enable_review(client_store, monkeypatch):
     assert route.endpoint()["enabled"] is False
 
 
+def test_cloud_project_review_routes_still_require_login(client_store, monkeypatch):
+    client, store = client_store
+    project = ready_project(store)
+    monkeypatch.setattr(app, "CLOUD_MODE", True)
+    assert client.get(f"/api/projects/{project['id']}/reviews").status_code == 401
+    assert client.post(f"/api/projects/{project['id']}/reviews", json={
+        "fingerprint": "a" * 64, "idempotency_key": "click", "mode": "model"}).status_code == 401
+
+
 def test_http_submit_poll_reopen_and_duplicate_request(client_store):
     client, store = client_store
     project = ready_project(store)

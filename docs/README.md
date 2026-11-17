@@ -7,6 +7,7 @@
 ### 📁 design/ (核心架构与设计规范)
 - [AGENT_REFACTOR.md](./design/AGENT_REFACTOR.md)：学生申报 Agent 当前实现、已知缺口与后续重构路线
 - [LANGGRAPH_REVIEW_V1.md](./design/LANGGRAPH_REVIEW_V1.md)：本地 LangGraph 草稿预审的运行方法、版本绑定、故障恢复与云端接入边界
+- [LANGGRAPH_REVIEW_CLOUD.md](./design/LANGGRAPH_REVIEW_CLOUD.md)：云端预审的持久队列、签名调度、检查点、现有账本结算与上线步骤
 - [OPEN_AGENT_RUNTIME_RESEARCH.md](./design/OPEN_AGENT_RUNTIME_RESEARCH.md)：Kode、Codex 及其他开源 Agent 运行时的源码调研与接入约束
 - [ARCHITECTURE.md](./design/ARCHITECTURE.md)：系统总体架构设计（分层架构、目录规范、数据流）
 - [AGENT_DESIGN.md](./design/AGENT_DESIGN.md)：智能体工作流与交互状态机设计

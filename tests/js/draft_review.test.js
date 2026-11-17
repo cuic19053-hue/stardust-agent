@@ -101,3 +101,18 @@ test("explicitly checking again allocates a new idempotency key", async () => {
   assert.equal(posts.length, 2);
   assert.notEqual(JSON.parse(posts[0].options.body).idempotency_key, JSON.parse(posts[1].options.body).idempotency_key);
 });
+
+test("cloud AI consent displays its reservation price before submission", async () => {
+  const h = harness({ capabilities: () => ({ enabled: true, execution: "cloud_queue", ai_available: true,
+    ai_label: "平台 AI 预审（预留 2 积分，按实际用量结算）" }) });
+  await h.mount();
+  assert.match(h.elements.get("#draftReviewModelLabel").textContent, /预留 2 积分/);
+  assert.equal(h.elements.get("#draftReviewModel").checked, false);
+});
+
+test("review billing displays the actual ledger amount with micro-CNY precision", async () => {
+  const h = harness({ items: [{ id: "b".repeat(32), fingerprint: "c".repeat(64), status: "completed",
+    billing: { status: "settled", reserved_micro_cny: 200000, actual_micro_cny: 12345 } }] });
+  await h.mount();
+  assert.match(flatten(h.elements.get("#draftReviewResults")), /0\.12345 积分（已结算）/);
+});
