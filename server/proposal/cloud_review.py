@@ -6,6 +6,7 @@ from copy import deepcopy
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import time
@@ -24,6 +25,7 @@ from .workbench_metering import WorkbenchMeter
 
 CLOUD_GRAPH_VERSION = "proposal-review-cloud-v1"
 NODES = ["load_snapshot", "retrieve", "rules", "semantic", "verify", "save_report"]
+logger = logging.getLogger(__name__)
 
 
 def cloud_review_enabled():
@@ -221,12 +223,13 @@ class CloudReviewModel:
         candidate = OllamaAgent(None, None, base_url=os.environ["WOPALLY_MODEL_BASE_URL"],
             model=run["model"], provider="openai_compatible", api_key=os.environ["WOPALLY_WORKBENCH_API_KEY"],
             meter=meter, platform_transport=True)
-        candidate._execution_deadline = time.monotonic() + 35
+        # Leave the rest of the 60s function for ledger and checkpoint writes.
+        candidate._execution_deadline = time.monotonic() + 45
         try:
             response = candidate._post("/api/chat", {"model": run["model"], "format": "json",
                 "messages": [{"role": "system", "content": SYSTEM_PROMPT + "\n输出结构：" + json.dumps(schema, ensure_ascii=False)},
                              {"role": "user", "content": json.dumps(content, ensure_ascii=False)}],
-                "options": {"temperature": 0, "num_predict": 1400}}, timeout=30)
+                "options": {"temperature": 0, "num_predict": 1400}}, timeout=42)
         except InsufficientCreditsError:
             return {"skip": "insufficient_credits"}
         usage = response.get("usage", {})
@@ -267,7 +270,13 @@ def run_delivery(store, delivery_id, *, rpc_factory=ReviewRPC, model_factory=Clo
             result = graph.get_state(config)
         rpc.call("yield" if result.next else "finish")
         return {"status": "pending" if result.next else "completed"}
-    except Exception:
+    except Exception as exc:
+        cause = exc.__cause__
+        # Never log exception messages/tracebacks: upstream errors can contain
+        # prompts, response bodies or credential-bearing URLs.
+        logger.warning("Cloud review step failed; run_id=%s error=%s cause=%s http_status=%s",
+                       job["id"], type(exc).__name__, type(cause).__name__,
+                       getattr(cause, "code", None) if isinstance(cause, urllib.error.HTTPError) else None)
         # Failure can follow a committed response/checkpoint. Never invoke again
         # here; expiration and the persisted inference marker decide recovery.
         try:
