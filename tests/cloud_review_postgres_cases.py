@@ -56,7 +56,8 @@ def cloud_db(sql, monkeypatch):
         insert into net.requests(url,body,headers) values($1,$2,$4) returning id $$;
     """)
     for filename in ("20261011173308_workbench_credit_ledger.sql", "20261012120000_workbench_backend_capability.sql",
-                     "20261113090000_workbench_model_interactions.sql", "20261117135553_langgraph_cloud_review.sql"):
+                     "20261113090000_workbench_model_interactions.sql", "20261117135553_langgraph_cloud_review.sql",
+                     "20261117145842_review_scheduler_safe_update.sql"):
         sql((ROOT / "supabase/migrations" / filename).read_text())
     sql(f"""update workbench_backend_capability set secret_hash=sha256(convert_to('{BACKEND}','UTF8'));
       select public.workbench_grant_payment_credits('{UID}','isolated-review-fixture',1000000);
@@ -205,6 +206,29 @@ def test_insufficient_credits_never_creates_paid_task(cloud_db):
     assert db("select count(*) from review_private.runs") == "0"
     assert submit(db)["mode"] == "rules"
     assert db("select count(*) from workbench_usage_events") == "0"
+
+
+def test_scheduler_pause_invalidates_leases_and_resumes_only_safe_work(cloud_db):
+    db = cloud_db
+    safe = submit(db)
+    safe_job = worker(db, "claim", delivery_id=delivery(db))
+    unknown = submit(db, mode="model", key="unknown")
+    unknown_job = worker(db, "claim", delivery_id=delivery(db))
+    worker(db, "model_begin", unknown_job)
+    result = json.loads(db(f"select public.proposal_review_configure('{BACKEND}','{WORKER}',false)"))
+    assert result["enabled"] is False
+    assert worker(db, "health")["enabled"] is False
+    assert user(db, "get", {"id": safe["id"]})["status"] == "pending"
+    assert user(db, "get", {"id": unknown["id"]})["status"] == "needs_review"
+    assert submit(db, key="paused")["unavailable"] is True
+    db(f"select public.proposal_review_configure('{BACKEND}','{WORKER}',true)")
+    worker(db, "context", safe_job, ok=False)
+    worker(db, "context", unknown_job, ok=False)
+    assert db("select count(*) from cron.job where jobname='stardust-proposal-review'") == "1"
+    assert db("select count(*) from vault.secrets where name='stardust_review_worker'") == "1"
+    db("select review_private.dispatch()")
+    assert advance(db, lambda _rpc: lambda *_: pytest.fail("safe rules task needs no model"))["status"] == "completed"
+    assert user(db, "get", {"id": unknown["id"]})["status"] == "needs_review"
 
 
 def test_commit_then_timeout_reuses_response_and_never_rebills(cloud_db):
