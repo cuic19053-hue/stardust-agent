@@ -34,6 +34,7 @@ SOURCES = (
     "server/evals/review_benchmark.py", "server/evals/review_cases.json",
     "server/evals/review_prompt_variants.py", "server/evals/review_holdout_cases.json",
     "server/proposal/review_graph.py", "server/proposal/review_prompt.py",
+    "server/proposal/review_evidence.py", "server/proposal/review_verification.py",
     "server/proposal/review_runs.py", "server/proposal/review_worker.py",
     "server/proposal/retrieval.py", "server/proposal/tools.py",
     "server/proposal/completeness.py", "server/proposal/storage.py",

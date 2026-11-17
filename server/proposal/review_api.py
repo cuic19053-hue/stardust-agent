@@ -18,6 +18,7 @@ class ReviewInput(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=160)
     fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
     mode: Literal["rules", "model"] = "rules"
+    parent_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
 
 
 def register_review_api(app, get_store, is_cloud, platform_ready=lambda: False):
@@ -86,7 +87,8 @@ def register_review_api(app, get_store, is_cloud, platform_ready=lambda: False):
         if (payload.mode == "model" and not model) or len(model) > 160 or any(char.isspace() for char in model):
             raise HTTPException(503, "本地预审模型配置不正确")
         try:
-            return runs.submit(project_id, payload.idempotency_key, payload.fingerprint, payload.mode, model)
+            return runs.submit(project_id, payload.idempotency_key, payload.fingerprint, payload.mode, model,
+                               parent_id=payload.parent_id)
         except ReviewConflict as exc:
             raise HTTPException(409, str(exc)) from None
         except InsufficientCreditsError as exc:

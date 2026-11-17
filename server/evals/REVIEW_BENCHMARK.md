@@ -60,6 +60,8 @@ python server/evals/review_compare.py \
 
 [首轮候选结果与失败分析](../../docs/reports/REVIEW_CALIBRATION_2026-11-18.md)保留了全部记录；无需调用模型即可重新计算比较结果。
 
+[断言检索、校验与流程接续修复](../../docs/reports/AGENT_REVIEW_LOOP_2026-11-18.md)另保留十份真实模型输出及严格输入匹配的图回放。它用于验证处理流程，回放不产生新推理；未建立支持关系的模型判断单列，不计成已确认问题或正确结果。数据为已知回归集，不能当作独立留出评测。
+
 ```bash
 python server/evals/review_benchmark.py \
   --output outputs/evals/review-pilot --repeats 1 --resume

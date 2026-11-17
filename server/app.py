@@ -137,6 +137,7 @@ class ChatInput(BaseModel):
     message: str = Field(min_length=1, max_length=12000)
     llm_config: LLMConfigInput | None = None
     stream: bool = False
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=160)
 
 
 class BillingReceiptInput(BaseModel):
@@ -2233,6 +2234,17 @@ def chat(project_id: str, payload: ChatInput, request: Request) -> dict[str, Any
         result = agent.chat(project_id, text)
         result.update(setup_updated=bool(fields), free_chat=False)
         return result
+    if payload.idempotency_key:
+        from proposal.agent_chat_api import durable_chat
+        return durable_chat(store, project_id, payload, request,
+                            lambda: _chat_model_response(project_id, payload, request, fields))
+    return _chat_model_response(project_id, payload, request, fields)
+
+
+def _chat_model_response(project_id, payload, request, fields):
+    from proposal.agent_chat_api import trial_operation, refund_legacy_trial
+    from proposal.agent_journal import active_journal
+    text = payload.message.strip()
     cfg = payload.llm_config
     user_id = _current_user_id(request)
     is_free = False
@@ -2241,10 +2253,10 @@ def chat(project_id: str, payload: ChatInput, request: Request) -> dict[str, Any
 
     if cfg is not None and cfg.provider == "preset":
         wallet = store.get_workbench_credit_balance(user_id)
-        if wallet.get("trial_eligible") and wallet["free_chat_count"] > 0:
+        if active_journal.get() or (wallet.get("trial_eligible") and wallet["free_chat_count"] > 0):
             # The atomic store operation rechecks eligibility in case recharge
             # races this balance read.
-            remaining_free = store.consume_free_chat(user_id)
+            remaining_free = trial_operation(store, user_id)
             if remaining_free >= 0:
                 is_free = True
 
@@ -2259,7 +2271,7 @@ def chat(project_id: str, payload: ChatInput, request: Request) -> dict[str, Any
         if is_free:
             if not _platform_bundle_ready():
                 # No model request was started, so restore the reserved trial.
-                store.refund_free_chat(user_id)
+                refund_legacy_trial(store, user_id)
                 raise HTTPException(status_code=503, detail="工作台服务账户与实际用量结算尚未接通")
             stream_candidate = OllamaAgent(
                 store, tools,
@@ -2292,19 +2304,19 @@ def chat(project_id: str, payload: ChatInput, request: Request) -> dict[str, Any
             except InsufficientCreditsError:
                 observability.emit("model.stream", stage="invoke", status="failed", level="error", code="MODEL_EXECUTION_FAILED")
                 if is_free:
-                    store.refund_free_chat(user_id)
+                    refund_legacy_trial(store, user_id)
                 err = {"type": "error", "error": "积分不足，请充值后继续，或使用自带 API Key。"}
                 yield f"event: error\ndata: {json.dumps(err, ensure_ascii=False)}\n\n"
             except ModelUnavailable as exc:
                 observability.emit("model.stream", stage="invoke", status="failed", level="error", code="MODEL_EXECUTION_FAILED")
                 if is_free:
-                    store.refund_free_chat(user_id)
+                    refund_legacy_trial(store, user_id)
                 err = {"type": "error", "error": str(exc)}
                 yield f"event: error\ndata: {json.dumps(err, ensure_ascii=False)}\n\n"
             except Exception as exc:
                 observability.emit("model.stream", stage="invoke", status="failed", level="error", code="MODEL_EXECUTION_FAILED")
                 if is_free:
-                    store.refund_free_chat(user_id)
+                    refund_legacy_trial(store, user_id)
                 err = {"type": "error", "error": str(exc)}
                 yield f"event: error\ndata: {json.dumps(err, ensure_ascii=False)}\n\n"
 
@@ -2349,11 +2361,11 @@ def chat(project_id: str, payload: ChatInput, request: Request) -> dict[str, Any
         ) from exc
     except ModelUnavailable as exc:
         if is_free:
-            store.refund_free_chat(user_id)
+            refund_legacy_trial(store, user_id)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except BaseException:
         if is_free:
-            store.refund_free_chat(user_id)
+            refund_legacy_trial(store, user_id)
         raise
 
 
@@ -2485,6 +2497,8 @@ def generate_section(
             if not updated:
                 raise MaterialConflict("项目已变化")
             result.update(material_applied=True, material_revision=updated["material_revision"])
+            from proposal.review_workflow import after_draft_saved
+            result["review"] = after_draft_saved(store, project_id, "section_generation")
             source = "ai_generated"
         except MaterialConflict:
             source = "ai_generated_alternative"

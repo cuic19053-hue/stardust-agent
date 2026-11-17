@@ -415,7 +415,8 @@ def register_chat_drafts(app, get_store):
             raise HTTPException(409, "项目已变化，未保存，请重新预览。") from exc
         if not saved:
             raise HTTPException(409, "项目已变化，未保存，请重新预览")
+        from .review_workflow import after_draft_saved
         return {"saved": len(payload.items), "material_revision": saved["material_revision"],
-                "notice": "草稿已保存。"}
+                "notice": "草稿已保存。", "review": after_draft_saved(store, project_id, "chat_draft")}
 
     app.include_router(router)

@@ -375,3 +375,9 @@ from cloud_review_postgres_cases import (  # noqa: E402,F401
     test_commit_then_timeout_reuses_response_and_never_rebills as test_review_cached_paid_response,
     test_scheduler_pause_invalidates_leases_and_resumes_only_safe_work as test_review_scheduler_pause,
 )
+from agent_journal_postgres_cases import (  # noqa: E402,F401
+    test_agent_rpc_private_owner_and_backend_boundaries,
+    test_agent_known_steps_resume_once_and_completion_is_atomic,
+    test_agent_unknown_call_and_changed_inputs_cannot_be_reexecuted,
+    test_cloud_follow_up_uses_new_snapshot_and_preserves_original_report,
+)

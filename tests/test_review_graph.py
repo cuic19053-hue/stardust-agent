@@ -96,11 +96,12 @@ def test_model_receives_only_confirmed_snapshot_sources_and_invalid_quotes_are_f
     assert result["id"] == submitted["id"]
     assert "未确认的机密" not in json.dumps(captured, ensure_ascii=False)
     assert "另一个项目" not in json.dumps(captured, ensure_ascii=False)
-    opinions = [issue for issue in result["report"]["issues"] if issue["origin"] == "model"]
+    opinions = [issue for issue in result["report"]["issues"] if issue.get("check_code") == "result_evidence"]
     assert len(opinions) == 1
     assert len(opinions[0]["citations"]) == 1
     assert opinions[0]["citations"][0]["source_ref"] == "第 2 页"
-    assert opinions[0]["verification"] == "needs_human_review"
+    assert opinions[0]["verification"] == "rule_result"
+    assert opinions[0]["citations"][0]["support_status"] == "quote_only"
     assert len(result["report"]["warnings"]) == 2
 
 
@@ -124,17 +125,31 @@ def test_worker_restart_resumes_completed_steps_from_disk(project_store, stop_af
     assert [event["node"] for event in result["events"]].count("load_snapshot") == 1
 
 
-def test_unsourced_school_requirement_becomes_explicit_unverified_question(project_store):
+def test_model_cannot_invent_an_unsourced_school_requirement(project_store):
     store, project = project_store
     submit(store, project, "model")
     response = {"content": json.dumps({"issues": [{"section_id": "method", "draft_quote": "我们已经完成实验",
         "problem": "学校要求必须达到某项门槛", "suggestion": "请核对学校当年通知", "kind": "school_requirement", "citations": []}]})}
     with ReviewWorker(store, model_call=lambda *_: response) as worker:
         result = worker.run_once()
-    issue = next(issue for issue in result["report"]["issues"] if issue["origin"] == "model")
-    assert issue["kind"] == "needs_evidence"
-    assert issue["problem"].startswith("学校要求待核对")
-    assert any("缺少有效来源" in warning for warning in result["report"]["warnings"])
+    assert not any(issue["origin"] == "model" for issue in result["report"]["issues"])
+    assert any("自行提出的学校硬性要求" in warning for warning in result["report"]["warnings"])
+
+
+def test_unproved_factual_judgment_is_retained_for_human_review_outside_detected_problems(project_store):
+    store, project = project_store
+    quote = "研究方法拟在获得授权后开展实验。"
+    store.update_project(project["id"], sections={"method": quote})
+    submit(store, project, "model")
+    problem = "证据显示已经得到1000条数据，草稿与证据不符。"
+    response = {"content": json.dumps({"issues": [{"section_id": "method", "draft_quote": quote,
+        "problem": problem, "suggestion": "应调整数据说明", "kind": "needs_evidence", "citations": []}]})}
+    with ReviewWorker(store, model_call=lambda *_: response) as worker:
+        report = worker.run_once()["report"]
+    assert not any(i["problem"] == problem for i in report["issues"])
+    assert report["unverified_hypotheses"][0]["problem"] == problem
+    assert report["unverified_hypotheses"][0]["support_status"] == "insufficient"
+    assert not any(item["reason"] == problem for item in report["follow_up"])
 
 
 def test_inference_outcome_unknown_after_restart_is_not_replayed(project_store):

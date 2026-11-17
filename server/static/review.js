@@ -26,6 +26,7 @@
       const stale = fingerprint && fingerprint !== run.fingerprint;
       const title = `${labels[run.status] || "状态待确认"} · 草稿 ${run.fingerprint.slice(0, 8)}${stale ? "（历史版本）" : ""}`;
       details.append(text("summary", title));
+      if (run.parent_id) details.append(text("p", `接续检查 ${run.parent_id.slice(0, 8)}；旧报告及其材料快照已保留。`));
       if (run.error) details.append(text("p", run.error));
       if (run.billing) {
         const billing = run.billing;
@@ -50,18 +51,50 @@
           if (issue.origin === "model") item.append(text("small", "模型意见待核对；来源匹配不代表结论已验证。"));
           for (const source of issue.citations || []) {
             item.append(text("blockquote", `${source.source_name} · ${source.source_ref}：${source.quote}`));
+            if (source.support_status) item.append(text("small", "引文原文已匹配；它是否支持该判断仍需核对。"));
           }
           list.append(item);
         }
         details.append(list);
+        if (report.unverified_hypotheses?.length) {
+          const pending = document.createElement("details");
+          pending.append(text("summary", `待人工判断的 AI 线索（${report.unverified_hypotheses.length} 条，未计为已发现问题）`));
+          for (const hypothesis of report.unverified_hypotheses) {
+            pending.append(text("p", `尚未验证的模型推测：${hypothesis.problem}`));
+            pending.append(text("blockquote", `对应草稿：${hypothesis.draft_quote}`));
+            for (const source of hypothesis.citations || []) {
+              pending.append(text("blockquote", `原文匹配，支持关系未验证：${source.source_name} · ${source.source_ref}：${source.quote}`));
+            }
+          }
+          details.append(pending);
+        }
+        if (report.follow_up?.length) {
+          details.append(text("p", "待你补充或修改后继续："));
+          for (const followUp of report.follow_up) {
+            const row = document.createElement("p");
+            row.append(text("span", followUp.request));
+            if (followUp.section_id && host.focusSection) {
+              const edit = text("button", "修改该章");
+              edit.className = "button button-secondary button-small";
+              edit.onclick = () => host.focusSection(followUp.section_id);
+              row.append(edit);
+            }
+            const material = text("button", "补充并确认资料");
+            material.className = "button button-secondary button-small";
+            material.onclick = () => host.focusMaterials?.();
+            row.append(material);
+            details.append(row);
+          }
+        }
         if (!report.issues?.length) details.append(text("p", "本次未发现可报告的问题，仍请按学校要求人工核对。"));
       }
       if (terminal.has(run.status)) {
-        const retry = text("button", "重新检查当前草稿");
+        const continuation = run.status === "completed" && (report?.follow_up?.length || report?.unverified_hypotheses?.length);
+        const retry = text("button", continuation ? "已补充，检查新版本" : "重新检查当前草稿");
         retry.className = "button button-secondary button-small";
         retry.onclick = () => {
           try { sessionStorage.removeItem(`draft-review-request:${host.state.project.id}`); } catch {}
-          return submit(host.state.project.id, generation);
+          return submit(host.state.project.id, generation, continuation ? run.id : null);
         };
         details.append(retry);
       }
@@ -86,7 +119,7 @@
     return result;
   }
 
-  async function submit(projectId, revision) {
+  async function submit(projectId, revision, parentId = null) {
     if (submitting || !current(projectId, revision)) return;
     submitting = true;
     document.querySelector("#draftReviewBtn").disabled = true;
@@ -102,8 +135,8 @@
       const storageKey = `draft-review-request:${projectId}`;
       let pending;
       try { pending = JSON.parse(sessionStorage.getItem(storageKey) || "null"); } catch {}
-      if (!pending || pending.fingerprint !== inputs.current_fingerprint || pending.mode !== mode) {
-        pending = { idempotency_key: crypto.randomUUID(), fingerprint: inputs.current_fingerprint, mode };
+      if (!pending || pending.fingerprint !== inputs.current_fingerprint || pending.mode !== mode || (pending.parent_id || null) !== parentId) {
+        pending = { idempotency_key: crypto.randomUUID(), fingerprint: inputs.current_fingerprint, mode, parent_id: parentId };
       }
       try { sessionStorage.setItem(storageKey, JSON.stringify(pending)); } catch {}
       const run = await host.api(`/api/projects/${projectId}/reviews`, {

@@ -10,8 +10,8 @@ from typing import Any
 
 from .storage import Store
 
-GRAPH_VERSION = "proposal-review-v1"
-PROMPT_VERSION = "proposal-review-v1"
+GRAPH_VERSION = "proposal-review-v2"
+PROMPT_VERSION = "proposal-review-v2"
 MAX_SNAPSHOT_BYTES = 1_000_000
 
 
@@ -105,17 +105,23 @@ class ReviewRuns:
                     PRIMARY KEY(thread_id,checkpoint_ns,checkpoint_id,task_id,idx)
                 );
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(review_runs)")}
+            if "parent_id" not in columns:
+                db.execute("ALTER TABLE review_runs ADD COLUMN parent_id TEXT REFERENCES review_runs(id) ON DELETE SET NULL")
+                db.execute("ALTER TABLE review_runs ADD COLUMN origin TEXT NOT NULL DEFAULT 'manual'")
 
     def current(self, project_id: str) -> str:
         with self.store.connect() as db:
             db.execute("BEGIN")
             return digest(capture_snapshot(self.store, db, project_id))
 
-    def submit(self, project_id: str, key: str, fingerprint: str, mode: str, model: str) -> dict:
+    def submit(self, project_id: str, key: str, fingerprint: str, mode: str, model: str,
+               *, parent_id: str | None = None, origin: str = "manual") -> dict:
         if mode not in {"rules", "model"} or not key or len(key) > 160:
             raise ValueError("预审参数不正确")
         request_hash = digest({"fingerprint": fingerprint, "mode": mode,
-                               "graph_version": GRAPH_VERSION, "model": model})
+                               "graph_version": GRAPH_VERSION, "model": model,
+                               "parent_id": parent_id, "origin": origin})
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             existing = db.execute("SELECT * FROM review_runs WHERE project_id=? AND key_hash=?",
@@ -124,14 +130,22 @@ class ReviewRuns:
                 if existing["request_hash"] != request_hash:
                     raise ReviewConflict("同一次提交的输入已变化，请重新检查")
                 return self.public(existing)
+            if origin not in {"manual", "chat_draft", "section_generation", "material_confirmation"}:
+                raise ValueError("检查来源不正确")
+            if parent_id:
+                parent = db.execute("SELECT * FROM review_runs WHERE id=? AND project_id=?", (parent_id, project_id)).fetchone()
+                if not parent or parent["status"] != "completed":
+                    raise ReviewConflict("原检查尚未完成或不存在")
+                if parent["fingerprint"] == fingerprint:
+                    raise ReviewConflict("请先修改正文或补充并确认资料，再继续检查新版本")
             snapshot = capture_snapshot(self.store, db, project_id)
             if digest(snapshot) != fingerprint:
                 raise ReviewConflict("正文或材料已变化，请刷新后重新检查")
             now, run_id = time.time(), uuid.uuid4().hex
             db.execute("""INSERT INTO review_runs
-                (id,project_id,key_hash,request_hash,fingerprint,snapshot,mode,graph_version,model,created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (run_id, project_id, digest(key), request_hash,
-                fingerprint, json.dumps(snapshot, ensure_ascii=False), mode, GRAPH_VERSION, model, now, now))
+                (id,project_id,key_hash,request_hash,fingerprint,snapshot,mode,graph_version,model,created_at,updated_at,parent_id,origin)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", (run_id, project_id, digest(key), request_hash,
+                fingerprint, json.dumps(snapshot, ensure_ascii=False), mode, GRAPH_VERSION, model, now, now, parent_id, origin))
             return self.public(db.execute("SELECT * FROM review_runs WHERE id=?", (run_id,)).fetchone())
 
     @staticmethod
@@ -139,7 +153,7 @@ class ReviewRuns:
         if row is None:
             return None
         result = {key: row[key] for key in ("id", "project_id", "fingerprint", "mode", "graph_version",
-                   "model", "status", "step", "error", "created_at", "updated_at")}
+                   "model", "status", "step", "error", "created_at", "updated_at", "parent_id", "origin")}
         result["report"] = json.loads(row["report"]) if row["report"] else None
         return result
 

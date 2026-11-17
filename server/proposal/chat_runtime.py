@@ -93,9 +93,10 @@ class ChatRuntime:
     """Run one turn without owning the model transport, storage, or billing."""
 
     def __init__(self, agent: Any):
-        self.agent = agent
-        self.store = agent.store
-        self.tools = agent.tools
+        from .agent_journal import bind_runtime
+        self.agent = bind_runtime(agent)
+        self.store = self.agent.store
+        self.tools = self.agent.tools
 
     @staticmethod
     def _answer(text: str, called: list[str], model: str, stream: bool) -> Iterator[dict[str, Any]]:

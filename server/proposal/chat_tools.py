@@ -65,6 +65,10 @@ class ChatToolRouter:
 
     def invoke(self, call: dict[str, Any]) -> tuple[str, Any]:
         with execution_budget(self.deadline):
+            from .agent_journal import active_journal
+            journal = active_journal.get()
+            if journal:
+                return tuple(journal.execute("tool", {"call": call, "project_id": self.project_id}, lambda: self._invoke(call)))
             return self._invoke(call)
 
     def _invoke(self, call: dict[str, Any]) -> tuple[str, Any]:

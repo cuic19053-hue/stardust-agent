@@ -41,12 +41,37 @@ function harness({ failPost = false, items = [], failSave = false, capabilities 
     }
     return { items, current_fingerprint: "c".repeat(64) };
   } };
-  return { mount: () => context.window.DraftReview.mount(host), state, calls, elements, notices, timers };
+  return { mount: () => context.window.DraftReview.mount(host), host, state, calls, elements, notices, timers };
 }
 
 function flatten(element) {
   return [element.textContent, ...element.children.map(flatten)].join(" ");
 }
+
+test("follow-up actions reach the editor and materials then submit a linked new snapshot", async () => {
+  const run = { id: "b".repeat(32), fingerprint: "a".repeat(64), status: "completed", report: {
+    complete: true, issues: [], warnings: [], notice: "检查指定快照", section_titles: { method: "研究方法" },
+    follow_up: [{ id: "f", section_id: "method", request: "补充原始实验记录" }],
+    unverified_hypotheses: [{ problem: "未验证的模型推测", draft_quote: "计划开展实验", citations: [] }],
+  } };
+  const h = harness({ items: [run] });
+  const visited = [];
+  h.host.focusSection = sid => visited.push(sid);
+  h.host.focusMaterials = () => visited.push("materials");
+  await h.mount();
+  const descendants = e => [e, ...e.children.flatMap(descendants)];
+  const root = h.elements.get("#draftReviewResults");
+  const buttons = descendants(root).filter(e => e.tag === "button");
+  buttons.find(b => b.textContent === "修改该章").onclick();
+  buttons.find(b => b.textContent === "补充并确认资料").onclick();
+  assert.deepEqual(visited, ["method", "materials"]);
+  assert.match(flatten(root), /未计为已发现问题/);
+  await buttons.find(b => b.textContent === "已补充，检查新版本").onclick();
+  const body = JSON.parse(h.calls.find(c => c.options.method === "POST").options.body);
+  assert.equal(body.parent_id, run.id);
+  assert.equal(body.fingerprint, "c".repeat(64));
+  assert.equal(body.mode, "rules");
+});
 
 test("uncertain submit retries the exact same key and snapshot without creating a new logical request", async () => {
   const h = harness({ failPost: true });
