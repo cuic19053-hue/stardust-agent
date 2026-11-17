@@ -1,0 +1,62 @@
+{
+  "name": "预审提示词修订后的新增回归样例",
+  "version": 1,
+  "curation": "agent-authored synthetic additional regression cases; not independent human gold; do not tune after seeing results",
+  "base_project": {
+    "title": "合成回归：宿舍能耗异常检测研究",
+    "school": "合成大学丙",
+    "state": {
+      "skill_id": "innovation-research",
+      "problem": "研究能耗记录的异常识别，减少人工筛查。",
+      "target_user": "合成校园的设施记录整理人员",
+      "method": "比较固定阈值与时序异常检测模型",
+      "foundation": "已有公开模拟数据练习，实测采集尚未开展。",
+      "budget": "8000元"
+    },
+    "outline": [
+      {"id": "objective", "title": "研究问题与目标"},
+      {"id": "method", "title": "研究方法"},
+      {"id": "foundation", "title": "已有基础"},
+      {"id": "plan", "title": "实施计划"},
+      {"id": "budget", "title": "经费预算"}
+    ],
+    "sections": {
+      "objective": "研究问题是能耗记录中的异常筛查。研究目标是比较固定阈值与时序模型，以精确率、召回率及复核时间评价后续实验，不预设已达到的结果。",
+      "method": "研究方法拟比较固定阈值与时序异常检测模型。第一阶段办理采集授权并明确记录格式，获得许可后再采集实测数据、划分时间段并进行评价。",
+      "foundation": "已有基础是公开模拟数据的清洗练习，团队尚未采集实际能耗记录，也未开展实测对比实验。",
+      "plan": "实施计划为第1个月办理采集许可，第2个月采集记录并建立阈值基线，第3个月比较时序模型并整理误差。阶段成果为记录、代码和报告。",
+      "budget": "预算合计为8000元，采集测试费5000元，计算材料费3000元。分项之和等于总额；金额为合成研究计划的估算。"
+    }
+  },
+  "base_documents": [
+    {"id": "progress", "name": "合成采集进展.txt", "kind": "source", "confirmed": true,
+     "text": "【新增软件回归合成资料，不是学校通知】研究方法只有公开模拟数据练习，尚未采集实测能耗记录，尚未开展对比实验，没有实测指标。第1阶段拟办理采集授权。"},
+    {"id": "cost", "name": "合成费用估算.txt", "kind": "source", "confirmed": true,
+     "text": "【新增软件回归合成资料，不是学校规定】项目预算合计为8000元，采集测试费5000元，计算材料费3000元。这是研究计划估算，不代表学校批准金额。"}
+  ],
+  "cases": [
+    {
+      "id": "future_plan_ok", "title": "未来授权与当前尚未采集可以同时成立",
+      "sections": {}, "targets": [], "relevant_documents": ["progress", "cost"],
+      "rubric": "未开始的采集与未来先授权再采集的计划不矛盾，估算无需被当成已批准经费。合理细化建议可列out_of_scope。"
+    },
+    {
+      "id": "arithmetic_error", "title": "真实分项加总错误不能因减少误报而漏掉",
+      "sections": {"budget": "预算合计为8000元，采集测试费5000元，计算材料费2000元。以上两项相加为8000元。"},
+      "targets": [{"id": "arithmetic_total", "section_id": "budget", "description": "指出5000+2000=7000并非8000，核对分项或总额；不以所有预算均是估算为由忽略真实加总错误。"}],
+      "relevant_documents": ["cost"]
+    },
+    {
+      "id": "measured_claim_conflict", "title": "已完成实测与尚未采集的资料冲突",
+      "sections": {"method": "研究方法采用固定阈值与时序模型。本项目已完成200个实测点的采集及对比实验，异常检测召回率达到96%。"},
+      "targets": [{"id": "unverified_measurement", "section_id": "method", "description": "指出200个实测点及96%没有依据，且与尚未采集及没有实测指标的进展冲突，保持未验证状态。"}],
+      "relevant_documents": ["progress"]
+    },
+    {
+      "id": "invented_school_rule", "title": "草稿自行编造学校预算审批要求",
+      "sections": {"foundation": "已有基础是公开模拟数据练习。根据合成大学丙2026年通知，学生必须在申报前取得学校批准的全部预算，否则一律不得申报。"},
+      "targets": [{"id": "unsupported_policy", "section_id": "foundation", "description": "指出学校审批及不得申报的强制规则没有适用通知支持，需要核对本校当年原文；项目估算记录不能证明这条资格规定。"}],
+      "relevant_documents": []
+    }
+  ]
+}

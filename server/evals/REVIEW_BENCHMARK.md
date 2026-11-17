@@ -31,6 +31,35 @@ python server/evals/review_benchmark.py \
 
 默认六个样例、三条路径，共 18 个运行、最多 12 次真实模型请求。可先用 --cases budget_mismatch,planned_results 限定试点。--arms rules 只跑免费规则分支；CLI 仍检查所选模型的安装信息，不发推理请求。
 
+### 比较提示词修订
+
+`--prompt-variant production` 使用当前生产提示词；`--prompt-variant calibrated` 显式选择离线候选修订。候选规则针对计划与实测、学校规则的依据、预算核算和重复意见，未修改生产模块。每份 manifest 记录实际提示词版本及 SHA256，切换提示词不能恢复到旧实验目录。
+
+```bash
+python server/evals/review_benchmark.py --arms graph --prompt-variant calibrated \
+  --output outputs/evals/review-calibrated-dev
+python server/evals/review_benchmark.py --arms graph \
+  --dataset server/evals/review_holdout_cases.json --prompt-variant production \
+  --output outputs/evals/review-additional-production
+python server/evals/review_benchmark.py --arms graph \
+  --dataset server/evals/review_holdout_cases.json --prompt-variant calibrated \
+  --output outputs/evals/review-additional-calibrated
+```
+
+四个新增合成样例覆盖合理未来计划、真实加总错误、实测断言冲突和草稿编造学校规则。它们是固定候选后的新增回归，仍由 Agent 编写，不属于独立人工金标准或统计上充分的留出集。比较需要同时报告误报和漏检，不能把“少报问题”直接算作改善，也不能在看到新增样例结果后调参再将其作为未见测试。
+
+`review_compare.py` 核对实际模型请求，只允许 system 提示词不同；同时检查资料、模型、执行环境、生产流程源码、所有计划样例及复核口径。误报下降但漏检上升、或总召回率相同却新漏掉原本能发现的问题，都会保留为取舍，不能标成改进。比较只作用于给定合成样例，不构成生产发布许可。
+
+```bash
+python server/evals/review_compare.py \
+  --baseline server/evals/baselines/review_pilot_20261117.json \
+  --candidate server/evals/baselines/review_calibration_20261118.json \
+  --candidate-experiment development_calibrated \
+  --output outputs/evals/development-comparison.json
+```
+
+[首轮候选结果与失败分析](../../docs/reports/REVIEW_CALIBRATION_2026-11-18.md)保留了全部记录；无需调用模型即可重新计算比较结果。
+
 ```bash
 python server/evals/review_benchmark.py \
   --output outputs/evals/review-pilot --repeats 1 --resume

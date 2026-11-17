@@ -79,6 +79,8 @@ python server/evals/review_benchmark.py --output outputs/evals/review-pilot
 
 [对比方法、指标口径与复现步骤](./server/evals/REVIEW_BENCHMARK.md) · [合成样例和预期问题](./server/evals/review_cases.json) · [逐项结果与原始模型记录](./server/evals/baselines/review_pilot_20261117.json)
 
+[后续提示词实验](./docs/reports/REVIEW_CALIBRATION_2026-11-18.md)固定候选并增加四个合成回归样例。候选减少了输出条数，却增加了误报，并出现新的学校规则漏检。仓库保留失败候选、原始响应和可复现比较：核对实际输入与参数，同时检查误报、漏检和具体漏掉的问题，避免用单一汇总指标掩盖退化。
+
 ## 本地运行与复现
 
 需要 Python 3.11 或更高版本，并启动本机 Ollama。在终端运行以下命令。

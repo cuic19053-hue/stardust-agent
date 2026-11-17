@@ -231,3 +231,37 @@ def test_public_baseline_token_and_quote_metrics_match_raw_responses():
         assert row["metrics"]["eval_count"] == response["eval_count"]
         assert row["raw_locations"] == benchmark.location_counts(issues, snapshot, content["evidence"])
         assert row["final_locations"] == benchmark.location_counts(row["issues"], snapshot, content["evidence"])
+
+
+def test_prompt_variant_changes_only_system_message_and_is_explicit(tmp_path):
+    from server.proposal.review_prompt import SYSTEM_PROMPT
+    from server.proposal.review_worker import LocalReviewModel
+    content = {"sections": {"method": "合成计划"}, "evidence": [], "outline": [], "school": "合成大学"}
+    production = benchmark.MeasuredModel(config(), tmp_path)
+    calibrated = benchmark.MeasuredModel(config(prompt_variant="calibrated"), tmp_path)
+    assert production.messages(content) == LocalReviewModel.messages(content)
+    assert production.messages(content)[1] == calibrated.messages(content)[1]
+    assert calibrated.messages(content)[0]["content"].startswith(SYSTEM_PROMPT)
+    assert production.messages(content)[0]["content"] != calibrated.messages(content)[0]["content"]
+    with pytest.raises(ValueError, match="未知"):
+        benchmark.MeasuredModel(config(prompt_variant="unregistered"), tmp_path)
+
+
+def test_switching_prompt_variant_cannot_resume_an_existing_experiment(tmp_path):
+    output = tmp_path / "variant"
+    original = benchmark.run_benchmark(output, config(prompt_variant="production"), IDENTITY, factory=FakeModel)
+    assert original["manifest"]["prompt_version"] == benchmark.PROMPT_VERSION
+    with pytest.raises(ValueError, match="不能混入"):
+        benchmark.run_benchmark(output, config(prompt_variant="calibrated"), IDENTITY, resume=True, factory=FakeModel)
+
+
+def test_additional_dataset_uses_its_own_inputs_and_targets(tmp_path):
+    dataset = benchmark.load_dataset(benchmark.CASES_PATH.with_name("review_holdout_cases.json"))
+    output = tmp_path / "additional"
+    cfg = config(cases=["future_plan_ok"], arms=["rules"], prompt_variant="calibrated")
+    result = benchmark.run_benchmark(output, cfg, IDENTITY, factory=FakeModel, dataset=dataset)
+    assert result["manifest"]["dataset_digest"] == benchmark.digest(dataset)
+    assert result["manifest"]["prompt_version"] == "review-calibration-v1"
+    snapshot = benchmark.read_json(output / "inputs/future_plan_ok/snapshot.json")
+    assert snapshot["project"]["state"]["budget"] == "8000元"
+    assert result["runs"][0]["issues"] == []
