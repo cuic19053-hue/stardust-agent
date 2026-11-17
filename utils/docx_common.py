@@ -438,23 +438,41 @@ BIG_TABLE_ROWS = 8
 KEEP_TOGETHER_MAX_ROWS = 13
 
 
-def harden_table(table, keep_together: bool = True) -> None:
+def harden_table(table, keep_together: bool = True, *, header_rows: Optional[int] = None) -> None:
     """给表格加三道防拆保护——不调用的话表格会被排版引擎随意撕开。
 
     ① 行级 cantSplit：单行内容不会被劈成上下两截；
-    ② 长表首行 tblHeader：跨页时表头自动重复；
+    ② tblHeader：跨页时表头自动重复，并与首行数据绑定；
     ③ 短表行间 keep_with_next：整表一起换页，不出现「表尾 1–2 行孤在下一页」。
 
     ③ 有代价：整表换页会在上一页底部留白。13 行以内的表通常放得下，
-    超过 13 行就只能靠 ①② 保证跨页后仍然可读。
+    超过 13 行就只能靠 ①② 保证跨页后仍然可读。网页导出应显式指定
+    header_rows（无表头为 0），并使用 keep_together=False，避免仅按行数
+    将内容很高的表格绑定到同一页。省略 header_rows 保留旧的长表判定。
     """
     n = len(table.rows)
     if n == 0:
         return
     for row in table.rows:
-        row._tr.get_or_add_trPr().append(OxmlElement("w:cantSplit"))
-    if n >= BIG_TABLE_ROWS:
-        table.rows[0]._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
+        props = row._tr.get_or_add_trPr()
+        flag = props.find(qn("w:cantSplit"))
+        if flag is None:
+            flag = OxmlElement("w:cantSplit")
+            props.append(flag)
+        flag.set(qn("w:val"), "1")
+    count = (1 if n >= BIG_TABLE_ROWS else 0) if header_rows is None else min(header_rows, n)
+    for row in table.rows[:count]:
+        props = row._tr.get_or_add_trPr()
+        flag = props.find(qn("w:tblHeader"))
+        if flag is None:
+            flag = OxmlElement("w:tblHeader")
+            props.append(flag)
+        flag.set(qn("w:val"), "1")
+        if count < n:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    paragraph.paragraph_format.keep_with_next = True
+                    paragraph.paragraph_format.keep_together = True
     if keep_together and n <= KEEP_TOGETHER_MAX_ROWS:
         for row in table.rows[:-1]:
             for cell in row.cells:
