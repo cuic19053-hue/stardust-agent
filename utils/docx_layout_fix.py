@@ -73,13 +73,20 @@ KEEP_TOGETHER_MAX_ROWS = 13  # ≤ 此行数：整表不跨页
 # ============================================================
 
 def fix_tables(doc) -> int:
-    """表格三道保护：行级不拆、长表表头重复、短表整表不跨页。返回处理的表格数。"""
+    """为未保护的表格补分页规则，保留生成器已设置的表头和跨页方式。"""
     n = 0
     for table in doc.tables:
         rows = table.rows
         if len(rows) <= 1:
             continue
         n += 1
+        # Creators know whether a table has a header and whether its content
+        # can fit on one page. Do not replace their explicit pagination with
+        # row-count guesses (e.g. a three-row table with very tall cells).
+        protected = [row._tr.find("./" + qn("w:trPr") + "/" + qn("w:cantSplit")) for row in rows]
+        if all(flag is not None and flag.get(qn("w:val"), "1").lower() not in {"0", "false", "off"}
+               for flag in protected):
+            continue
         for row in rows:
             trPr = row._tr.get_or_add_trPr()
             if trPr.find(qn("w:cantSplit")) is None:

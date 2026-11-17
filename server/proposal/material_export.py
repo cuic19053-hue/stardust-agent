@@ -13,6 +13,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
+from utils.docx_common import harden_table
+
 from .materials import material_view
 
 STYLE = {
@@ -32,13 +34,16 @@ def blocks(content: str) -> list[dict[str, Any]]:
         line = lines[i].strip()
         if line.startswith("|"):
             rows = []
+            header_rows = 0
             while i < len(lines) and lines[i].strip().startswith("|"):
                 cells = [x.strip() for x in lines[i].strip().strip("|").split("|")]
                 if not all(re.fullmatch(r"[:\- ]*", x) for x in cells):
                     rows.append(cells)
+                elif len(rows) == 1:
+                    header_rows = 1
                 i += 1
             if rows:
-                result.append({"type": "table", "rows": rows})
+                result.append({"type": "table", "rows": rows, "header_rows": header_rows})
             continue
         if line:
             match = re.fullmatch(r"\[\[figure:([a-zA-Z0-9_-]+)\]\]", line)
@@ -244,6 +249,7 @@ def export_material(store, project_id: str, folder: Path) -> dict[str, Any]:
                 for paragraph in cell.paragraphs:
                     paragraph.paragraph_format.space_before = Pt(3)
                     paragraph.paragraph_format.space_after = Pt(3)
+        harden_table(info, header_rows=0)
         _text(document, "草稿：请核对正式通知、事实、引用及待补充项。")
         document.add_page_break()
         if template and not template_unavailable:
@@ -371,6 +377,7 @@ def export_material(store, project_id: str, folder: Path) -> dict[str, Any]:
                     cells = table.add_row().cells
                     for k, value in enumerate(row):
                         cells[k].text = references(value)
+                harden_table(table, keep_together=False, header_rows=block["header_rows"])
             else:
                 _text(container, references(block["text"]), heading=block["type"] == "heading",
                       size=12.5 if block["type"] == "heading" else None)

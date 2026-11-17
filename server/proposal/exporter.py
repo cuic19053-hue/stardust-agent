@@ -18,6 +18,8 @@ from docx.oxml import OxmlElement
 from docx.text.paragraph import Paragraph
 from docx.shared import Cm, Pt
 
+from utils.docx_common import harden_table
+
 from .storage import Store
 
 LABEL_FIELDS = {
@@ -609,9 +611,12 @@ def _append_draft(
                     table_lines.append(lines[index].strip())
                     index += 1
                 rows = []
+                header_rows = 0
                 for table_line in table_lines:
                     cells = [cell.strip() for cell in table_line.strip("|").split("|")]
                     if cells and all(re.fullmatch(r"[:\- ]+", cell or " ") for cell in cells):
+                        if len(rows) == 1:
+                            header_rows = 1
                         continue
                     rows.append(cells)
                 if rows:
@@ -622,6 +627,7 @@ def _append_draft(
                         cells = table.add_row().cells
                         for cell_index in range(col_count):
                             cells[cell_index].text = row[cell_index] if cell_index < len(row) else ""
+                    harden_table(table, keep_together=False, header_rows=header_rows)
                 continue
             if line:
                 _add_markdown_paragraph(document, line)
@@ -649,6 +655,7 @@ def _append_draft(
         table.cell(0, 1).text = "待补充：确认研究步骤后生成可编辑图表。"
         table.cell(1, 0).text = "项目进度图"
         table.cell(1, 1).text = "待补充：确认项目周期和阶段安排后生成。"
+        harden_table(table, header_rows=0)
 
     leader_photo_id = project.get("state", {}).get("leader_photo")
     image_docs = [
@@ -669,6 +676,7 @@ def _append_draft(
         placeholder.cell(0, 0).text = (
             "待补充实验/调研照片\n请上传真实项目照片，并说明时间、地点、参与人员和照片内容。"
         )
+        harden_table(placeholder, header_rows=0)
 
     references = project["state"].get("references", [])
     if references:
@@ -826,6 +834,7 @@ def _add_generic_cover(document: Document, project: dict[str, Any]) -> None:
                 table.cell(index, 1).text = "已上传负责人照片"
         else:
             table.cell(index, 1).text = str(value)
+    harden_table(table, header_rows=0)
     note = document.add_paragraph("草稿 · 学校模板缺省，提交前请按校方通知核对")
     note.alignment = WD_ALIGN_PARAGRAPH.CENTER
     note.paragraph_format.space_before = Pt(26)
