@@ -26,11 +26,13 @@ from server.proposal.review_graph import ModelReview
 from server.proposal.review_runs import GRAPH_VERSION, PROMPT_VERSION, ReviewRuns, capture_snapshot, digest
 from server.proposal.review_worker import LocalReviewModel, ReviewWorker
 from server.proposal.storage import Store
+from server.evals.review_prompt_variants import CALIBRATION_VERSION, prompt_for_variant
 
 CASES_PATH = Path(__file__).with_name("review_cases.json")
 ARMS = ("rules", "direct", "graph")
 SOURCES = (
     "server/evals/review_benchmark.py", "server/evals/review_cases.json",
+    "server/evals/review_prompt_variants.py", "server/evals/review_holdout_cases.json",
     "server/proposal/review_graph.py", "server/proposal/review_prompt.py",
     "server/proposal/review_runs.py", "server/proposal/review_worker.py",
     "server/proposal/retrieval.py", "server/proposal/tools.py",
@@ -49,8 +51,7 @@ def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def load_dataset():
-    dataset = read_json(CASES_PATH)
+def validate_dataset(dataset):
     ids = [case["id"] for case in dataset["cases"]]
     if len(ids) != len(set(ids)) or any(not i.replace("_", "").isalnum() for i in ids):
         raise ValueError("重复或不安全的用例ID")
@@ -59,6 +60,10 @@ def load_dataset():
         if len(targets) != len(set(targets)):
             raise ValueError("重复的问题标签")
     return dataset
+
+
+def load_dataset(path=CASES_PATH):
+    return validate_dataset(read_json(path))
 
 
 def source_hashes():
@@ -85,7 +90,12 @@ class MeasuredModel(LocalReviewModel):
     def __init__(self, config, directory):
         super().__init__(config["base_url"])
         self.config, self.directory = config, Path(directory)
+        self.system_prompt = prompt_for_variant(config.get("prompt_variant", "production"))
         self.observation = {"calls": 0, "metrics": None, "content": None, "evidence": []}
+
+    def messages(self, content):
+        return [{"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": json.dumps(content, ensure_ascii=False)}]
 
     def __call__(self, run, content, schema):
         if self.observation["calls"]:
@@ -323,6 +333,7 @@ def build_report(output, dataset, reviews=None):
     write_json(output / "report.json", report)
     write_json(output / "review-template.json", template)
     lines = ["# 草稿预审对比试点", "", "样例由 Agent 编写；逐字引用匹配不等于语义支持。独立人工复核：" + ("已完成" if report["human_review_complete"] else "未完成"), "",
+             "提示词版本：" + manifest["prompt_version"] + "；资料摘要：" + manifest["dataset_digest"], "",
              "| 路径 | 完整/计划 | 中位耗时(ms) | 原文定位率 | 引文匹配率 | 问题精确率 | 问题召回率 |", "| --- | --- | --- | --- | --- | --- | --- |"]
     for arm, value in arms.items():
         quality = value["semantic"] or {}
@@ -341,8 +352,10 @@ def build_report(output, dataset, reviews=None):
     return report
 
 
-def run_benchmark(output, config, identity, *, resume=False, factory=MeasuredModel):
-    dataset, output = load_dataset(), Path(output).resolve()
+def run_benchmark(output, config, identity, *, resume=False, factory=MeasuredModel, dataset=None):
+    dataset, output = validate_dataset(dataset) if dataset is not None else load_dataset(), Path(output).resolve()
+    variant = config.get("prompt_variant", "production")
+    effective_prompt = prompt_for_variant(variant)
     selected = [case for case in dataset["cases"] if case["id"] in config["cases"]]
     if (len(selected) != len(config["cases"]) or not selected or not config["arms"]
             or len(set(config["arms"])) != len(config["arms"]) or set(config["arms"]) - set(ARMS)):
@@ -350,7 +363,9 @@ def run_benchmark(output, config, identity, *, resume=False, factory=MeasuredMod
     manifest = {"version": 1, "config": config, "model": identity, "source_hashes": source_hashes(), "dataset_digest": digest(dataset),
                 "runtime": {"python": platform.python_version(), "machine": platform.machine(),
                             "packages": {name: importlib.metadata.version(name) for name in ("langgraph", "langgraph-checkpoint-sqlite", "httpx", "pydantic")}},
-                "graph_version": GRAPH_VERSION, "prompt_version": PROMPT_VERSION, "trials": []}
+                "graph_version": GRAPH_VERSION,
+                "prompt_version": PROMPT_VERSION if variant == "production" else CALIBRATION_VERSION,
+                "prompt_sha256": hashlib.sha256(effective_prompt.encode()).hexdigest(), "trials": []}
     for repeat in range(config["repeats"]):
         for index, case in enumerate(selected):
             order = list(config["arms"])
@@ -405,7 +420,9 @@ def run_benchmark(output, config, identity, *, resume=False, factory=MeasuredMod
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--cases", default=",".join(c["id"] for c in load_dataset()["cases"]))
+    parser.add_argument("--cases")
+    parser.add_argument("--dataset", type=Path, default=CASES_PATH)
+    parser.add_argument("--prompt-variant", choices=("production", "calibrated"), default="production")
     parser.add_argument("--arms", default=",".join(ARMS))
     parser.add_argument("--model", default="qwen2.5:7b")
     parser.add_argument("--base-url", default="http://127.0.0.1:11434")
@@ -421,9 +438,10 @@ def main(argv=None):
         return 0
     if args.reviews:
         parser.error("--reviews 只用于 --report-only，不能触发模型重跑")
-    config = {key: getattr(args, key) for key in ("model", "base_url", "seed", "repeats", "timeout")}
-    config.update(cases=args.cases.split(","), arms=args.arms.split(","))
-    report = run_benchmark(args.output, config, model_identity(args.base_url, args.model), resume=args.resume)
+    dataset = load_dataset(args.dataset)
+    config = {key: getattr(args, key) for key in ("model", "base_url", "seed", "repeats", "timeout", "prompt_variant")}
+    config.update(cases=args.cases.split(",") if args.cases else [c["id"] for c in dataset["cases"]], arms=args.arms.split(","))
+    report = run_benchmark(args.output, config, model_identity(args.base_url, args.model), resume=args.resume, dataset=dataset)
     return 0 if all(row["complete"] for row in report["runs"]) else 1
 
 
