@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import time
+import urllib.error
 import uuid
 
 import pytest
@@ -104,3 +106,51 @@ def test_unavailable_database_keeps_the_cloud_entry_hidden(cloud_client, monkeyp
         raise RuntimeError("synthetic transport failure")
     monkeypatch.setattr(cloud_review.ReviewRPC, "call", fail)
     assert client.get("/api/reviews/capabilities").json()["enabled"] is False
+
+
+def test_cloud_model_timeout_is_one_paid_attempt_with_a_bounded_budget(monkeypatch):
+    from server.proposal import agent
+    monkeypatch.setenv("WOPALLY_WORKBENCH_API_KEY_ID", "692")
+    monkeypatch.setenv("WOPALLY_WORKBENCH_API_KEY", "synthetic-secret")
+    monkeypatch.setenv("WOPALLY_MODEL_BASE_URL", "https://synthetic-provider.test/v1")
+    requests, actions = [], []
+    class RPC:
+        def call(self, action, **args):
+            actions.append(action)
+            return {"status": "reserved"} if action == "reserve" else {"ok": True}
+    def timeout(request, *, timeout):
+        requests.append((request, timeout))
+        raise TimeoutError("synthetic upstream timeout")
+    monkeypatch.setattr(agent, "wopally_urlopen", timeout)
+    model = cloud_review.CloudReviewModel(RPC())
+    with pytest.raises(agent.ModelUnavailable):
+        model({"owner_id": "owner", "project_id": "project", "model": "deepseek-v4-flash"},
+              {"sections": {"method": "合成测试"}}, {"type": "object"})
+    assert len(requests) == 1
+    assert 30 < requests[0][1] < 50
+    assert json.loads(requests[0][0].data)["thinking"] == {"type": "disabled"}
+    assert actions == ["reserve", "interaction"]  # Unknown outcomes retain their hold.
+
+
+def test_cloud_failure_logs_only_safe_error_metadata(monkeypatch, caplog):
+    monkeypatch.setenv("REVIEW_WORKER_SECRET", SECRET)
+    actions = []
+    class RPC:
+        job = None
+        def call(self, action, **args):
+            actions.append(action)
+            if action == "claim":
+                return {"id": "a" * 32, "graph_version": cloud_review.CLOUD_GRAPH_VERSION}
+            return {"ok": True}
+    def fail(*_args, **_kwargs):
+        cause = urllib.error.HTTPError("https://provider.test/?key=private-value", 502,
+                                       "private-prompt-value", None, None)
+        raise RuntimeError("private-response-value") from cause
+    monkeypatch.setattr(cloud_review, "build_review_graph", fail)
+    store = type("Store", (), {"project_url": "synthetic", "publishable_key": "synthetic"})()
+    result = cloud_review.run_delivery(store, str(uuid.uuid4()), rpc_factory=lambda *_: RPC(), model_factory=lambda _: None)
+    assert result["status"] == "needs_review" and actions == ["claim", "recover"]
+    assert "http_status=502" in caplog.text and "error=RuntimeError" in caplog.text
+    assert "private-value" not in caplog.text
+    assert "private-prompt-value" not in caplog.text
+    assert "private-response-value" not in caplog.text
