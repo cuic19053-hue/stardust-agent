@@ -45,7 +45,7 @@ AI 预审使用现有平台模型 `deepseek-v4-flash`，本版本不消费用户
 
 ## 上线与回滚
 
-1. 验证迁移 `20261117135553_langgraph_cloud_review.sql`，再应用到目标项目；初始数据库开关为 false。
+1. 验证并依次应用迁移 `20261117135553_langgraph_cloud_review.sql` 与 `20261117145842_review_scheduler_safe_update.sql`；后者兼容生产库的 safeupdate 保护，初始数据库开关为 false。
 2. 将 `REVIEW_WORKER_SECRET` 与 `REVIEW_CONFIGURE_SECRET` 设为两个独立的 64 字符随机 Secret；设置 `CLOUD_REVIEW_ENABLED=true`。既有 provider 和账本凭据保持原有配置。
 3. 构建 Vercel 生产候选，核验版本、依赖与签名拒绝路径，再切换生产域名。
 4. 通过 `/api/admin/configure-review-scheduler` 启用数据库调度；请求携带 `x-review-ops-token`，body 为 `{"enabled":true}`。密钥取自服务端专用配置，不能写进 shell 参数、工单或代码。
