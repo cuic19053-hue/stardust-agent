@@ -251,7 +251,7 @@ def semantic_score(result, case, review, reviewer_kind):
         if [(d.get("issue_index"), d.get("citation_index")) for d in citation_decisions] != [(i, j) for i, j, _ in citations]:
             raise ValueError("引用语义支持率需要逐条复核所有引用")
         for decision, (_, _, citation) in zip(citation_decisions, citations):
-            if decision.get("quote") != citation["quote"] or not decision.get("reason"):
+            if decision.get("quote") != citation["quote"] or (decision.get("verdict") != "pending" and not decision.get("reason")):
                 raise ValueError("引用复核缺少实际引文或理由")
             if decision.get("verdict") not in {"supports", "does_not_support", "pending"}:
                 raise ValueError("引用复核决定无效")

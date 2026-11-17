@@ -75,7 +75,9 @@ python -m pip install 'langgraph-checkpoint-sqlite==3.1.3'
 python server/evals/review_benchmark.py --output outputs/evals/review-pilot
 ```
 
-[对比方法、指标口径与复现步骤](./server/evals/REVIEW_BENCHMARK.md) · [合成样例和预期问题](./server/evals/review_cases.json)
+[首轮 Qwen 本机试点](./docs/reports/REVIEW_BENCHMARK_2026-11-17.md)：按 Agent 辅助复核口径，直接模型命中 5 个目标问题中的 3 个，现有流程命中 5 个；两条路径各有 13 条误报（含重复提醒）。独立人工校准尚未完成，结果不代表线上模型效果。原始请求、响应和判定依据均可核对。
+
+[对比方法、指标口径与复现步骤](./server/evals/REVIEW_BENCHMARK.md) · [合成样例和预期问题](./server/evals/review_cases.json) · [逐项结果与原始模型记录](./server/evals/baselines/review_pilot_20261117.json)
 
 ## 本地运行与复现
 
