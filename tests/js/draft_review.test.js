@@ -17,7 +17,7 @@ class Element {
 }
 
 function harness({ failPost = false, items = [], failSave = false, capabilities } = {}) {
-  const elements = new Map(), calls = [], notices = [], storage = new Map();
+  const elements = new Map(), calls = [], notices = [], storage = new Map(), timers = [];
   let count = 0;
   const state = { project: { id: "a".repeat(32), state: { skill_id: "innovation-research" } } };
   const context = vm.createContext({ window: {}, console,
@@ -27,7 +27,7 @@ function harness({ failPost = false, items = [], failSave = false, capabilities 
     } },
     crypto: { randomUUID: () => `request-${++count}` },
     sessionStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
-    setTimeout: () => 1, clearTimeout() {},
+    setTimeout: (callback, delay) => { timers.push({ callback, delay }); return 1; }, clearTimeout() {},
   });
   vm.runInContext(readFileSync(resolve(__dirname, "../../server/static/review.js"), "utf8"), context);
   const host = { state, toast: message => notices.push(message), flushEdits: async () => {
@@ -41,7 +41,7 @@ function harness({ failPost = false, items = [], failSave = false, capabilities 
     }
     return { items, current_fingerprint: "c".repeat(64) };
   } };
-  return { mount: () => context.window.DraftReview.mount(host), state, calls, elements, notices };
+  return { mount: () => context.window.DraftReview.mount(host), state, calls, elements, notices, timers };
 }
 
 function flatten(element) {
@@ -115,4 +115,18 @@ test("review billing displays the actual ledger amount with micro-CNY precision"
     billing: { status: "settled", reserved_micro_cny: 200000, actual_micro_cny: 12345 } }] });
   await h.mount();
   assert.match(flatten(h.elements.get("#draftReviewResults")), /0\.12345 积分（已结算）/);
+});
+
+test("a completed report continues polling until delayed billing settles", async () => {
+  const run = { id: "b".repeat(32), fingerprint: "c".repeat(64), status: "completed",
+    billing: { status: "reserved", reserved_micro_cny: 200000 } };
+  const h = harness({ items: [run] });
+  await h.mount();
+  assert.equal(h.timers.length, 1);
+  assert.equal(h.timers[0].delay, 10000);
+  run.billing = { status: "settled", actual_micro_cny: 12345 };
+  h.timers[0].callback();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(flatten(h.elements.get("#draftReviewResults")), /0\.12345 积分（已结算）/);
+  assert.equal(h.timers.length, 1);
 });

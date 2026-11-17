@@ -77,9 +77,11 @@
     button.disabled = submitting || !result.current_fingerprint;
     document.querySelector("#draftReviewHint").textContent = result.unavailable_reason ||
       "检查时保存当前正文快照。结果用于修改参考，不会替换正文。";
-    if (result.items.some(run => !terminal.has(run.status))) {
+    const active = result.items.some(run => !terminal.has(run.status));
+    const settling = result.items.some(run => run.status === "completed" && run.billing?.status === "reserved");
+    if (active || settling) {
       clearTimeout(timer);
-      timer = setTimeout(() => { void refresh(projectId, revision).catch(() => {}); }, 2000);
+      timer = setTimeout(() => { void refresh(projectId, revision).catch(() => {}); }, active ? 2000 : 10000);
     }
     return result;
   }
