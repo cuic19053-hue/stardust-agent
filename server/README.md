@@ -60,6 +60,8 @@ ollama pull bge-m3
 
 默认项目数据库、上传材料、OCR 结果和 Word 文件保存在仓库根目录 `.agent-data/`，该目录已加入 `.gitignore`。可用环境变量 `PROPOSAL_AGENT_DATA_DIR` 改到其他本地路径。
 
+可选的 [LangGraph 草稿预审](../docs/design/LANGGRAPH_REVIEW_V1.md) 使用独立本地 worker 检查指定草稿快照，保存报告和检查点。安装 `review` 可选依赖并显式设置 `LOCAL_REVIEW_ENABLED=true` 后，创新训练项目会显示“检查这版草稿”。本地版本默认只运行规则，可选择本机 Ollama；尚未接入云端生产任务和计费。
+
 ## 当前网页流程
 
 也可以点击“开始新对话”，先描述需求；系统识别出明确的申报类型后绑定对应 Skill，或在工作台中手动选择。尚未确定赛道时仍可继续交流，不会默认选择大创。已有项目不会因为聊天中提到其他赛道而自动切换。

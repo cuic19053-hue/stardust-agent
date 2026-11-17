@@ -546,6 +546,17 @@
                 <button id="reviewBtn" class="button button-secondary button-small">开启模拟评审</button>
               </div>
               <div id="reviewResult" class="review-result hidden"></div>
+              <div id="draftReviewPanel" class="hidden">
+                <div class="optional-review-row">
+                  <div>
+                    <strong>检查这版草稿</strong>
+                    <small id="draftReviewHint">检查指定正文与已确认材料，保留每次报告。</small>
+                    <label><input type="checkbox" id="draftReviewModel"> 同时检查论证与事实依据（使用本地模型）</label>
+                  </div>
+                  <button id="draftReviewBtn" class="button button-secondary button-small">检查这版草稿</button>
+                </div>
+                <div id="draftReviewResults" class="review-result"></div>
+              </div>
               <div class="export-row">
                 <div>
                   <strong>导出完整申报书</strong>
@@ -1044,6 +1055,7 @@
   <script src="/static/vendor/supabase-js-2.118.0.js"></script>
   <script src="/static/vendor/tus-js-client-4.3.1.js"></script>
   <script src="/static/material.js"></script>
+  <script src="/static/review.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

@@ -29,7 +29,7 @@ SERVER_DIR = Path(__file__).resolve().parent
 STATIC_DIR = SERVER_DIR / "static"
 ASSET_VERSIONS = {
     name: hashlib.sha256((STATIC_DIR / name).read_bytes()).hexdigest()[:16]
-    for name in ("app.js", "app.css", "material.js")
+    for name in ("app.js", "app.css", "material.js", "review.js")
 }
 MICRO_CNY_PER_CREDIT = 100_000  # 1 CNY = 10 workbench credits
 if str(ROOT) not in sys.path:
@@ -307,6 +307,8 @@ local_chat_service = LocalChatAPI(
     lambda: CLOUD_MODE,
 )
 register_local_chat_api(app, local_chat_service)
+from proposal.review_api import register_review_api
+register_review_api(app, lambda: store, lambda: CLOUD_MODE)
 
 @app.exception_handler(RequestValidationError)
 async def validation_error(request: Request, exc: RequestValidationError):
@@ -528,7 +530,7 @@ def home() -> str:
     if not index.exists():
         return "<h1>大创 Agent</h1><p>前端正在初始化，请稍后重试。</p>"
     html = index.read_text(encoding="utf-8")
-    for filename in ("app.js", "app.css", "material.js"):
+    for filename in ("app.js", "app.css", "material.js", "review.js"):
         digest = ASSET_VERSIONS.get(filename, "")
         if digest:
             html = html.replace(f'/static/{filename}"', f'/static/{filename}?v={digest}"')

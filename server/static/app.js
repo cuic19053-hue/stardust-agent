@@ -1360,6 +1360,11 @@
       renderSections();
       if (window.MaterialPilot) await window.MaterialPilot.mount({ api, state, toast, reload: loadProject, isProjectActive: chatProjectIsActive });
       if (revision !== projectLoadRevision) return;
+      if (window.DraftReview) void window.DraftReview.mount({ api, state, toast,
+        flushEdits: async () => {
+          await flushDraftEdits();
+          if (window.MaterialPilot?.active()) await window.MaterialPilot.flushEdits();
+        } });
       renderDiagrams();
       renderMessages();
       restoreInterruptedChatMessage(projectId);

@@ -10,3 +10,6 @@ rapidocr>=3.9,<4
 onnxruntime>=1.18
 mcp>=2.0,<3
 ddgs>=9.0,<10
+# Legacy pip / CI installs include the optional local review dependencies.
+# Runtime still requires LOCAL_REVIEW_ENABLED=true and rejects cloud mode.
+-r review-requirements.txt
