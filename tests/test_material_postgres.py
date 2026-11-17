@@ -373,4 +373,5 @@ from cloud_review_postgres_cases import (  # noqa: E402,F401
     test_unknown_inference_and_expired_lease_never_replay_or_refund as test_review_unknown_inference,
     test_insufficient_credits_never_creates_paid_task as test_review_credit_preflight,
     test_commit_then_timeout_reuses_response_and_never_rebills as test_review_cached_paid_response,
+    test_scheduler_pause_invalidates_leases_and_resumes_only_safe_work as test_review_scheduler_pause,
 )
