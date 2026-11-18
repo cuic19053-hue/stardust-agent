@@ -1369,12 +1369,7 @@
       if (window.MaterialPilot) await window.MaterialPilot.mount({ api, state, toast, reload: loadProject, isProjectActive: chatProjectIsActive });
       if (revision !== projectLoadRevision) return;
       if (window.DraftReview) void window.DraftReview.mount({ api, state, toast,
-        focusSection: sectionId => {
-          handleTabNavigation("panel-draft");
-          const section = document.getElementById(`draft-sec-${sectionId}`);
-          section?.scrollIntoView({ behavior: "smooth", block: "center" });
-          section?.querySelector("textarea")?.focus();
-        },
+        focusSection: focusDraftSection,
         focusMaterials: () => {
           handleTabNavigation("panel-materials");
           document.getElementById("panel-materials")?.scrollIntoView({ behavior: "smooth" });
@@ -4826,6 +4821,25 @@
     if (btn) {
       btn.textContent = state.chatCollapsed ? "💬 展开助理" : "💬 对话助理";
     }
+  }
+
+  function focusDraftSection(sectionId) {
+    const section = document.getElementById(`draft-sec-${sectionId}`);
+    const panel = section?.closest(".panel");
+    if (!panel?.id) {
+      toast("该章节已不在当前目录中。", true);
+      return;
+    }
+    handleTabNavigation(panel.id);
+    if (section.querySelector(".draft-section-body.folded")) {
+      section.querySelector(".fold-toggle-btn")?.click();
+    }
+    const editor = section.querySelector("textarea");
+    if (editor?.classList.contains("hidden")) {
+      section.querySelector(".mode-switch-btn")?.click();
+    }
+    editor?.focus({ preventScroll: true });
+    section.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
   function handleTabNavigation(targetId) {

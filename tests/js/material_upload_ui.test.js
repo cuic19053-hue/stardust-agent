@@ -48,12 +48,19 @@ function harness(sharedSession = new Map()) {
   let nextTimer = 1;
   let draftAreas = [];
   let factFields = [];
+  let workspacePanels = [];
   const document = {
     querySelector(selector) {
       if (!elements.has(selector)) elements.set(selector, new Element());
       return elements.get(selector);
     },
-    querySelectorAll: (selector) => selector === ".draft-section textarea" ? draftAreas : selector === "[data-fact]" ? factFields : [],
+    getElementById: (id) => elements.get(`#${id}`) || null,
+    querySelectorAll(selector) {
+      if (selector === ".draft-section textarea") return draftAreas;
+      if (selector === "[data-fact]") return factFields;
+      if (selector === ".workspace-main .panel") return workspacePanels;
+      return [];
+    },
     createElement: (tag) => new Element(tag),
     addEventListener() {},
     body: new Element("body"),
@@ -96,7 +103,7 @@ function harness(sharedSession = new Map()) {
       syncAuthControls, initializeCloudAuth, submitAuthForm,
       readPublicCache, writePublicCache, sameOriginAuthFetch, storeLlmConfig, loadCloudModelConfig, saveSelectedLlmConfig,
       sendChat, syncChatControls, loadProject, deleteCurrentProject, startGeneralChat, selectConversationSkill, configureSkillWorkspace, renderFacts, saveFacts, renderSections, recommendOutline, saveOutline, validate, restoreInterruptedChatMessage, updateRecoveredChatInput, startBatchGeneration, cancelBatchGeneration,
-      exportDoc, fetchExportBlob, flushDraftEdits, showChatDrafts, clearExportArtifacts,
+      exportDoc, fetchExportBlob, flushDraftEdits, showChatDrafts, clearExportArtifacts, focusDraftSection,
       setApi(fn) { api = fn; },
       setLoadProject(fn) { loadProject = fn; },
       setChatRefresh(fn) { refreshProjects = fn; loadUserBalance = fn; },
@@ -108,6 +115,7 @@ function harness(sharedSession = new Map()) {
     element: (selector) => document.querySelector(selector),
     setDraftAreas: (areas) => { draftAreas = areas; },
     setFactFields: (fields) => { factFields = fields; },
+    setWorkspacePanels: (panels) => { workspacePanels = panels; },
   };
 }
 
@@ -119,6 +127,46 @@ const doc = {
   kind: "source",
   confirmed: false,
 };
+
+test("a review issue opens the chapter panel and focuses an editor in a folded preview", () => {
+  const h = harness();
+  const draft = h.element("#draft-panel");
+  const review = h.element("#finish-panel");
+  draft.id = "draft-panel";
+  review.id = "finish-panel";
+  draft.classList.add("hidden");
+  draft.scrollIntoView = () => {};
+  h.setWorkspacePanels([draft, review]);
+
+  const section = h.element("#draft-sec-method");
+  const body = new Element();
+  const editor = new Element("textarea");
+  const fold = new Element("button");
+  const edit = new Element("button");
+  body.classList.add("folded");
+  editor.classList.add("hidden");
+  fold.addEventListener("click", () => body.classList.remove("folded"));
+  edit.addEventListener("click", () => editor.classList.remove("hidden"));
+  section.closest = selector => selector === ".panel" ? draft : null;
+  section.querySelector = selector => ({
+    ".draft-section-body.folded": body.classList.contains("folded") ? body : null,
+    ".fold-toggle-btn": fold,
+    ".mode-switch-btn": edit,
+    "textarea": editor,
+  })[selector];
+  editor.focus = () => {
+    assert.equal(body.classList.contains("folded"), false);
+    assert.equal(editor.classList.contains("hidden"), false);
+    editor.focused = true;
+  };
+  section.scrollIntoView = () => { section.scrolled = true; };
+
+  h.ui.focusDraftSection("method");
+  assert.equal(h.ui.state.activeTab, draft.id);
+  assert.equal(draft.classList.contains("hidden"), false);
+  assert.equal(review.classList.contains("hidden"), true);
+  assert.ok(editor.focused && section.scrolled);
+});
 
 test("recommended outline previews without a model and retains saved chapters", async () => {
   const h = harness();
