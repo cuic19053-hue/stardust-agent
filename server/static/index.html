@@ -77,6 +77,9 @@
       <!-- Top Navigation Bar -->
       <header class="topbar">
         <div class="topbar-left">
+          <button type="button" id="mobileMenuBtn" class="icon-button mobile-only" aria-label="打开工作台菜单" aria-haspopup="dialog" aria-controls="mobileMenuDialog">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+          </button>
           <div class="breadcrumb">
             <button type="button" id="homeBreadcrumbBtn" class="breadcrumb-home" title="返回欢迎主页">Agent 工作台</button>
             <span class="crumb-divider">/</span>
@@ -270,6 +273,23 @@
 
       <!-- 3. Main Workspace -->
       <section id="workspace" class="workspace hidden">
+        <nav class="mobile-workspace-nav mobile-only" aria-label="项目功能">
+          <button type="button" data-mobile-target="chat" aria-pressed="true">对话</button>
+          <button type="button" data-mobile-target="panel-materials" aria-pressed="false">材料</button>
+          <button type="button" data-mobile-target="draft-panel" aria-pressed="false">草稿</button>
+          <button type="button" data-mobile-target="finish-panel" aria-pressed="false">导出</button>
+          <label class="mobile-more-stages">
+            <span aria-hidden="true">更多⌄</span>
+            <select id="mobileMoreStages" aria-label="更多项目功能">
+              <option value="" disabled selected>更多项目功能</option>
+              <option value="sources-panel">文献与通知</option>
+              <option value="facts-panel">事实信息</option>
+              <option value="outline-panel">申报大纲</option>
+              <option value="diagrams-panel">技术路线图</option>
+            </select>
+          </label>
+        </nav>
+
         <div class="project-heading">
           <div class="project-title-wrap">
             <div class="eyebrow"><span class="sparkle">✦</span> <span id="projectSkillName">申报材料工作区</span></div>
@@ -312,7 +332,7 @@
           <button type="button" class="workspace-tab-btn" data-target="finish-panel">🛡️ 质检与导出</button>
         </nav>
 
-        <div class="workspace-grid" id="workspaceGrid">
+        <div class="workspace-grid" id="workspaceGrid" data-mobile-view="chat">
           <div class="workspace-main" id="workspaceMain">
             <!-- 1. 项目材料与知识库 -->
             <section class="panel panel-materials" id="panel-materials">
@@ -346,7 +366,11 @@
                 <div class="upload-icon">⇪</div>
                 <div class="upload-title" id="uploadTitle">拖拽文件至此处，或点击浏览选择</div>
                 <div class="upload-hint" id="uploadHint">Word、PDF、扫描件或照片 · 单个文件最大 50 MB</div>
-                <button type="button" class="button button-secondary" id="chooseFileBtn">选择本机文件</button>
+                <div class="upload-file-actions">
+                  <button type="button" class="button button-secondary" id="chooseFileBtn">选择本机文件</button>
+                  <button type="button" class="button button-primary mobile-only" id="mobileCameraBtn">拍照上传</button>
+                  <input type="file" id="mobileCameraInput" accept="image/jpeg,image/png,image/webp" capture="environment" hidden>
+                </div>
               </div>
               <div id="uploadResult" class="upload-result hidden" role="status" aria-live="polite"></div>
               <div id="documentsList" class="documents-list"></div>
@@ -619,7 +643,7 @@
                 <input type="file" id="chatFileInput" multiple hidden>
                 <div class="compose-footer">
                   <div class="compose-attachments">
-                    <button type="button" id="chatAttachBtn" class="attach-button" title="单个文件最大 50 MB">＋ 添加材料（单个最大 50 MB）</button>
+                    <button type="button" id="chatAttachBtn" class="attach-button" title="单个文件最大 50 MB"><span class="desktop-attachment-label">＋ 添加材料（单个最大 50 MB）</span><span class="mobile-only">＋ 材料</span></button>
                     <select id="chatUploadKind" aria-label="选择材料类型">
                       <option value="source">项目信息</option>
                       <option value="template">学校模板</option>
@@ -642,6 +666,15 @@
       </section>
     </main>
   </div>
+
+  <dialog id="mobileMenuDialog" class="mobile-menu mobile-only" aria-labelledby="mobileMenuTitle">
+    <div class="mobile-menu-header">
+      <h2 id="mobileMenuTitle">工作台菜单</h2>
+      <button type="button" id="closeMobileMenuBtn" class="icon-button" aria-label="关闭工作台菜单">×</button>
+    </div>
+    <div id="mobileMenuProjects"></div>
+    <div id="mobileMenuActions"></div>
+  </dialog>
 
   <!-- 模型设置弹窗 -->
   <dialog id="modelSettingsDialog" class="model-settings-dialog">

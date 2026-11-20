@@ -4430,3 +4430,468 @@ button[type="submit"]:active,
 .link-btn:hover {
   color: var(--stardust-primary-dark);
 }
+
+.mobile-only {
+  display: none;
+}
+
+.upload-file-actions {
+  display: contents;
+}
+
+@media (max-width: 640px), (max-width: 1024px) and (max-height: 540px) and (hover: none) and (pointer: coarse) {
+  :root {
+    --topbar-height: 56px;
+  }
+
+  .app-shell {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 100dvh;
+  }
+
+  .app-shell > .sidebar, .app-shell > .resize-handle,
+  .topbar > .topbar-actions, .crumb-skill-badge,
+  .welcome .eyebrow, .welcome-visual, .welcome-points,
+  .workspace-tabs, .workspace-resize-handle, .assistant-safety,
+  .desktop-attachment-label, #uploadTitle, .compose-help {
+    display: none;
+  }
+
+  .topbar {
+    padding: 0 12px;
+    background: var(--bg-surface);
+    transform: none;
+    will-change: auto;
+  }
+
+  .topbar-left, .breadcrumb {
+    min-width: 0;
+  }
+
+  .breadcrumb-home {
+    flex-shrink: 0;
+    font-weight: 700;
+    color: var(--text-heading);
+  }
+
+  .breadcrumb strong {
+    font-size: 13px;
+  }
+
+  #mobileMenuBtn, #mobileCameraBtn {
+    display: inline-flex;
+  }
+
+  .icon-button, .breadcrumb-home, .button, .upload-tab,
+  .send-button, .attach-button, .auth-mode-toggle {
+    min-height: 44px;
+  }
+
+  .icon-button, .send-button {
+    min-width: 44px;
+    flex-shrink: 0;
+  }
+
+  /* Keep the original project list and account controls in a native modal. */
+  .mobile-menu[open] {
+    display: block;
+    inset: 0 auto 0 0;
+    margin: 0;
+    width: min(90vw, 380px);
+    max-width: none;
+    height: var(--mobile-viewport-height, 100dvh);
+    max-height: none;
+    padding: 0 0 16px;
+    border: 0;
+    background: var(--bg-surface);
+    color: var(--text-main);
+    overscroll-behavior: contain;
+  }
+
+  .mobile-menu::backdrop {
+    background: rgb(15 23 42 / 48%);
+  }
+
+  body:has(.mobile-menu[open]) {
+    overflow: hidden;
+  }
+
+  .mobile-menu-header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 12px 6px 18px;
+    border-bottom: 1px solid var(--border-light);
+    background: var(--bg-surface);
+  }
+
+  .mobile-menu-header h2 {
+    margin: 0;
+    font-size: 16px;
+  }
+
+  .mobile-menu .sidebar {
+    position: static;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    height: auto;
+    padding: 16px;
+    border: 0;
+    background: transparent;
+  }
+
+  .mobile-menu :is(.brand, .sidebar-footer, .sidebar-recharge-btn, .proj-del-icon),
+  .mobile-menu :is(#toggleChatBtn, #quickExportTopBtn, #openRechargeBtn) {
+    display: none;
+  }
+
+  .mobile-menu :is(.side-label, .project-list) {
+    display: flex;
+  }
+
+  .mobile-menu .project-list {
+    flex: auto;
+    padding: 0;
+    margin: 0;
+    overflow: visible;
+  }
+
+  .mobile-menu :is(.project-item, .topbar-actions button) {
+    min-height: 44px;
+  }
+
+  .mobile-menu .topbar-actions {
+    flex-wrap: wrap;
+    padding: 16px;
+    border-top: 1px solid var(--border-light);
+  }
+
+  .welcome {
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr);
+    min-height: auto;
+    padding: 30px 16px;
+  }
+
+  .welcome h1 {
+    font-size: clamp(29px, 8vw, 40px);
+  }
+
+  .welcome-desc {
+    margin-bottom: 18px;
+  }
+
+  .welcome-actions {
+    gap: 8px;
+    margin-bottom: 0;
+  }
+
+  .welcome-actions .button {
+    flex: 1 1 auto;
+  }
+
+  .welcome-hero-card, .create-form {
+    padding: 14px;
+  }
+
+  .hero-card-header, .hero-input-box, .choice-buttons {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .hero-input-box .button {
+    width: 100%;
+  }
+
+  .quick-tag-btn, .chat-tools button {
+    min-height: 36px;
+  }
+
+  .fold-toggle-btn {
+    min-width: 36px;
+    min-height: 36px;
+  }
+
+  .create-panel, .workspace {
+    padding: 14px 12px 24px;
+  }
+
+  .form-row, .facts-grid, .facts-summary, .diagram-gallery {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .auth-gate {
+    padding: 12px;
+    overflow-y: auto;
+    align-items: safe center;
+  }
+
+  .auth-card {
+    padding: 18px;
+  }
+
+  :is(.auth-gate, .mobile-menu, .main, dialog)
+    :is(input:not([type="checkbox"], [type="radio"], [type="file"]), textarea, select) {
+    min-width: 0;
+    max-width: 100%;
+    font-size: 16px;
+  }
+
+  .workspace {
+    display: flex;
+    flex-direction: column;
+    padding-top: 4px;
+    overflow-wrap: anywhere;
+  }
+
+  .project-heading {
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: flex-start;
+    margin-bottom: 8px;
+    padding-bottom: 8px;
+  }
+
+  .project-title-wrap {
+    min-width: 0;
+  }
+
+  .project-heading h1 {
+    font-size: 20px;
+  }
+
+  .project-meta, .template-status, .panel-actions, .panel-heading-actions,
+  .draft-panel-top-actions, .draft-section-head, .draft-section-actions,
+  .toolbar-group, .template-quick-actions, .diagram-controls, .outline-actions {
+    flex-wrap: wrap;
+  }
+
+  #conversationSkillSelect {
+    flex: 1 1 150px;
+    width: 100%;
+  }
+
+  .mobile-workspace-nav {
+    position: sticky;
+    top: var(--topbar-height);
+    z-index: 10;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px;
+    padding: 6px 0;
+    margin: 0 0 8px;
+    background: var(--bg-app);
+  }
+
+  .mobile-workspace-nav button, .mobile-more-stages {
+    position: relative;
+    display: grid;
+    place-items: center;
+    min-height: 44px;
+    padding: 0;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+    color: var(--text-heading);
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .mobile-workspace-nav button[aria-pressed="true"], .mobile-more-stages.active {
+    color: var(--stardust-primary-dark);
+    background: var(--bg-active);
+    border-color: var(--border-active);
+  }
+
+  .mobile-more-stages {
+    overflow: hidden;
+  }
+
+  .mobile-more-stages select {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .mobile-more-stages:focus-within {
+    outline: 2px solid var(--stardust-primary);
+    outline-offset: 2px;
+  }
+
+  .workspace-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .workspace-grid[data-mobile-view="chat"] .workspace-main,
+  .workspace-grid:not([data-mobile-view="chat"]) .assistant-column,
+  .workspace-main > .panel:not(.mobile-active-panel) {
+    display: none;
+  }
+
+  .workspace-main > .panel.mobile-active-panel {
+    display: block !important;
+  }
+
+  .workspace:has(.workspace-grid[data-mobile-view="chat"]) {
+    height: calc(var(--mobile-viewport-height, 100dvh) - var(--topbar-height));
+    min-height: 340px;
+    padding-bottom: 10px;
+  }
+
+  .workspace:has(.workspace-grid[data-mobile-view="chat"]) .project-heading {
+    display: none;
+  }
+
+  .workspace:has(.workspace-grid[data-mobile-view="chat"]) .template-status {
+    margin: 0 0 8px;
+  }
+
+  .workspace:has(.workspace-grid:not([data-mobile-view="finish-panel"])) #templateStatus:not(.warning, .ready),
+  .workspace:has(.workspace-grid[data-mobile-view="chat"]) #templateStatus.ready {
+    display: none;
+  }
+
+  .workspace-grid[data-mobile-view="chat"] {
+    flex: 1;
+    min-height: 0;
+    align-items: stretch;
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .workspace-grid[data-mobile-view="chat"] .assistant-column {
+    min-width: 0;
+    min-height: 0;
+    display: flex !important;
+    position: static;
+  }
+
+  .workspace-main > .panel {
+    padding: 14px;
+  }
+
+  .panel-heading {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .panel-heading > div:nth-child(2) {
+    flex-basis: calc(100% - 48px);
+  }
+
+  .upload-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .upload-tab {
+    padding-inline: 4px;
+  }
+
+  .upload-zone {
+    padding: 12px;
+  }
+
+  .upload-file-actions {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .outline-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .outline-row input {
+    width: 0;
+    min-height: 40px;
+  }
+
+  .outline-row .remove-outline {
+    min-width: 36px;
+    min-height: 40px;
+  }
+
+  .source-search-row, .optional-review-row, .export-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .chat-panel {
+    flex: 1;
+    height: auto;
+    min-height: 0;
+  }
+
+  .chat-header {
+    height: 48px;
+    padding: 0 8px 0 12px;
+  }
+
+  .chat-messages {
+    min-height: 0;
+    padding: 12px;
+    overscroll-behavior: contain;
+  }
+
+  .chat-tools {
+    flex-wrap: nowrap;
+    overflow: auto;
+    padding: 4px 10px;
+  }
+
+  .chat-tools button {
+    flex: 0 0 auto;
+  }
+
+  .chat-compose {
+    flex: 0 0 auto;
+    padding: 8px 10px;
+  }
+
+  .chat-compose textarea {
+    max-height: 96px;
+  }
+
+  .compose-attachments {
+    min-width: 0;
+  }
+
+  .compose-attachments select {
+    min-height: 44px;
+    width: 110px;
+    font-size: 13px;
+  }
+
+  .attach-button {
+    flex-shrink: 0;
+  }
+
+  .attach-button .mobile-only {
+    display: inline;
+  }
+
+  dialog:not(.mobile-menu) {
+    max-width: calc(100% - 20px);
+    max-height: calc(var(--mobile-viewport-height, 100dvh) - 20px);
+    padding: 14px;
+    overflow-wrap: anywhere;
+    overscroll-behavior: contain;
+  }
+
+  .toast {
+    top: calc(var(--topbar-height) + 8px);
+    bottom: auto;
+    width: max-content;
+    max-width: calc(100% - 24px);
+    pointer-events: none;
+  }
+}

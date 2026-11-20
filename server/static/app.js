@@ -1,6 +1,9 @@
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+  const mobileLayout = window.matchMedia?.(
+    "(max-width: 640px), (max-width: 1024px) and (max-height: 540px) and (hover: none) and (pointer: coarse)"
+  );
   const llmConfigKey = "innovation-proposal-agent-llm-config";
   const MICRO_CNY_PER_CREDIT = 100000; // ¥1 = 10 workbench credits
 
@@ -903,6 +906,7 @@
             state.turnstileToken = "";
           },
           theme: "auto",
+          ...(mobileLayout?.matches && window.innerWidth < 360 ? { size: "compact" } : {}),
         });
       } catch (err) {
         console.warn("Turnstile render error:", err);
@@ -1294,6 +1298,7 @@
     $("#crumbSkillBadge")?.classList.add("hidden");
     $("#quickExportTopBtn")?.classList.add("hidden");
     $$(".project-item").forEach(item => item.classList.remove("active"));
+    if (mobileLayout?.matches) window.scrollTo(0, 0);
   }
 
   function closeDeletedProject(projectId) {
@@ -1345,6 +1350,7 @@
         $("#privateRagResults")?.replaceChildren();
         $("#uploadResult").classList.add("hidden");
         clearExportArtifacts();
+        if (mobileLayout?.matches) showMobileWorkspaceView("chat");
       }
       state.project = project;
       try { localStorage.setItem(activeProjectKey, projectId); } catch {}
@@ -1425,6 +1431,13 @@
     if (paperSearch) paperSearch.classList.toggle("hidden", !researchOrCompetition);
     const diagramTab = $('.workspace-tab-btn[data-target="diagrams-panel"]');
     if (diagramTab) diagramTab.classList.toggle("hidden", !diagramsAvailable);
+    const mobileDiagramOption = $('#mobileMoreStages option[value="diagrams-panel"]');
+    if (mobileDiagramOption) {
+      mobileDiagramOption.disabled = !diagramsAvailable;
+      if (!diagramsAvailable && $("#workspaceGrid").dataset.mobileView === "diagrams-panel") {
+        showMobileWorkspaceView("chat");
+      }
+    }
     const diagramPanel = $("#diagrams-panel");
     if (diagramPanel) diagramPanel.classList.toggle("hidden", !diagramsAvailable);
     const photoTab = $('.upload-tab[data-kind="photo"]');
@@ -1570,6 +1583,7 @@
     $("#welcome").classList.add("hidden");
     $("#workspace").classList.add("hidden");
     $("#createPanel").classList.remove("hidden");
+    if (mobileLayout?.matches) window.scrollTo(0, 0);
   }
 
   async function startConversation() {
@@ -1699,6 +1713,7 @@
       toast(`已进入「${project.state?.skill_name || "申报材料"}」工作区。`);
       if (payload.has_template) {
         setUploadKind("template");
+        if (mobileLayout?.matches) showMobileWorkspaceView("panel-materials");
         $("#documentsList").scrollIntoView({ behavior: "smooth", block: "center" });
       } else {
         $("#chatInput").focus();
@@ -1835,6 +1850,8 @@
     const names = fileList.map((file) => file.name);
     const query = new URLSearchParams({ kind });
     state.uploading = true;
+    const cameraButton = $("#mobileCameraBtn");
+    if (cameraButton) cameraButton.disabled = true;
     $("#chooseFileBtn").disabled = true;
     $("#chatAttachBtn").disabled = true;
     const status = $("#uploadResult");
@@ -1874,6 +1891,7 @@
       if (fromChat) appendMessage("assistant", `上传没有完成：${error.message}`);
     } finally {
       state.uploading = false;
+      if (cameraButton) cameraButton.disabled = false;
       $("#chooseFileBtn").disabled = false;
       $("#chatAttachBtn").disabled = false;
       $("#fileInput").value = "";
@@ -3259,6 +3277,10 @@
   function renderSections() {
     const root = $("#draftSections");
     root.replaceChildren();
+    if (mobileLayout?.matches) {
+      allSectionsFolded = false;
+      $("#toggleAllSectionsBtn").textContent = "折叠全部";
+    }
     updateDraftStats();
     if (!state.outline?.length) {
       const note = document.createElement("div");
@@ -4843,6 +4865,10 @@
   }
 
   function handleTabNavigation(targetId) {
+    if (mobileLayout?.matches) {
+      showMobileWorkspaceView(targetId);
+      return;
+    }
     state.activeTab = targetId;
     $$(".workspace-tab-btn").forEach(btn => {
       btn.classList.toggle("active", btn.dataset.target === targetId);
@@ -4860,6 +4886,82 @@
         targetPanel.scrollIntoView({ block: "start" });
       }
     }
+  }
+
+  function showMobileWorkspaceView(targetId) {
+    const grid = $("#workspaceGrid");
+    grid.dataset.mobileView = targetId;
+    $(".mobile-active-panel", grid)?.classList.remove("mobile-active-panel");
+    if (targetId !== "chat") $(`#${targetId}`, grid)?.classList.add("mobile-active-panel");
+
+    const tabs = $$("[data-mobile-target]");
+    for (const tab of tabs) {
+      tab.setAttribute("aria-pressed", String(tab.dataset.mobileTarget === targetId));
+    }
+    const more = $("#mobileMoreStages");
+    const extraStageSelected = !tabs.some(tab => tab.dataset.mobileTarget === targetId);
+    more.value = extraStageSelected ? targetId : "";
+    more.parentElement.classList.toggle("active", extraStageSelected);
+
+    if (mobileLayout?.matches) window.scrollTo(0, 0);
+  }
+
+  function bindMobileControls() {
+    if (!mobileLayout) return;
+    const menu = $("#mobileMenuDialog");
+    const sidebar = $("#sidebar");
+    const actions = $(".topbar-actions");
+    const actionsHome = actions.parentElement;
+    const restoreMenuContent = () => {
+      $("#appShell").prepend(sidebar);
+      actionsHome.append(actions);
+    };
+    const closeMenu = () => {
+      menu.close();
+      restoreMenuContent();
+    };
+    $("#mobileMenuBtn").addEventListener("click", () => {
+      if (!mobileLayout?.matches) return;
+      $("#mobileMenuProjects").append(sidebar);
+      $("#mobileMenuActions").append(actions);
+      menu.showModal();
+    });
+    $("#closeMobileMenuBtn").addEventListener("click", closeMenu);
+    menu.addEventListener("close", () => {
+      if (!menu.open && sidebar.parentElement !== $("#appShell")) restoreMenuContent();
+    });
+    menu.addEventListener("click", (event) => {
+      if (event.target.closest(".project-item, #newProjectBtn, #newChatBtn, .topbar-actions button")) {
+        closeMenu();
+      }
+    }, { capture: true });
+    const updateMobileViewport = () => {
+      const viewport = window.visualViewport;
+      if (mobileLayout.matches && viewport?.scale === 1) {
+        document.documentElement.style.setProperty("--mobile-viewport-height", `${viewport.height}px`);
+      } else {
+        document.documentElement.style.removeProperty("--mobile-viewport-height");
+      }
+    };
+    mobileLayout.addEventListener("change", () => {
+      if (!mobileLayout.matches && menu.open) closeMenu();
+      updateMobileViewport();
+    });
+    window.visualViewport?.addEventListener("resize", updateMobileViewport);
+    updateMobileViewport();
+
+    for (const tab of $$("[data-mobile-target]")) {
+      tab.addEventListener("click", () => showMobileWorkspaceView(tab.dataset.mobileTarget));
+    }
+    $("#mobileMoreStages").addEventListener("change", (event) => {
+      showMobileWorkspaceView(event.target.value);
+    });
+    const cameraInput = $("#mobileCameraInput");
+    $("#mobileCameraBtn").addEventListener("click", () => cameraInput.click());
+    cameraInput.addEventListener("change", () => {
+      void uploadFiles([...cameraInput.files]);
+      cameraInput.value = "";
+    });
   }
 
   function setupResizeHandles() {
@@ -4929,6 +5031,7 @@
     $("#welcomeSetupBtn").addEventListener("click", createPanel);
     $("#heroStartBtn")?.addEventListener("click", triggerHeroStart);
     $("#heroProjectRequest")?.addEventListener("keydown", (e) => {
+      if (mobileLayout?.matches) return;
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         triggerHeroStart();
@@ -5031,6 +5134,7 @@
     $("#pilotFingerprintBtn").addEventListener("click", makePilotFingerprint);
     $("#chatForm").addEventListener("submit", sendChat);
     $("#chatInput").addEventListener("keydown", (event) => {
+      if (mobileLayout?.matches) return;
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         sendChat();
@@ -5233,6 +5337,7 @@
   async function init() {
     setupResizeHandles();
     bindEvents();
+    bindMobileControls();
     updateTemplateExplain();
     $("#chatFileInput").accept = chatUploadAccept($("#chatUploadKind").value);
     showAuthGate("正在初始化登录服务…");
