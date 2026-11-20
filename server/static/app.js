@@ -3058,6 +3058,11 @@
     badge.textContent = `${completed}/${outline.length} 章节 · 共 ${totalWords} 字`;
   }
 
+  function setDraftSaveStatus(statusPill, saved) {
+    statusPill.className = `section-status-pill ${saved ? "saved" : "unsaved"}`;
+    statusPill.textContent = saved ? "✓ 已保存" : "● 未保存";
+  }
+
   let allSectionsFolded = false;
   async function observeMaterialRequest(url, options, timeoutMs, timeoutMessage) {
     // Timing out the browser's wait does not establish whether the server or
@@ -3692,8 +3697,7 @@
           renderUncertainDrafts();
           if (saved.material_revision !== undefined) state.project.material_revision = saved.material_revision;
           const changedWhileSaving = editor.value !== currentVal;
-          statusPill.className = `section-status-pill ${changedWhileSaving ? "unsaved" : "saved"}`;
-          statusPill.textContent = changedWhileSaving ? "● 未保存" : "✓ 已保存";
+          setDraftSaveStatus(statusPill, !changedWhileSaving);
           save.textContent = changedWhileSaving ? "保存" : "已保存";
           setTimeout(() => {
             save.textContent = "保存";
@@ -4611,9 +4615,10 @@
     const projectId = state.project?.id;
     if (!projectId) throw new Error("请先打开项目");
     const edits = [...document.querySelectorAll(".draft-section textarea")].map(area => {
-      const sid = area.closest(".draft-section").id.slice("draft-sec-".length);
+      const section = area.closest(".draft-section");
+      const sid = section.id.slice("draft-sec-".length);
       const base = state.project.sections?.[sid] || "";
-      return { area, sid, base, content: area.value };
+      return { area, section, sid, base, content: area.value };
     }).filter(edit => edit.content !== edit.base);
     if (!edits.length) return;
     const latest = await api(`/api/projects/${projectId}`);
@@ -4624,7 +4629,7 @@
         throw new Error("章节已在其他页面变化，未覆盖您的编辑，请先核对版本");
     }
     state.project.material_revision = latest.material_revision;
-    for (const { area, sid, base, content } of edits) {
+    for (const { area, section, sid, base, content } of edits) {
       const saved = await api(`/api/projects/${projectId}/sections/${sid}`, {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content, base_content: base,
@@ -4634,7 +4639,11 @@
       state.project.sections ||= {};
       state.project.sections[sid] = content;
       if (saved.material_revision !== undefined) state.project.material_revision = saved.material_revision;
-      if (area.value !== content) throw new Error("保存期间正文又有修改，请保存最新版本后再导出");
+      const changedWhileSaving = area.value !== content;
+      const statusPill = $(".section-status-pill", section);
+      if (statusPill) setDraftSaveStatus(statusPill, !changedWhileSaving);
+      updateDraftStats();
+      if (changedWhileSaving) throw new Error("保存期间正文又有修改，请保存最新版本后再导出");
     }
   }
 
