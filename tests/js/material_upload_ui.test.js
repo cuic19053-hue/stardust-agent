@@ -488,8 +488,12 @@ test("download failure is not reported as a started download", async () => {
 
 test("export flushes the latest editor text with CAS before submitting", async () => {
   const h = harness(); exportingProject(h);
+  h.ui.state.outline = [{ id: "purpose", title: "立项目的" }];
+  const statusPill = Object.assign(new Element("span"), {
+    className: "section-status-pill unsaved", textContent: "● 未保存",
+  });
   const area = new Element("textarea"); area.value = "最新手写正文";
-  area.closest = () => ({ id: "draft-sec-purpose" });
+  area.closest = () => ({ id: "draft-sec-purpose", querySelector: () => statusPill });
   h.setDraftAreas([area]);
   const calls = [];
   h.ui.setApi(async (url, options = {}) => {
@@ -506,6 +510,41 @@ test("export flushes the latest editor text with CAS before submitting", async (
   assert.equal(JSON.parse(put.options.body).expected_revision, 3);
   assert.ok(calls.indexOf(put) < calls.findIndex(c => c.url.endsWith("/export")));
   assert.equal(h.ui.state.project.sections.purpose, "最新手写正文");
+  assert.equal(statusPill.className, "section-status-pill saved");
+  assert.equal(statusPill.textContent, "✓ 已保存");
+  assert.equal(h.element("#draftStatsBadge").textContent, "1/1 章节 · 共 6 字");
+});
+
+test("an edit during the export save remains unsaved and blocks the download", async () => {
+  const h = harness(); exportingProject(h);
+  const statusPill = new Element("span");
+  const area = new Element("textarea");
+  area.value = "本次提交的正文";
+  area.closest = () => ({ id: "draft-sec-purpose", querySelector: () => statusPill });
+  h.setDraftAreas([area]);
+  const calls = [];
+  let saveStarted;
+  const saving = new Promise(resolve => { saveStarted = resolve; });
+  let finishSave;
+  h.ui.setApi(async (url, options = {}) => {
+    calls.push(url);
+    if (options.method !== "PUT") return { ...h.ui.state.project, material_revision: 3 };
+    return new Promise(resolve => {
+      finishSave = resolve;
+      saveStarted();
+    });
+  });
+  const exporting = h.ui.exportDoc();
+  await saving;
+  area.value = "保存期间追加的正文";
+  finishSave({ material_revision: 4 });
+  await exporting;
+  assert.equal(h.ui.state.project.sections.purpose, "本次提交的正文");
+  assert.equal(area.value, "保存期间追加的正文");
+  assert.equal(statusPill.className, "section-status-pill unsaved");
+  assert.match(h.element("#toast").textContent, /保存期间正文又有修改/);
+  assert.equal(calls.some(url => url.endsWith("/export")), false);
+  assert.equal(h.created.length, 0);
 });
 
 test("concurrent chapter edit stops export without losing visible input", async () => {
@@ -638,7 +677,7 @@ test("section generation saves an existing unsaved edit before calling the model
   const section = h.element("#draftSections").children[0];
   const editor = section.children[1].children[1];
   editor.value = "生成前的手写修改";
-  editor.closest = () => ({ id: "draft-sec-purpose" });
+  editor.closest = () => ({ id: "draft-sec-purpose", querySelector: () => section.children[0].children[0].children[3] });
   h.setDraftAreas([editor]);
   const calls = [];
   h.ui.setApi(async (url, options = {}) => {
