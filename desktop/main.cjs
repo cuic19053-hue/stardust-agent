@@ -44,6 +44,9 @@ function localEnvironment() {
     "PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TMP", "TEMP",
     "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SYSTEMROOT", "WINDIR",
     "COMSPEC", "SYSTEMDRIVE", "LANG", "LC_ALL", "LD_LIBRARY_PATH",
+    "HOMEDRIVE", "HOMEPATH", "USERNAME", "PATHEXT", "OS", "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER", "PROGRAMDATA",
+    "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "COMMONPROGRAMFILES",
   ]);
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([name]) => osVariables.has(name.toUpperCase())),
@@ -57,6 +60,9 @@ function localEnvironment() {
     PYTHONNOUSERSITE: "1",
     PYTHONUTF8: "1",
     MPLCONFIGDIR: path.join(dataDirectory, "matplotlib"),
+    OMP_NUM_THREADS: "2",
+    OPENBLAS_NUM_THREADS: "2",
+    ...(app.commandLine.hasSwitch("stardust-diagnostics") ? { STARDUST_DESKTOP_DIAGNOSTICS: "1" } : {}),
   };
 }
 

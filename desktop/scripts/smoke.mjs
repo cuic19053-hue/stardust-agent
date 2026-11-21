@@ -50,7 +50,10 @@ const image = path.join(temporary, "desktop-ocr.png");
 async function open() {
   running = await electron.launch({
     ...(development ? {} : { executablePath: installed.executable }),
-    args: [...(development ? [desktop] : []), `--user-data-dir=${profile}`],
+    args: [
+      ...(development ? [desktop] : []),
+      `--user-data-dir=${profile}`, "--stardust-diagnostics",
+    ],
     env: {
       ...process.env,
       SUPABASE_URL: "https://not-used.invalid",

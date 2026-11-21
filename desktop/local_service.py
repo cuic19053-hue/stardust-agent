@@ -1,6 +1,7 @@
 """Start the workstation on a loopback socket accessible only to its window."""
 
 import argparse
+import faulthandler
 import hmac
 import os
 import socket
@@ -32,8 +33,12 @@ def serve():
     parser.add_argument("--port", type=int, default=0, choices=range(65536), metavar="0-65535")
     preferred = parser.parse_args().port
     token = os.environ.pop("STARDUST_DESKTOP_TOKEN", "")
+    diagnostics = os.environ.pop("STARDUST_DESKTOP_DIAGNOSTICS", "") == "1"
     if len(token) < 32 or not os.environ.get("PROPOSAL_AGENT_DATA_DIR"):
         raise RuntimeError("The desktop launcher must configure the local token and data directory.")
+
+    if diagnostics:
+        faulthandler.dump_traceback_later(25, repeat=True)
 
     from server.app import app
 
@@ -49,7 +54,7 @@ def serve():
         server = uvicorn.Server(uvicorn.Config(
             DesktopAccess(app, port, token),
             host="127.0.0.1", port=port, proxy_headers=False,
-            access_log=False, loop="asyncio", http="h11", ws="none",
+            access_log=diagnostics, loop="asyncio", http="h11", ws="none",
         ))
 
         def watch_launcher():
