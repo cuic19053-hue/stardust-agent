@@ -1233,7 +1233,7 @@
       delBtn.title = "删除此项目";
       delBtn.addEventListener("click", async (e) => {
         e.stopPropagation();
-        if (!confirm(`确定删除项目“${project.title}”吗？`)) return;
+        if (!confirm(`确定删除项目“${project.title}”吗？${state.cloudMode ? "历史加密备份可能长期保留已删除的数据。" : ""}`)) return;
         try {
           await api(`/api/projects/${project.id}`, { method: "DELETE" });
           closeDeletedProject(project.id);
@@ -2129,7 +2129,7 @@
       }
       const remove = button("移除", "button button-small button-quiet");
       remove.addEventListener("click", async () => {
-        if (!confirm(`确定从本项目移除“${doc.original_name}”吗？`)) return;
+        if (!confirm(`确定从本项目移除“${doc.original_name}”吗？${state.cloudMode ? "历史加密备份可能长期保留已删除的材料。" : ""}`)) return;
         try {
           await api(`/api/documents/${doc.id}`, { method: "DELETE" });
           await refreshChatAfterError(projectId);
@@ -4567,7 +4567,7 @@
   }
 
   async function deleteCurrentProject() {
-    if (!state.project || !confirm(`确定删除“${state.project.title}”及其本机材料吗？删除后无法恢复。`)) return;
+    if (!state.project || !confirm(`确定删除“${state.project.title}”及其材料吗？${state.cloudMode ? "历史加密备份可能长期保留已删除的数据。" : "删除后无法恢复。"}`)) return;
     const projectId = state.project.id;
     try {
       await api(`/api/projects/${projectId}`, { method: "DELETE" });
@@ -4916,7 +4916,7 @@
     });
     $("#explainChatStorageBtn")?.addEventListener("click", () => {
       toggleChatMenu();
-      toast(state.cloudMode ? "对话记录已随项目保存至云端安全空间。" : "对话记录保存在当前本机项目库中。");
+      toast(state.cloudMode ? "对话记录随项目保存在云端；加密备份可能长期保留历史数据。" : "对话记录保存在当前本机项目库中。");
     });
     $("#clearChatViewBtn")?.addEventListener("click", () => {
       toggleChatMenu();
