@@ -1,0 +1,55 @@
+{
+  "name": "stardust-agent-desktop",
+  "version": "2.2.0",
+  "description": "Stardust Agent 桌面工作台",
+  "author": "Stardust Agent",
+  "license": "MIT",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "stage": "node scripts/stage.mjs",
+    "start": "electron .",
+    "package": "npm run stage && electron-builder --publish never",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "devDependencies": {
+    "electron": "45.4.1",
+    "electron-builder": "26.18.0",
+    "playwright-core": "1.56.1"
+  },
+  "build": {
+    "appId": "website.stardust.agent",
+    "productName": "Stardust Agent",
+    "artifactName": "Stardust-Agent-${version}-${os}-${arch}.${ext}",
+    "files": ["main.cjs", "status.html"],
+    "directories": {
+      "buildResources": ".stage/icons",
+      "output": "dist"
+    },
+    "extraResources": [
+      {"from": ".stage/runtime", "to": "workbench-runtime"}
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": ["dmg"],
+      "hardenedRuntime": false,
+      "identity": "-",
+      "extendInfo": { "LSMinimumSystemVersion": "14.0" }
+    },
+    "win": {
+      "target": ["nsis"],
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": false
+    },
+    "linux": {
+      "category": "Office",
+      "executableName": "stardust-agent",
+      "maintainer": "Stardust Agent <opensource@stardust.website>",
+      "target": ["deb", "tar.gz"]
+    }
+  }
+}

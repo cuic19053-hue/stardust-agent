@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+  <title>Stardust Agent</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: #f5f7fb; color: #18263e; font: 15px system-ui, sans-serif; }
+    main { width: min(430px, 90vw); padding: 36px; background: #fff; border: 1px solid #e2e8f0; border-radius: 18px; }
+    span { display: grid; width: 48px; height: 48px; place-items: center; border-radius: 13px; background: #6366f1; color: #fff; font-size: 24px; }
+    h1 { margin: 22px 0 8px; font-size: 23px; }
+    p { margin: 0; color: #475569; line-height: 1.6; overflow-wrap: anywhere; }
+    nav { margin-top: 22px; }
+    a { display: inline-block; margin-right: 10px; padding: 8px 14px; border: 1px solid #c7d2fe; border-radius: 8px; color: #3730a3; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <main role="status">
+    <span aria-hidden="true">✦</span>
+    <h1 id="heading">正在打开 Stardust Agent</h1>
+    <p id="message">正在启动本机工作台。</p>
+    <nav id="recovery" hidden>
+      <a href="stardust-desktop:retry">重试</a>
+      <a href="stardust-desktop:logs">查看启动日志</a>
+    </nav>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    if (params.get("state") === "error") {
+      document.getElementById("heading").textContent = "工作台启动失败";
+      document.getElementById("message").textContent = params.get("message") || "请重试或查看启动日志。";
+      document.getElementById("recovery").hidden = false;
+    }
+  </script>
+</body>
+</html>
