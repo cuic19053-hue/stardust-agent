@@ -12,6 +12,8 @@
 
 [打开在线工作台](https://agent.stardust.website) · [查看大创 Word 样例](./examples/demos/demo_innovation_research.docx) · [Agent 设计说明](./docs/design/AGENT_REFACTOR.md) · [English](./README_EN.md)
 
+[下载桌面客户端](https://github.com/cuic19053-hue/stardust-agent/releases/tag/desktop-v2.2.0) · [桌面版使用说明](./desktop/README.md)
+
 ## 快速上手
 
 1. 打开 [在线工作台](https://agent.stardust.website)，登录后创建项目。

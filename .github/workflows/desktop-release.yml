@@ -1,0 +1,153 @@
+name: Desktop packages
+
+on:
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/desktop-release.yml'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the verified desktop packages as a GitHub Release
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.platform }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {platform: mac, arch: arm64, runner: macos-15}
+          - {platform: mac, arch: x64, runner: macos-15-intel}
+          - {platform: win, arch: x64, runner: windows-2025}
+          - {platform: win, arch: arm64, runner: windows-11-arm}
+          - {platform: linux, arch: x64, runner: ubuntu-24.04}
+          - {platform: linux, arch: arm64, runner: ubuntu-24.04-arm}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          architecture: ${{ matrix.arch }}
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.15'
+          enable-cache: true
+          cache-dependency-glob: desktop/python-requirements.txt
+      - name: Prepare ARM64 Windows C++ compiler
+        if: matrix.platform == 'win' && matrix.arch == 'arm64'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: arm64
+      - name: Install Linux desktop and packaging dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends xvfb xauth libgtk-3-0t64 libnss3 libgbm1 libasound2t64
+      - name: Package the native build
+        working-directory: desktop
+        env:
+          CSC_FOR_PULL_REQUEST: 'true'
+        run: |
+          node -e "if (process.arch !== '${{ matrix.arch }}') throw new Error('Runner architecture mismatch: ' + process.arch)"
+          npm ci --no-audit --no-fund
+          npm run package -- --${{ matrix.arch }}
+      - name: Test the packaged macOS app
+        if: matrix.platform == 'mac'
+        working-directory: desktop
+        run: npm run smoke
+      - name: Install and test the Windows client
+        if: matrix.platform == 'win'
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          $installer = Get-Item ./dist/Stardust-Agent-*-win-${{ matrix.arch }}.exe
+          $destination = Join-Path $env:RUNNER_TEMP stardust-desktop-install
+          $installation = Start-Process -FilePath $installer.FullName -ArgumentList "/S", "/D=$destination" -PassThru -Wait
+          if ($installation.ExitCode -ne 0) { throw "Installer failed ($($installation.ExitCode))" }
+          $app = Join-Path $destination 'Stardust Agent.exe'
+          if (!(Test-Path -LiteralPath $app)) { throw "Installed application is missing from $destination" }
+          npm run smoke -- "--executable=$app"
+      - name: Verify the packaged macOS signature after running the app
+        if: matrix.platform == 'mac'
+        working-directory: desktop
+        run: codesign --verify --deep --strict dist/mac*/Stardust\ Agent.app
+      - name: Install and test the DEB with the system sandbox
+        if: matrix.platform == 'linux'
+        working-directory: desktop
+        env:
+          DEBUG: 'pw:browser'
+        run: |
+          sudo apt-get install -y ./dist/Stardust-Agent-*.deb
+          xvfb-run -a npm run smoke -- --executable="$(command -v stardust-agent)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stardust-desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            desktop/dist/Stardust-Agent-*.dmg
+            desktop/dist/Stardust-Agent-*.exe
+            desktop/dist/Stardust-Agent-*.deb
+            desktop/dist/Stardust-Agent-*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    name: Publish the verified installers
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stardust-desktop-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish one release after verifying all assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(jq -er '.version' desktop/package.json)
+          tag="desktop-v${version}"
+          assets=()
+          cd release-assets
+          for arch in arm64 x64; do
+            for platform_extension in mac.dmg win.exe linux.deb linux.tar.gz; do
+              platform=${platform_extension%%.*}
+              extension=${platform_extension#*.}
+              file="Stardust-Agent-${version}-${platform}-${arch}.${extension}"
+              test -s "$file"
+              assets+=("$file")
+            done
+          done
+          sha256sum -- "${assets[@]}" > SHA256SUMS.txt
+          assets+=("SHA256SUMS.txt")
+          if existing=$(gh release view "$tag" -R "$GITHUB_REPOSITORY" --json targetCommitish,isDraft 2>/dev/null); then
+            jq -e --arg sha "$GITHUB_SHA" '.isDraft and .targetCommitish == $sha' <<< "$existing"
+          else
+            gh release create "$tag" -R "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
+              --title "Stardust Agent 桌面客户端 v${version}" --notes-file ../desktop/RELEASE_NOTES.md
+          fi
+          gh release upload "$tag" -R "$GITHUB_REPOSITORY" --clobber "${assets[@]}"
+          gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name' | sort > uploaded.txt
+          printf '%s\n' "${assets[@]}" | sort | diff - uploaded.txt
+          gh release edit "$tag" -R "$GITHUB_REPOSITORY" --draft=false --latest
