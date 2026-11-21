@@ -93,6 +93,10 @@ function harness(sharedSession = new Map()) {
     setInterval(callback) { const id = nextTimer++; timers.set(id, callback); return id; },
     clearInterval(id) { timers.delete(id); },
   });
+  for (const name of ["material-upload.js", "word-export.js"]) {
+    const moduleFile = resolve(__dirname, "../../server/static", name);
+    vm.runInContext(readFileSync(moduleFile, "utf8"), context, { filename: moduleFile });
+  }
   const file = resolve(__dirname, "../../server/static/app.js");
   const source = readFileSync(file, "utf8").replace(/\}\)\(\);\s*$/, `
     globalThis.ui = {

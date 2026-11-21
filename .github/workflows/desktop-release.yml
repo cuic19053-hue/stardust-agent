@@ -126,6 +126,7 @@ jobs:
         run: |
           set -euo pipefail
           version=$(jq -er '.version' desktop/package.json)
+          jq -e --arg version "$version" '.version == $version and .packages[""].version == $version' desktop/package-lock.json
           tag="desktop-v${version}"
           assets=()
           cd release-assets
@@ -153,6 +154,7 @@ jobs:
           fi
           gh release upload "$tag" -R "$GITHUB_REPOSITORY" --clobber "${assets[@]}"
           gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets \
-            --jq '.assets[].name' | sort > uploaded.txt
-          printf '%s\n' "${assets[@]}" | sort | diff - uploaded.txt
+            --jq '.assets[] | select(.state == "uploaded") | "\(.digest | sub("^sha256:"; ""))  \(.name)"' |
+            LC_ALL=C sort > uploaded-digests.txt
+          { cat SHA256SUMS.txt; sha256sum SHA256SUMS.txt; } | LC_ALL=C sort | diff - uploaded-digests.txt
           gh release edit "$tag" -R "$GITHUB_REPOSITORY" --draft=false --latest

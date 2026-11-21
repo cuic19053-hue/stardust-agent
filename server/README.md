@@ -32,12 +32,11 @@
 
 ## 启动网页
 
-要求 Python 3.11+；在仓库根目录执行：
+在仓库根目录安装 Python 3.12 和锁定依赖。
 
 ```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r utils/requirements.txt
-.venv/bin/python -m pip install -r server/requirements.txt
+uv python install
+uv sync --locked --extra full --extra review --group test
 ```
 
 首次 OCR 使用时，RapidOCR 会下载其开源识别模型。材料处理和 OCR 均在本机完成；官方通知搜索与 Crossref 文献查询需要联网，但只发送搜索关键词，不上传学生的项目文件。搜索服务可能受网络环境影响；如果自动搜索不可用，可粘贴学校官网 HTTPS 链接，Agent 只读取 `edu.cn` / `gov.cn` 官方页面。也可通过 `SEARXNG_URL` 配置自建/信任的 SearXNG JSON API。
@@ -49,10 +48,10 @@ ollama pull qwen2.5:7b
 ollama pull bge-m3
 ```
 
-启动 Ollama 桌面应用，或在单独终端运行 `ollama serve`，然后：
+需要本机推理时，启动 Ollama 桌面应用或在单独终端运行 `ollama serve`。启动工作台的命令如下。
 
 ```bash
-.venv/bin/python -m uvicorn app:app --app-dir server --host 127.0.0.1 --port 8765
+uv run --no-sync uvicorn server.app:app --host 127.0.0.1 --port 8765
 ```
 
 浏览器打开 <http://127.0.0.1:8765>。`--host 127.0.0.1` 只监听本机；未经身份验证的版本不要改为公网监听。
