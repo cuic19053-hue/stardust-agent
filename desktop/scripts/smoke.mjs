@@ -78,7 +78,7 @@ async function verifyStopped(baseURL) {
 }
 
 try {
-  execFileSync(python, ["-I", "-c", [
+  execFileSync(python, ["-I", "-B", "-c", [
     "import sys",
     "from PIL import Image, ImageDraw, ImageFont",
     'im = Image.new("RGB", (1050, 280), "white")',
@@ -135,7 +135,7 @@ try {
     await delay(200);
   }
   assert.ok(existsSync(file), "the app should download the generated Word file");
-  execFileSync(python, ["-I", "-c", [
+  execFileSync(python, ["-I", "-B", "-c", [
     "import sys, zipfile",
     "with zipfile.ZipFile(sys.argv[1]) as archive:",
     "    assert archive.testzip() is None",

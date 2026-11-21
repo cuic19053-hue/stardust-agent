@@ -65,6 +65,10 @@ jobs:
         if: matrix.platform != 'linux'
         working-directory: desktop
         run: npm run smoke
+      - name: Verify the packaged macOS signature after running the app
+        if: matrix.platform == 'mac'
+        working-directory: desktop
+        run: codesign --verify --deep --strict dist/mac*/Stardust\ Agent.app
       - name: Test the packaged window, local OCR and Word export (Linux)
         if: matrix.platform == 'linux'
         working-directory: desktop
