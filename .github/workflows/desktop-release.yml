@@ -63,10 +63,22 @@ jobs:
           node -e "if (process.arch !== '${{ matrix.arch }}') throw new Error('Runner architecture mismatch: ' + process.arch)"
           npm ci --no-audit --no-fund
           npm run package -- --${{ matrix.arch }}
-      - name: Test the packaged window, local OCR and Word export
-        if: matrix.platform != 'linux'
+      - name: Test the packaged macOS app
+        if: matrix.platform == 'mac'
         working-directory: desktop
         run: npm run smoke
+      - name: Install and test the Windows client
+        if: matrix.platform == 'win'
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          $installer = Get-Item ./dist/Stardust-Agent-*-win-${{ matrix.arch }}.exe
+          $destination = Join-Path $env:RUNNER_TEMP stardust-desktop-install
+          $installation = Start-Process -FilePath $installer.FullName -ArgumentList "/S", "/D=$destination" -PassThru -Wait
+          if ($installation.ExitCode -ne 0) { throw "Installer failed ($($installation.ExitCode))" }
+          $app = Join-Path $destination 'Stardust Agent.exe'
+          if (!(Test-Path -LiteralPath $app)) { throw "Installed application is missing from $destination" }
+          npm run smoke -- "--executable=$app"
       - name: Verify the packaged macOS signature after running the app
         if: matrix.platform == 'mac'
         working-directory: desktop
