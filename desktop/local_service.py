@@ -28,6 +28,24 @@ class DesktopAccess:
         await self.app(scope, receive, send)
 
 
+def launcher_input():
+    if sys.platform != "win32":
+        return sys.stdin.buffer
+
+    # The Fortran runtime loaded by NumPy inspects standard input on Windows.
+    # Keep the launcher's blocking read on a private descriptor to avoid a DLL
+    # loader deadlock when the workbench first imports NumPy during OCR.
+    original_fd = sys.stdin.fileno()
+    with open(os.devnull, "rb") as empty:
+        pipe = os.fdopen(os.dup(original_fd), "rb", buffering=0)
+        try:
+            os.dup2(empty.fileno(), original_fd)
+        except OSError:
+            pipe.close()
+            raise
+    return pipe
+
+
 def serve():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=0, choices=range(65536), metavar="0-65535")
@@ -57,8 +75,11 @@ def serve():
             access_log=diagnostics, loop="asyncio", http="h11", ws="none",
         ))
 
+        control_pipe = launcher_input()
+
         def watch_launcher():
-            sys.stdin.buffer.read()
+            with control_pipe:
+                control_pipe.read()
             server.should_exit = True
 
         threading.Thread(target=watch_launcher, daemon=True).start()

@@ -2,9 +2,6 @@
 cryptography==48.0.1 ; sys_platform == "darwin" and platform_machine == "x86_64"
 cryptography==46.0.3 ; sys_platform == "win32" and platform_machine == "ARM64"
 cryptography==50.0.2 ; (sys_platform != "darwin" or platform_machine != "x86_64") and (sys_platform != "win32" or platform_machine != "ARM64")
-# NumPy 2.5's x64 Windows DLL stalls when loaded by the packaged workbench.
-numpy==2.2.6 ; sys_platform == "win32" and platform_machine == "AMD64"
-numpy==2.5.5 ; sys_platform != "win32" or platform_machine != "AMD64"
 onnxruntime==1.23.2 ; sys_platform == "darwin" and platform_machine == "x86_64"
 onnxruntime==1.32.0 ; sys_platform != "darwin" or platform_machine != "x86_64"
 opencv-python-headless==5.0.0.93 ; sys_platform == "darwin"
