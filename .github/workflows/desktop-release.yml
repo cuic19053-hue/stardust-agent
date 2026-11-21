@@ -71,10 +71,14 @@ jobs:
         if: matrix.platform == 'mac'
         working-directory: desktop
         run: codesign --verify --deep --strict dist/mac*/Stardust\ Agent.app
-      - name: Test the packaged window, local OCR and Word export (Linux)
+      - name: Install and test the DEB with the system sandbox
         if: matrix.platform == 'linux'
         working-directory: desktop
-        run: xvfb-run -a npm run smoke
+        env:
+          DEBUG: 'pw:browser'
+        run: |
+          sudo apt-get install -y ./dist/Stardust-Agent-*.deb
+          xvfb-run -a npm run smoke -- --executable="$(command -v stardust-agent)"
       - uses: actions/upload-artifact@v4
         with:
           name: stardust-desktop-${{ matrix.platform }}-${{ matrix.arch }}

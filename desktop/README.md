@@ -27,7 +27,7 @@ npm run package
 npm run smoke
 ```
 
-安装包生成在 `desktop/dist/`。Linux 图形环境的 CI 可用 `xvfb-run -a npm run smoke`。修改根目录 Python 依赖或桌面平台约束后，从仓库根目录重新生成桌面依赖锁。
+安装包生成在 `desktop/dist/`。Linux CI 安装生成的 DEB 后，用 `xvfb-run -a npm run smoke -- --executable="$(command -v stardust-agent)"` 验收实际安装的应用和系统沙盒。Ubuntu 24.04 或更新版本优先使用 DEB 的系统配置。修改根目录 Python 依赖或桌面平台约束后，从仓库根目录重新生成桌面依赖锁。
 
 ```sh
 uv pip compile pyproject.toml --extra full --constraint desktop/python-platforms.txt --universal --python-version 3.12.14 --generate-hashes --output-file desktop/python-requirements.txt

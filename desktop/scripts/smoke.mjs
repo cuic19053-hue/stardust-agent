@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -10,12 +10,17 @@ import { _electron as electron } from "playwright-core";
 const desktop = fileURLToPath(new URL("../", import.meta.url));
 const dist = path.join(desktop, "dist");
 const development = process.argv.includes("--dev");
+const installedPath = process.argv.find(argument => argument.startsWith("--executable="))?.slice("--executable=".length);
 const temporary = mkdtempSync(path.join(os.tmpdir(), "stardust-desktop-smoke-"));
 const profile = path.join(temporary, "profile");
 let running;
 let currentPage;
 
 function findApp() {
+  if (installedPath) {
+    const executable = realpathSync(installedPath);
+    return { executable, runtime: path.join(path.dirname(executable), "resources", "workbench-runtime") };
+  }
   const entries = readdirSync(dist);
   const packaged = entries.find(name => process.platform === "darwin"
     ? /^mac(-arm64|-x64)?$/.test(name)
