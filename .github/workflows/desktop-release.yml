@@ -57,6 +57,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends xvfb xauth libgtk-3-0t64 libnss3 libgbm1 libasound2t64
       - name: Package the native build
         working-directory: desktop
+        env:
+          CSC_FOR_PULL_REQUEST: 'true'
         run: |
           node -e "if (process.arch !== '${{ matrix.arch }}') throw new Error('Runner architecture mismatch: ' + process.arch)"
           npm ci --no-audit --no-fund

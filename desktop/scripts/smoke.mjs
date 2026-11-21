@@ -13,6 +13,7 @@ const development = process.argv.includes("--dev");
 const temporary = mkdtempSync(path.join(os.tmpdir(), "stardust-desktop-smoke-"));
 const profile = path.join(temporary, "profile");
 let running;
+let currentPage;
 
 function findApp() {
   const entries = readdirSync(dist);
@@ -53,6 +54,7 @@ async function open() {
     timeout: 45_000,
   });
   const page = await running.firstWindow();
+  currentPage = page;
   await page.waitForURL(/^http:\/\/127\.0\.0\.1:\d+\/$/, { timeout: 45_000 });
   await page.locator("#appShell").waitFor({ state: "visible", timeout: 15_000 });
   return page;
@@ -114,8 +116,15 @@ try {
   await first.reload();
   await first.locator("#projectHeading").filter({ hasText: /^Desktop smoke test$/ }).waitFor();
   await first.locator("#workspaceTabs [data-target='panel-materials']").click();
-  await first.locator("#fileInput").setInputFiles(image);
-  await first.locator("#documentPreviewBody img").waitFor({ timeout: 35_000 });
+  const [upload] = await Promise.all([
+    first.waitForResponse(response => response.request().method() === "POST" &&
+      new URL(response.url()).pathname.endsWith("/documents"), { timeout: 45_000 }),
+    first.locator("#fileInput").setInputFiles({
+      name: "desktop-ocr.png", mimeType: "image/png", buffer: readFileSync(image),
+    }),
+  ]);
+  assert.ok(upload.ok(), `Uploading the test image failed: ${upload.status()} ${await upload.text()}`);
+  await first.locator("#documentPreviewBody img").waitFor({ timeout: 20_000 });
   await first.locator("#documentsList").getByText("desktop-ocr.png", { exact: true }).waitFor({ state: "attached" });
   const documentText = await first.locator("#documentPreviewBody").textContent();
   assert.match(documentText, /STARDUST/i, "the packaged OCR model should extract the test text");
@@ -155,6 +164,12 @@ try {
   assert.ok(persisted.documents.some(document => document.original_name === "desktop-ocr.png"));
   console.log(`${process.platform}/${process.arch}: startup, local isolation, OCR, Word export, and restart persistence passed.`);
 } catch (error) {
+  if (currentPage && !currentPage.isClosed()) {
+    console.error(await currentPage.evaluate(() => Object.fromEntries(
+      ["message", "toast", "uploadResult", "documentPreviewStatus"].map(id =>
+        [id, document.getElementById(id)?.textContent.trim() ?? ""]),
+    )).catch(() => "The workstation page is unavailable."));
+  }
   try {
     console.error(readFileSync(path.join(profile, "workbench.log"), "utf8").slice(-8000));
   } catch {
