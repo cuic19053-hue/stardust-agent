@@ -129,6 +129,11 @@ jobs:
           tag="desktop-v${version}"
           assets=()
           cd release-assets
+          # Debian calls the x64 architecture amd64. Use x64 in public asset names.
+          deb_amd64="Stardust-Agent-${version}-linux-amd64.deb"
+          if [[ -f "$deb_amd64" ]]; then
+            mv -- "$deb_amd64" "Stardust-Agent-${version}-linux-x64.deb"
+          fi
           for arch in arm64 x64; do
             for platform_extension in mac.dmg win.exe linux.deb linux.tar.gz; do
               platform=${platform_extension%%.*}
