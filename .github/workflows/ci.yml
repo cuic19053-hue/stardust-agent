@@ -2,8 +2,12 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   material-worker-container:
@@ -12,6 +16,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: 构建 Worker 镜像
         run: docker build --platform linux/amd64 -t stardust-material-worker:ci -f infra/material-worker/Dockerfile .
@@ -43,19 +49,18 @@ jobs:
           '
 
   docs-and-tests:
-    name: 文档一致性 + 测试（Python ${{ matrix.python-version }}）
+    name: 文档一致性与测试
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12"]
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-
-      - name: 安装 Python
-        uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.15'
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
       - name: 安装中文字体（figgen 配图渲染依赖，v2.2 配图规范）
         timeout-minutes: 5
@@ -73,37 +78,42 @@ jobs:
           # 仅安装 Droid Sans Fallback：它提供 matplotlib 可用的单文件 TTF；
           # fonts-noto-cjk 是 .ttc 集合，matplotlib 不支持且无需额外下载。
 
-      - name: 安装依赖
+      - name: 按锁文件安装开发环境
         run: |
-          python -m pip install --upgrade pip
-          pip install -r utils/requirements.txt
-          if [ -f server/requirements.txt ]; then
-            pip install -r server/requirements.txt
-          else
-            echo "server/ 尚未纳入版本控制，跳过服务层依赖（相关测试会自动 skip）"
-          fi
-          pip install pytest
+          uv python install
+          uv sync --locked --extra full --extra review --group test
+
+      - name: 启动本机工作台并验证首页和 API
+        shell: bash
+        run: |
+          data_dir=$(mktemp -d "$RUNNER_TEMP/stardust-smoke.XXXXXX")
+          PROPOSAL_AGENT_DATA_DIR="$data_dir" uv run --no-sync uvicorn server.app:app --host 127.0.0.1 --port 8765 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
+          curl -fsS --max-time 3 --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8765/api/ping | jq -e '.status == "ok"'
+          curl -fsS --max-time 3 http://127.0.0.1:8765/ -o "$data_dir/home.html"
+          test -s "$data_dir/home.html"
 
       - name: 文档一致性门禁（35 个赛道 / README 声称量 / 索引数量 / Agent Skills 规范）
-        run: python scripts/check_doc_consistency.py --require-skills-ref
+        run: uv run --no-sync python scripts/check_doc_consistency.py --require-skills-ref
 
       - name: 写作规范注入门禁（35 个子 skill 必须含最新去 AI 味规范块）
-        run: python scripts/inject_writing_style.py --check
+        run: uv run --no-sync python scripts/inject_writing_style.py --check
 
       - name: SKILL.md 完整性门禁（受保护块 / 索引指针 / frontmatter / 重复标题 / 空章节）
-        run: python scripts/verify_skill_integrity.py
+        run: uv run --no-sync python scripts/verify_skill_integrity.py
 
       - name: description 规范门禁（长度 / 何时使用 / triggers / 唯一性 / name 格式）
-        run: python scripts/check_skill_description.py
+        run: uv run --no-sync python scripts/check_skill_description.py
 
       - name: 国家规范与合规门禁（领导人表述 / 文号 / 统计出处 / 时效 / 诚信底线）
-        run: python scripts/check_compliance.py --strict
+        run: uv run --no-sync python scripts/check_compliance.py --strict
 
       - name: 排版硬指标门禁（references/layout_standard.md，18 条静态条款）
-        run: python utils/layout_audit.py examples/demos
+        run: uv run --no-sync python utils/layout_audit.py examples/demos
 
       - name: 运行测试
-        run: python -m pytest tests -q -rs
+        run: uv run --no-sync python -m pytest tests -q -rs
 
       - uses: actions/setup-node@v4
         with:
@@ -113,13 +123,26 @@ jobs:
         run: node --test tests/js/*.test.js infra/storage-worker/worker.test.mjs
 
       - name: 隔离 PostgreSQL 存储配置、CAS、RLS 与计费回归
-        if: matrix.python-version == '3.12'
         timeout-minutes: 5
         run: |
           docker pull postgres:15-alpine
-          RUN_POSTGRES_POLICY_TESTS=1 python -m pytest \
+          RUN_POSTGRES_POLICY_TESTS=1 uv run --no-sync python -m pytest \
             tests/test_material_postgres.py \
             tests/test_observability_postgres.py \
             tests/test_trial_policy_postgres.py \
             tests/test_workbench_reconciliation_postgres.py \
             tests/test_user_model_config.py -q
+
+  required-ci:
+    name: Required CI
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    needs: [material-worker-container, docs-and-tests]
+    env:
+      WORKER_RESULT: ${{ needs.material-worker-container.result }}
+      TEST_RESULT: ${{ needs.docs-and-tests.result }}
+    steps:
+      - name: Require both validation jobs to pass
+        run: |
+          test "$WORKER_RESULT" = success
+          test "$TEST_RESULT" = success

@@ -29,18 +29,8 @@
 
 ## 三、部署与发布流程
 
-1. **运行本地全量测试门禁**：
-   ```bash
-   .venv/bin/python -m pytest tests -q -rs
-   ```
-   *要求：所有单元测试必须 100% 绿灯通过，无任一失败。*
-
-2. **代码合并与推送**：
-   ```bash
-   git checkout main
-   git merge codex/engineering-core
-   git push origin main
-   ```
+1. 按[贡献指南](../CONTRIBUTING.md#本地开发与测试)安装锁定依赖并运行测试。
+2. 从干净的开发分支执行 `git pull --rebase origin main`，提交 PR。等待 `Required CI` 通过后合并到 `main`。
 
 3. **执行生产部署**：
    ```bash
@@ -49,6 +39,18 @@
    *注意观察终端输出：确保出现 `▲ Aliased https://agent.stardust.website` 且 `readyState: READY`。*
 
 ---
+
+### 仓库版本与 GitHub 发行
+
+| 发布渠道 | 版本和标签 |
+| --- | --- |
+| 源码 | `version.json` 的 `project_version` 对应源码标签，例如 `v2.2` |
+| 桌面客户端 | `desktop/package.json` 和 `desktop/package-lock.json` 使用相同版本，对应 `desktop-v<版本>` |
+| Python 项目元数据 | `pyproject.toml` 的版本用于 Python 工具记录本项目，随 Python 包发布需求调整 |
+
+- 源码发版从已合并的提交打标签，创建 GitHub Release 时传入 `--verify-tag --latest=false`。仓库的 Latest Release 指向最近的桌面版，供 README 使用固定下载入口。
+- 桌面发版时更新桌面版本和 `desktop/RELEASE_NOTES.md`，从 `main` 手动运行 `Desktop packages`，开启 `publish`。六种架构通过验收后，流程上传安装包、核验 SHA-256 并公开发行。可用发行页和 `SHA256SUMS.txt` 核对最终资产。
+- Vercel 部署按本文的生产流程执行，部署标识以 Vercel 记录为准。
 
 ## 四、线上健康检查与验证清单 (Post-Deployment Verification)
 

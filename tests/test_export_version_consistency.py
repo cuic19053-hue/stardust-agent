@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 import server.app as app
+from proposal import export_api
 from proposal.agent import OllamaAgent
 from proposal.retrieval import ProjectRetriever
 from proposal.storage import Store
@@ -47,14 +48,14 @@ def test_saved_body_change_expires_old_word_and_reexport_contains_new_body(isola
 
 def test_concurrent_edit_during_export_is_not_published_as_current(isolated, monkeypatch):
     client, store, project_id = isolated
-    export = app.export_project
+    export = export_api.export_project
 
     def edit_during_export(*args):
         result = export(*args)
         store.update_project(project_id, sections={"letter": "生成文件期间保存的新正文。"})
         return result
 
-    monkeypatch.setattr(app, "export_project", edit_during_export)
+    monkeypatch.setattr(export_api, "export_project", edit_during_export)
     result = client.post(f"/api/projects/{project_id}/export")
     assert result.status_code == 409
     assert "导出期间" in result.json()["detail"]
@@ -64,7 +65,7 @@ def test_concurrent_edit_during_export_is_not_published_as_current(isolated, mon
 @pytest.mark.parametrize("legacy_revision", [False, True])
 def test_edit_then_undo_during_render_cannot_publish_the_intermediate_body(isolated, monkeypatch, legacy_revision):
     client, store, project_id = isolated
-    export = app.export_project
+    export = export_api.export_project
     if legacy_revision:
         # Older cloud writes may not advance material_revision; the actual
         # renderer snapshot must still detect an A -> B -> A change.
@@ -77,7 +78,7 @@ def test_edit_then_undo_during_render_cannot_publish_the_intermediate_body(isola
         st.update_project(pid, sections={"letter": "我的专业排名为第三名。"})
         return result
 
-    monkeypatch.setattr(app, "export_project", edit_and_undo)
+    monkeypatch.setattr(export_api, "export_project", edit_and_undo)
     response = client.post(f"/api/projects/{project_id}/export")
     assert response.status_code == 409
     assert "导出期间" in response.json()["detail"]

@@ -45,7 +45,7 @@
 
 发现问题但不会写代码？直接提 Issue：
 
-1. 点击 [Issues](https://github.com/cuic19053-hue/awesome-student-ai-skills/issues)
+1. 点击 [Issues](https://github.com/cuic19053-hue/stardust-agent/issues)
 2. 点击 **New Issue**
 3. 选择模板（Bug 报告 / 内容建议 / 新赛道请求）
 4. 填写信息并提交
@@ -55,7 +55,7 @@
 1. **Fork** 本仓库
 2. **Clone** 到本地：
    ```bash
-   git clone https://github.com/<你的用户名>/awesome-student-ai-skills.git
+   git clone https://github.com/<你的用户名>/stardust-agent.git
    ```
 3. **新建分支**：
    ```bash
@@ -74,6 +74,25 @@
 7. **创建 PR**：在 GitHub 页面点击 **Compare & pull request**
 
 ---
+
+## 本地开发与测试
+
+安装 [uv](https://docs.astral.sh/uv/getting-started/installation/) 和 Node.js 22，在仓库根目录运行。
+
+```bash
+uv python install
+uv sync --locked --extra full --extra review --group test
+uv run --no-sync uvicorn server.app:app --host 127.0.0.1 --port 8765
+```
+
+打开 [本机工作台](http://127.0.0.1:8765)。另开终端运行与 CI 一致的测试。
+
+```bash
+uv run --no-sync python -m pytest tests -q -rs
+node --test tests/js/*.test.js infra/storage-worker/worker.test.mjs
+```
+
+修改 Python 依赖时更新并提交 `uv.lock`。Word 排版测试需要可用的中文字体，CI 安装 Droid Sans Fallback。
 
 ## 新增赛道的规范
 
@@ -124,7 +143,7 @@ python build.py --data data.json --out output.docx
 ## Review 流程
 
 1. 所有 PR 需要至少 1 位 maintainer review
-2. CI 检查通过（如果有）
+2. `Required CI` 检查通过
 3. 符合诚实底线和撰写规范
 4. 合并后会在 README 致谢区署名（如愿意）
 
@@ -132,7 +151,7 @@ python build.py --data data.json --out output.docx
 
 ## 联系方式
 
-- 提 Issue：[Issues](https://github.com/cuic19053-hue/awesome-student-ai-skills/issues)
+- 提 Issue：[Issues](https://github.com/cuic19053-hue/stardust-agent/issues)
 - 邮件：通过 GitHub 个人主页联系
 
 ---

@@ -12,7 +12,7 @@
 | 64 位 Windows | Intel / AMD 选 `win-x64.exe`，Windows on ARM 选 `win-arm64.exe` |
 | 64 位 Linux | x86-64 选 `linux-x64`，AArch64 选 `linux-arm64`。Debian 和 Ubuntu 可用 `.deb`，也可解压 `.tar.gz` 后打开 `stardust-agent` |
 
-在 [GitHub 发行页](https://github.com/cuic19053-hue/stardust-agent/releases) 选择对应包。安装包旁附有 SHA-256 校验清单。
+在 [GitHub 发行页](https://github.com/cuic19053-hue/stardust-agent/releases/latest) 选择对应包。安装包旁附有 SHA-256 校验清单。
 
 AI 对话需要先启动本机 [Ollama](https://ollama.com/download) 并下载模型，例如 `ollama pull qwen2.5:7b`。也可在「模型配置」选用兼容接口。工作台会在用户主动搜索论文、查询通知或选择远程模型时使用网络。
 
@@ -32,3 +32,5 @@ npm run smoke
 ```sh
 uv pip compile pyproject.toml --extra full --constraint desktop/python-platforms.txt --universal --python-version 3.12.14 --generate-hashes --output-file desktop/python-requirements.txt
 ```
+
+发布新版本见[仓库版本与 GitHub 发行](../docs/DEPLOYMENT_AND_ROLLBACK.md#仓库版本与-github-发行)。

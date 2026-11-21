@@ -6,7 +6,9 @@
 
 [Open the workbench](https://agent.stardust.website) · [Download a sample Word proposal](./examples/demos/demo_innovation_research.docx) · [Agent design notes (Chinese)](./docs/design/AGENT_REFACTOR.md) · [简体中文](./README.md)
 
-[![GitHub stars](https://img.shields.io/github/stars/cuic19053-hue/stardust-agent?style=social)](https://github.com/cuic19053-hue/stardust-agent/stargazers) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE) [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/) [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/) [![MCP Protocol](https://img.shields.io/badge/MCP-Protocol-blue.svg)](https://modelcontextprotocol.io/) [![Online Platform](https://img.shields.io/badge/Online-agent.stardust.website-7952CC.svg)](https://agent.stardust.website)
+[Download the desktop client](https://github.com/cuic19053-hue/stardust-agent/releases/latest) · [Desktop guide](./desktop/README.md)
+
+[![GitHub stars](https://img.shields.io/github/stars/cuic19053-hue/stardust-agent?style=social)](https://github.com/cuic19053-hue/stardust-agent/stargazers) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE) [![Python 3.12+](https://img.shields.io/badge/Python-3.12+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/) [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/) [![MCP Protocol](https://img.shields.io/badge/MCP-Protocol-blue.svg)](https://modelcontextprotocol.io/) [![Online Platform](https://img.shields.io/badge/Online-agent.stardust.website-7952CC.svg)](https://agent.stardust.website)
 
 The 35-scenario catalog describes domain guidance. Drafting, templates, charts and export support vary, and not every scenario has completed end-to-end delivery validation. Repository changes do not establish that the live site has been updated.
 
@@ -31,26 +33,24 @@ The evaluation checks the tool trace as well as the answer. It fails if the mode
 
 ## Run locally
 
-Start Ollama and use Python 3.11 or later.
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/). The commands below use Python 3.12 and the locked runtime and test dependencies.
 
 ```bash
 git clone https://github.com/cuic19053-hue/stardust-agent.git
 cd stardust-agent
-python3 -m venv .venv
-.venv/bin/python -m pip install -r utils/requirements.txt -r server/requirements.txt
-ollama pull qwen2.5:7b
-ollama pull bge-m3
-.venv/bin/python -m uvicorn app:app --app-dir server --host 127.0.0.1 --port 8765
+uv python install
+uv sync --locked --extra full --extra review --group test
+uv run --no-sync uvicorn server.app:app --host 127.0.0.1 --port 8765
 ```
 
-Open the local workbench, choose Ollama in the model settings and start a conversation. Upload a source document and confirm its text before asking the agent to retrieve evidence from it. Local mode uses SQLite and stores data in `.agent-data/`. Cloud mode uses Supabase to scope projects to each account. Hosted model calls use trial allowances and workbench credits. When you bring your own API key, your provider's pricing applies. Local Ollama does not consume workbench credits and requires your own runtime. [Local workbench](http://127.0.0.1:8765) · [Model and storage configuration](./server/README.md)
+Open the local workbench to organize your materials. For local AI, start Ollama, run `ollama pull qwen2.5:7b` and `ollama pull bge-m3`, then select Ollama in the workbench model settings. Upload a source document and confirm its text before asking the agent to retrieve evidence from it. Local mode uses SQLite and stores data in `.agent-data/`. Cloud mode uses Supabase to scope projects to each account. Hosted model calls use trial allowances and workbench credits. When you bring your own API key, your provider's pricing applies. Local Ollama does not consume workbench credits and requires your own runtime. [Local workbench](http://127.0.0.1:8765) · [Model and storage configuration](./server/README.md)
 
 In the current repository, a basic national-scholarship starter can avoid model calls, while explicit length, style or experience-focused requests use the selected model. Live availability depends on the deployed version.
 
 Run the evaluation from the repository root to reproduce the example above. It creates temporary projects and reports tool calls, answer excerpts and results for each case.
 
 ```bash
-.venv/bin/python server/evals/run.py
+uv run --no-sync python server/evals/run.py
 ```
 
 ## Domain guides and integrations
@@ -59,7 +59,7 @@ The workbench loads filtered guidance for the selected scenario and can progress
 
 The repository's public corpus includes **42 formal university notices and one college-level innovation activity report**. Retrieval must match the school, year and applicable audience, and users must check the original source. **Zero real example submissions have completed authorization, de-identification and approval for inclusion.** See [RAG status (Chinese)](./docs/rag-status.md).
 
-Codex, Cursor and other MCP clients can use the local project tools over stdio. Run `.venv/bin/python server/mcp_server.py --transport stdio` to share the workbench's project store. Developers can also load individual Skills in a compatible IDE. [Project MCP server](./server/mcp_server.py) · [Skills entry point](./SKILL.md)
+Codex, Cursor and other MCP clients can use the local project tools over stdio. Run `uv run --no-sync python server/mcp_server.py --transport stdio` to share the workbench's project store. Developers can also load individual Skills in a compatible IDE. [Project MCP server](./server/mcp_server.py) · [Skills entry point](./SKILL.md)
 
 ## Credits and license
 

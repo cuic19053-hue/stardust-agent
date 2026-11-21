@@ -1007,6 +1007,9 @@ def test_sensitive_endpoints_are_never_cached_or_echo_invalid_secrets(client, mo
     assert 'no-cache' in response.headers['cache-control']
     assert '/static/app.js?v=' in response.text
     assert '/static/app.css?v=' in response.text
+    for script in ('material-upload.js', 'word-export.js'):
+        assert '/static/' + script + '?v=' in response.text
+        assert response.text.index('/static/' + script) < response.text.index('/static/app.js')
     body = client.get('/api/ping').json()
     assert body['status'] == 'ok'
     assert body.get('layout_rev') == 3  # 发版标记，用于部署后核对线上版本
@@ -1068,12 +1071,13 @@ def test_model_config_cloud_crud_and_no_secret_in_save_response(client, monkeypa
     assert client.post('/api/user/llm-config', json=config, headers=headers).status_code == 422
 
 
-def test_only_matching_content_hashed_assets_receive_immutable_cache(client):
+@pytest.mark.parametrize('name', ['app.js', 'material-upload.js', 'word-export.js'])
+def test_only_matching_content_hashed_assets_receive_immutable_cache(client, name):
     import app as server_app
-    version = server_app.ASSET_VERSIONS['app.js']
-    good = client.get('/static/app.js?v=' + version)
+    version = server_app.ASSET_VERSIONS[name]
+    good = client.get(f'/static/{name}?v=' + version)
     assert good.status_code == 200
     assert 'immutable' in good.headers['cache-control']
-    bad = client.get('/static/app.js?v=old-release')
+    bad = client.get(f'/static/{name}?v=old-release')
     assert 'immutable' not in bad.headers['cache-control']
     assert 'must-revalidate' in bad.headers['cache-control']
