@@ -102,6 +102,8 @@ def test_gateway_failure_does_not_invent_a_refund(api, monkeypatch, status, expe
     })
     assert response.status_code == 502
     assert [action for action, _ in calls if action in {"reserve", "refund"}] == expected
+    statuses = [args['status'] for action, args in calls if action == 'record_model_interaction']
+    assert statuses == ['started', 'failed' if status == 401 else 'unknown']
 
 
 def test_internal_proxy_rejects_missing_capability(api, monkeypatch):
@@ -145,7 +147,7 @@ def test_platform_model_proxy_preserves_confirmation_metering_and_no_secret_echo
     def fake_open(request, timeout=45):
         upstream_requests.append(request)
         response = io.BytesIO(json.dumps({
-            "choices": [{"message": {"role": "assistant", "content": "已生成"}}],
+            "choices": [{"message": {"role": "assistant", "content": "已生成 sk-test1234567890123456"}}],
             "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
         }).encode())
         response.status = 200
@@ -163,14 +165,89 @@ def test_platform_model_proxy_preserves_confirmation_metering_and_no_secret_echo
         },
     })
     assert response.status_code == 200, response.text
-    assert response.json()["choices"][0]["message"]["content"] == "已生成"
+    assert response.json()["choices"][0]["message"]["content"] == "已生成 sk-test1234567890123456"
     request_id = response.headers["x-material-usage-request-id"]
     assert request_id.startswith("o2x1_")
     assert upstream_requests[0].full_url == "https://api.wopally.cn/v1/chat/completions"
     assert upstream_requests[0].get_header("User-agent") == f"StardustWorkbench/{request_id}"
     assert json.loads(upstream_requests[0].data)["max_tokens"] == 2048
     assert calls[0][0] == "reserve"
+    records = [args for action, args in calls if action == 'record_model_interaction']
+    assert [record['status'] for record in records] == ['started', 'completed']
+    assert records[-1]['output_text'] == '已生成 [REDACTED]'
     assert "test-only-provider-key" not in response.text
+
+
+@pytest.mark.parametrize(('body', 'refunded'), [
+    ({'choices': [{'message': {'content': ''}}]}, True),
+    ([], False),
+])
+def test_empty_or_malformed_provider_response_records_failure(api, monkeypatch, body, refunded):
+    client, _, _ = api
+    calls = setup_proxy(monkeypatch, {
+        'id': JOB_ID, 'project_id': PROJECT_ID, 'owner_id': OWNER_ID,
+        'kind': 'outline', 'payload': {'paid': True, 'platform': True},
+    })
+    monkeypatch.setattr(app, '_platform_bundle_ready', lambda **_: True)
+    monkeypatch.setenv('WOPALLY_MODEL_BASE_URL', 'https://api.wopally.cn/v1')
+    monkeypatch.setenv('WOPALLY_WORKBENCH_API_KEY', 'test-only-provider-key')
+    monkeypatch.setenv('WOPALLY_WORKBENCH_API_KEY_ID', '17')
+    monkeypatch.setattr(app, 'wopally_urlopen', lambda *a, **kw: io.BytesIO(json.dumps(body).encode()))
+    response = client.post('/api/material/internal/model', headers=auth_headers(), json={
+        'job_id': JOB_ID, 'lease': LEASE, 'request_body': {'messages': [], 'stream': False},
+    })
+    assert response.status_code == 502
+    assert ('refund' in [action for action, _ in calls]) is refunded
+    records = [args for action, args in calls if action == 'record_model_interaction']
+    assert records[-1]['status'] == 'failed' and records[-1]['error_code'] == 'MODEL_EMPTY_RESULT'
+
+
+def test_model_timeout_records_unknown_and_preserves_reservation(api, monkeypatch):
+    client, _, _ = api
+    calls = setup_proxy(monkeypatch, {
+        'id': JOB_ID, 'project_id': PROJECT_ID, 'owner_id': OWNER_ID,
+        'kind': 'outline', 'payload': {'paid': True, 'platform': True},
+    })
+    monkeypatch.setattr(app, '_platform_bundle_ready', lambda **_: True)
+    monkeypatch.setenv('WOPALLY_MODEL_BASE_URL', 'https://api.wopally.cn/v1')
+    monkeypatch.setenv('WOPALLY_WORKBENCH_API_KEY', 'test-only-provider-key')
+    monkeypatch.setenv('WOPALLY_WORKBENCH_API_KEY_ID', '17')
+    def timeout(*args, **kwargs):
+        raise TimeoutError('response not received')
+    monkeypatch.setattr(app, 'wopally_urlopen', timeout)
+    response = client.post('/api/material/internal/model', headers=auth_headers(), json={
+        'job_id': JOB_ID, 'lease': LEASE, 'request_body': {'messages': [], 'stream': False},
+    })
+    assert response.status_code == 502
+    assert 'refund' not in [action for action, _ in calls]
+    records = [args for action, args in calls if action == 'record_model_interaction']
+    assert records[-1]['status'] == 'unknown'
+
+
+def test_successful_model_result_survives_terminal_record_failure(api, monkeypatch):
+    client, _, _ = api
+    calls = setup_proxy(monkeypatch, {
+        'id': JOB_ID, 'project_id': PROJECT_ID, 'owner_id': OWNER_ID,
+        'kind': 'outline', 'payload': {'paid': True, 'platform': True},
+    })
+    from proposal.material_worker_proxy import MaterialWorkerBridgeError
+    original = app.MaterialWorkerBridge.record_model_interaction
+    def fail_terminal(self, request_id, model, input_text, output_text, status, error_code):
+        if status == 'completed':
+            raise MaterialWorkerBridgeError('interaction unavailable')
+        return original(self, request_id, model, input_text, output_text, status, error_code)
+    monkeypatch.setattr(app.MaterialWorkerBridge, 'record_model_interaction', fail_terminal)
+    monkeypatch.setattr(app, '_platform_bundle_ready', lambda **_: True)
+    monkeypatch.setenv('WOPALLY_MODEL_BASE_URL', 'https://api.wopally.cn/v1')
+    monkeypatch.setenv('WOPALLY_WORKBENCH_API_KEY', 'test-only-provider-key')
+    monkeypatch.setenv('WOPALLY_WORKBENCH_API_KEY_ID', '17')
+    response_body = {'choices': [{'message': {'content': '有效结果'}}]}
+    monkeypatch.setattr(app, 'wopally_urlopen', lambda *a, **kw: io.BytesIO(json.dumps(response_body).encode()))
+    response = client.post('/api/material/internal/model', headers=auth_headers(), json={
+        'job_id': JOB_ID, 'lease': LEASE, 'request_body': {'messages': [], 'stream': False},
+    })
+    assert response.status_code == 200 and response.json() == response_body
+    assert 'refund' not in [action for action, _ in calls]
 
 
 def test_model_interaction_failure_refunds_before_any_provider_request(api, monkeypatch):

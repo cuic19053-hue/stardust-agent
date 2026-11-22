@@ -81,6 +81,21 @@ def test_byok_authorization_rpc_scopes_operation_to_one_active_lease(monkeypatch
     }
 
 
+def test_terminal_interaction_logging_has_a_short_timeout(monkeypatch):
+    monkeypatch.setenv('SUPABASE_URL', 'https://example.supabase.co')
+    monkeypatch.setenv('SUPABASE_PUBLISHABLE_KEY', 'publishable')
+    timeouts = []
+    def fake_open(request, timeout=15):
+        timeouts.append(timeout)
+        return io.BytesIO(b'true')
+    monkeypatch.setattr(proxy, 'supabase_urlopen', fake_open)
+    bridge = proxy.MaterialWorkerBridge('worker-secret', 'a' * 32, 'c' * 32)
+    bridge.record_model_interaction('req', 'deepseek-v4-flash', '', '', 'started')
+    bridge.record_model_interaction('req', 'deepseek-v4-flash', '', 'result', 'completed')
+    bridge.record_model_interaction('req', 'deepseek-v4-flash', '', '', 'unknown')
+    assert timeouts == [15, 3, 3]
+
+
 def test_bridge_transport_errors_never_echo_secret_or_database_body(monkeypatch):
     monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
     monkeypatch.setenv("SUPABASE_PUBLISHABLE_KEY", "publishable")
