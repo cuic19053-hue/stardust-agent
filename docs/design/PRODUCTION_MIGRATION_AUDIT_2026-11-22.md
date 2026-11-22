@@ -12,15 +12,27 @@
 | --- | --- | --- | --- |
 | stardust_agent_core | 20261009043834 | 20261009044208 | 除末尾换行外相同 |
 | index_project_templates | 20261009044536 | 20261009044616 | 除末尾换行外相同 |
-| workbench_paired_redemption | 20261012090000 | 20261012135501 | 文本不同，语义待审 |
-| workbench_backend_capability | 20261012120000 | 20261012143106 | 文本不同，语义待审 |
-| workbench_single_inflight | 20261012123000 | 20261012144753 | 文本不同，语义待审 |
-| workbench_existing_balance_codes | 20261013010000 | 20261013013335 | 文本不同，语义待审 |
+| workbench_paired_redemption | 20261012090000 | 20261012135501 | 忽略注释、空白和未引用标识符大小写后 token 相同 |
+| workbench_backend_capability | 20261012120000 | 20261012143106 | 忽略注释、空白和未引用标识符大小写后 token 相同 |
+| workbench_single_inflight | 20261012123000 | 20261012144753 | 忽略注释、空白和未引用标识符大小写后 token 相同 |
+| workbench_existing_balance_codes | 20261013010000 | 20261013013335 | 忽略注释、空白和未引用标识符大小写后 token 相同 |
 | material_pipeline | 20261022154243 | 20261023114801 | 除末尾换行外相同 |
-| rag_project_search | 20261027051631 | 20261103122945 | 文本不同，语义待审 |
-| material_pipeline_all_skills | 20261103114550 | 20261103123000 | 文本不同，语义待审 |
+| rag_project_search | 20261027051631 | 20261103122945 | 生产脚本增加重复执行保护，见下文 |
+| material_pipeline_all_skills | 20261103114550 | 20261103123000 | 生产脚本重复声明函数权限，见下文 |
 | workbench_model_interactions | 20261113090000 | 20261117115630 | 文本相同 |
 | restrict_worker_to_trusted_material_jobs | 20261122065513 | 20261122072024 | 文本相同 |
+
+上述 token 比较保留字符串和带引号的标识符；它只比较历史 SQL，不证明当前数据库结构
+或执行顺序等价。`workbench_single_inflight` 的阻塞逻辑后来被仓库和生产共同存在的
+`20261028081757_workbench_nonblocking_reconciliation` 替代：历史预留仍占用余额，但不会
+仅因存在旧预留而拒绝新的请求。
+
+`rag_project_search` 的生产历史脚本为表、索引和策略创建增加存在性判断，两个函数采用
+`create or replace`；仓库版本按新库首次创建编写。不能仅因名字相同就重放任一脚本。
+`material_pipeline_all_skills` 的生产历史脚本额外重申旧两参数函数的 revoke/grant；仓库
+的前置迁移已设置权限，而 `create or replace` 保留原函数权限。生产后续已移除该旧签名；
+现用三参数函数检查结果为 anon 不可执行、authenticated 可执行。这些检查不是新库完整
+迁移链或全部 RLS 策略的验收。
 
 仓库独有的四条名称：
 
