@@ -239,7 +239,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_PUBLISHABLE_KEY = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
 TURNSTILE_SITE_KEY = os.environ.get("TURNSTILE_SITE_KEY", "").strip()
 CLOUD_MODE = bool(SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY)
-from proposal.material_release_gate import gate_cloud_material_api
+from proposal.material_release_gate import gate_cloud_material_api, platform_material_jobs_ready
 gate_cloud_material_api(CLOUD_MODE)
 store = (
     SupabaseStore(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY)
@@ -3134,6 +3134,8 @@ def material_worker_model_proxy(payload: MaterialWorkerProxyInput, request: Requ
     meter = None
     request_id = ""
     if platform:
+        if not platform_material_jobs_ready():
+            raise HTTPException(503, "平台材料模型任务暂不可用，正在核对账务。")
         if not _platform_bundle_ready(require_ledger=False):
             raise HTTPException(503, "平台模型通道尚未就绪")
         model = "deepseek-v4-flash"
@@ -3311,6 +3313,8 @@ def material_worker_image_proxy(payload: MaterialWorkerImageInput, request: Requ
 
     request_id = ""
     if job_payload.get("platform") is True:
+        if not platform_material_jobs_ready():
+            raise HTTPException(503, "平台材料模型任务暂不可用，正在核对账务。")
         if not _platform_bundle_ready(require_ledger=False):
             raise HTTPException(503, "平台图片通道尚未就绪")
         meter = WorkbenchMeter(
