@@ -29,7 +29,7 @@ class UsageOnlyClient(WopallyClient):
 
     def _request(self, path, method="GET", body=None, *, retried_login=False):
         if method != "GET" or body is not None or not re.fullmatch(
-            r"/api/v1/usage\?page=[1-5]&page_size=100&api_key_id=[1-9][0-9]*", path
+            r"/api/v1/usage\?page=1&page_size=1000&api_key_id=[1-9][0-9]*", path
         ):
             raise ValueError("Only bounded read-only usage requests are allowed")
         return super()._request(path, method, body, retried_login=retried_login)
@@ -40,26 +40,24 @@ def inspect_receipt(request_id: str, api_key_id: int, client=None):
     if not re.fullmatch(REQUEST_ID, request_id) or api_key_id <= 0:
         raise ValueError("Invalid receipt lookup")
     client = client or UsageOnlyClient(timeout=8)
-    matches = []
-    for page in range(1, 6):
-        data = client._request(
-            f"/api/v1/usage?page={page}&page_size=100&api_key_id={api_key_id}"
-        )
-        rows = data if isinstance(data, list) else data.get(
-            "items", data.get("records", data.get("list", []))
-        )
-        if not isinstance(rows, list):
-            raise WopallyUnavailable("中转站用量格式无法识别")
-        for row in rows:
-            if isinstance(row, dict) and row.get("user_agent") == f"StardustWorkbench/{request_id}":
-                matches.append(row)
-        if len(rows) < 100:
-            break
-    # Reaching the page limit with full pages cannot prove uniqueness.
-    if page == 5 and len(rows) == 100:
-        return {"status": "incomplete_scan", "pages_scanned": page}
+    # A single provider response is a consistent snapshot. Never infer
+    # completeness from a short page: a server could silently cap page_size.
+    data = client._request(f"/api/v1/usage?page=1&page_size=1000&api_key_id={api_key_id}")
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+        raise WopallyUnavailable("中转站用量格式无法识别")
+    rows = data["items"]
+    total, page_size, page = data.get("total"), data.get("page_size"), data.get("page")
+    if (type(total) is not int or total < 0 or total > 1000
+            or type(page_size) is not int or page_size != 1000
+            or type(page) is not int or page != 1 or len(rows) != total):
+        return {"status": "incomplete_scan", "pages_scanned": 1}
+    ids = [str(row.get("id") or "") if isinstance(row, dict) else "" for row in rows]
+    if any(not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", value) for value in ids) or len(set(ids)) != len(ids):
+        return {"status": "incomplete_scan", "pages_scanned": 1}
+    matches = [row for row in rows if isinstance(row, dict)
+               and row.get("user_agent") == f"StardustWorkbench/{request_id}"]
     if not matches:
-        return {"status": "receipt_not_found", "pages_scanned": page}
+        return {"status": "receipt_not_found", "pages_scanned": 1}
     if len(matches) != 1:
         return {"status": "ambiguous_receipts", "match_count": len(matches)}
     row = matches[0]
