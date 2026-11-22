@@ -129,6 +129,50 @@ def hardened_submit(sql, **changes):
     return hardened_call(sql, "submit", args)
 
 
+def test_emergency_pause_blocks_writes_and_worker_but_keeps_backup_reads(sql):
+    job = submit(sql)
+    sql("update public.material_jobs set status='completed' where id='" + job['id'] + "'")
+    sql("""create policy backup_read_jobs on public.material_jobs for select to authenticated
+      using (current_setting('request.jwt.claim.backup', true) = 'v1');""")
+    migration = next((ROOT / 'supabase/migrations').glob('*_pause_material_worker_and_writes.sql')).read_text()
+    sql(migration)
+    assert sql(as_user("select count(*) from public.material_jobs", OTHER)) == '0'
+    assert sql(as_user("set request.jwt.claim.backup='v1'; select count(*) from public.material_jobs", OTHER)) == '1'
+    sql(as_user("update public.material_jobs set status='pending' where id='" + JOB + "'"), ok=False)
+    sql(as_user("delete from public.material_jobs where id='" + JOB + "'"), ok=False)
+    sql(as_user("select public.material_jobs_api('submit','{}')"), ok=False)
+    sql("set role anon; select public.material_worker_rpc('worker-test-secret','claim','{}')", ok=False)
+    sql("set role anon; select material_private.worker_rpc('worker-test-secret','claim','{}')", ok=False)
+    assert sql("select status from public.material_jobs where id='" + JOB + "'") == 'completed'
+
+
+def test_emergency_pause_refuses_active_jobs_without_changing_privileges(sql):
+    submit(sql)
+    migration = next((ROOT / 'supabase/migrations').glob('*_pause_material_worker_and_writes.sql')).read_text()
+    sql(migration, ok=False)
+    assert sql("select has_table_privilege('authenticated','public.material_jobs','UPDATE')") == 't'
+    assert sql("select has_function_privilege('anon','public.material_worker_rpc(text,text,jsonb)','EXECUTE')") == 't'
+    assert sql("select status from public.material_jobs where id='" + JOB + "'") == 'pending'
+
+
+def test_full_hardening_keeps_backup_select_without_exposing_jobs_to_owners(sql):
+    submit(sql)
+    sql("update public.material_jobs set status='completed' where id='" + JOB + "'")
+    sql("""create policy backup_read_jobs on public.material_jobs for select to authenticated
+      using (current_setting('request.jwt.claim.backup', true) = 'v1');""")
+    production = (ROOT / 'ops/production_migrations/20261122063022_harden_material_authority_and_preserve_backups.sql').read_text()
+    sql(production)
+    assert sql(as_user('select count(*) from public.material_jobs')) == '0'
+    assert sql(as_user("set request.jwt.claim.backup='v1'; select count(*) from public.material_jobs", OTHER)) == '1'
+    jobs = hardened_call(sql, 'list', {'project_id': 'p'}, secret=None)
+    assert len(jobs) == 1 and jobs[0]['status'] == 'needs_review'
+    sql(as_user("update public.material_jobs set status='pending' where id='" + JOB + "'"), ok=False)
+    sql(as_user("insert into public.material_revisions(project_id,section_id,content,source,job_id) "
+                "values ('p','abstract','forged','manual','" + JOB + "')"), ok=False)
+    sql(as_user("insert into public.material_revisions(project_id,section_id,content,source) "
+                "values ('p','abstract','manual text','manual')"))
+
+
 def test_sql_ownership_idempotency_and_cas(sql):
     first = submit(sql)
     assert submit(sql)["id"] == first["id"]

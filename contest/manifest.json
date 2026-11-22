@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "note": "仅登记官方公示来源。补充来源时追加到 sources 数组，保持 source_url 可回源。",
+  "sources": [
+    {
+      "file": "raw/scu-2026.xlsx",
+      "school": "四川大学",
+      "year": 2026,
+      "track": "大创-创新训练",
+      "source_url": "https://jwc.scu.edu.cn/info/1069/10612.htm",
+      "source_title": "推荐2026年省国级大学生创新训练计划立项名单公示"
+    }
+  ]
+}
