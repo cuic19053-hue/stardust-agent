@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f4ee"><meta name="description" content="立项材料提交前核对：把草稿、团队记录与学校要求放在一起复查。">
+  <title>立项医生 · 提交前核对</title><link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="立项医生首页"><span class="brand-mark">L.</span><span>立项医生 <i>FIELD NOTES / 01</i></span></a>
+      <div class="top-status"><span class="live-dot"></span><span>本地体验 · 内容不上传</span></div>
+    </header>
+
+    <section class="hero" id="top">
+      <div class="hero-copy">
+        <div class="eyebrow"><span>提交前的最后一遍核对</span><span class="eyebrow-line"></span><span>STUDYHACK</span></div>
+        <h1>让申报书先会诊，<br><em>再从容提交。</em></h1>
+        <p class="hero-intro">导入申报书，选择需要的视角逐段诊断。每条意见都回到原文，修改之后还能复查。</p>
+        <div class="hero-actions"><a class="button button-primary" href="#doctor"><span>开始材料会诊</span><span aria-hidden="true">↗</span></a></div>
+      </div>
+      <aside class="hero-card" aria-label="演示范围">
+        <div class="card-overline"><span>案例范围</span><span class="tiny-seal">01 / 03</span></div>
+        <div class="school-name">东南大学</div><div class="school-track">2026 国省创 · 创新训练</div>
+        <div class="card-rule"></div>
+        <div class="expired"><span class="expired-icon">↗</span><span><strong>历史批次</strong><br>申报截止 2026.04.20</span></div>
+        <div class="card-caption">仅演示如何核对已发布的历史要求<br>不代表当前开放申报或立项结果</div>
+      </aside>
+    </section>
+
+    <section class="doctor-section" id="doctor">
+      <div class="workspace-heading"><div><div class="section-kicker">01 <span>材料会诊</span></div><h2>把完整申报书放上诊断台</h2></div><span class="case-chip">本机 Qwen · 分段会诊</span></div>
+      <div class="doctor-grid">
+        <div class="paper-card doctor-editor">
+          <div class="card-head"><div><span class="step-index">A</span><span class="card-title">申报书正文</span></div><span id="documentCount" class="editable-label">0 / 16000 字</span></div>
+          <p class="card-description">上传 TXT、DOCX 或可复制文字的 PDF（≤ 2 MB），也可直接粘贴。请检查提取结果后再开始。</p>
+          <div class="doctor-actions"><label for="documentFile" class="upload-label">选择材料</label><input id="documentFile" type="file" accept=".txt,.docx,.pdf"><button class="button button-quiet" id="documentDemo" type="button">载入模拟申报书</button></div>
+          <p class="helper-text" id="fileMessage" role="status">本机处理；扫描图片版 PDF 暂不支持。</p>
+          <label class="sr-label" for="documentText">申报书正文</label>
+          <textarea id="documentText" rows="20" placeholder="把完整申报书粘贴到这里，或先载入一份模拟申报书。"></textarea>
+          <p class="helper-text">一次最多 16000 字，超过上限请分章处理；每个角色按片段独立诊断，无法完整判断跨片段关系。</p>
+          <div class="role-planner"><div class="finding-top"><strong>会诊视角</strong><button type="button" class="finding-jump" id="planRoles">根据材料推荐视角 ↗</button></div><p class="helper-text" id="roleMessage">可先推荐视角，也可自己添加；角色不少于两个时会进行交叉复核。</p><div id="roleList"></div><button type="button" class="finding-jump" id="addRole">＋ 添加视角</button></div>
+          <button class="button button-primary button-wide" id="diagnoseDocument" type="button">开始材料会诊 <span aria-hidden="true">→</span></button>
+          <p class="helper-text">正文逐段发送到本机 Qwen；先独立诊断，再由其他视角复核。角色不是真实评委。</p>
+        </div>
+        <div class="results-column doctor-results">
+          <div class="result-summary"><div><span class="summary-kicker">诊断报告</span><h3>从原文开始修改</h3></div><span class="result-mark">✳</span></div>
+          <p class="helper-text">按所选视角列出原文、问题及可执行建议。</p>
+          <p id="doctorProgress" class="doctor-progress" role="status">载入模拟稿或粘贴正文，开始会诊。</p>
+          <div id="doctorIssues" class="findings" aria-live="polite"></div>
+          <button class="button button-quiet report-button" id="downloadDoctor" type="button" disabled>下载会诊记录 ↓</button>
+          <p class="helper-text">报告可能遗漏或误判。下载文件包含当前材料和意见，请自行保管。</p>
+        </div>
+      </div>
+    </section>
+
+    <details class="extra-tools"><summary>展开辅助工具：依据、预算与学校规则核对</summary>
+    <section class="workspace-heading">
+      <div><div class="section-kicker">01 <span>材料对照台</span></div><h2>把草稿和证据放在一起</h2></div>
+      <div class="case-chip"><span class="chip-dot"></span><span id="modeLabel">模拟案例 · 虚构项目记录</span></div>
+    </section>
+
+    <section class="compare-layout" aria-label="项目草稿和依据">
+      <div class="paper-card editor-card">
+        <div class="card-head"><div><span class="step-index">A</span><span class="card-title">项目草稿</span></div><span class="editable-label">可编辑</span></div>
+        <label for="draft">申报书中的表述 <span>摘一段你想确认的内容</span></label>
+        <textarea id="draft" rows="5" spellcheck="false">本项目已实测，分类准确率达到 98.6%。</textarea>
+        <div class="source-head"><label for="evidence">项目记录 / 实验记录 <span>对照你已有的原始记录</span></label><span class="optional">依据 B</span></div>
+        <textarea id="evidence" rows="4" spellcheck="false">测试尚未开始，当前没有实测结果。</textarea>
+        <div class="state-fields">
+          <label for="draftState">草稿描述的状态<select id="draftState"><option value="auto">自动识别（不确定时待核）</option><option value="measured">已经实测</option><option value="planned">计划或目标</option><option value="unknown">不确定</option></select></label>
+          <label for="evidenceState">记录里的状态<select id="evidenceState"><option value="auto">自动识别（不确定时待核）</option><option value="measured">已有实测</option><option value="none">尚无实测</option><option value="unknown">不确定</option></select></label>
+        </div>
+        <p class="helper-text">自动识别可能遗漏上下文；不准确时请选择实际状态。更换文字会重置手动选择。</p>
+        <div class="editor-foot"><span><span class="lock-icon">▣</span> 规则在页面处理；Qwen 核对使用本机服务</span><span id="charCount">0 字</span></div>
+        <button class="button button-primary button-wide" id="runCheck"><span>重新核对</span><span aria-hidden="true">→</span></button>
+      </div>
+
+      <div class="results-column" id="results">
+        <div class="result-summary"><div><span class="summary-kicker">核对结果</span><h3 id="resultHeadline">先看这处冲突</h3></div><span class="result-mark" id="resultMark">!</span></div>
+        <div class="summary-counts" id="summaryCounts" aria-live="polite"></div>
+        <div class="findings" id="findings" aria-live="polite"></div>
+        <section class="model-review" aria-labelledby="modelHeading">
+          <div class="finding-top"><h4 id="modelHeading">Qwen 补充核对</h4><span class="check-type" id="modelStatus">检查本地模型…</span></div>
+          <p>点击后，把上面的草稿和记录发送给本机 Qwen 模型分析。只处理这两段文字；请勿将模型意见当成事实证明。</p>
+          <button class="button button-quiet" id="runModel" type="button" disabled>用 Qwen 补充核对 ↗</button>
+          <p class="model-message" id="modelMessage" role="status">正在检查模型服务。</p>
+          <div id="modelFindings" class="findings" aria-live="polite"></div>
+        </section>
+        <button class="button button-quiet report-button" id="downloadReport">下载本次核对记录 ↓</button>
+        <p class="helper-text">下载的文件包含当前填写的材料，请自行保管。</p>
+        <p class="review-note"><span>提示</span> 规则与模型都可能遗漏或误判，未识别到冲突不等于事实真实。请检查原始记录与学校通知。</p>
+      </div>
+    </section>
+
+    <section class="workspace-heading second-heading">
+      <div><div class="section-kicker">02 <span>数字与范围</span></div><h2>把能算清的当场算清</h2></div>
+      <p class="section-aside">对账结果会随输入变化<br>其他学校的要求不自动套用</p>
+    </section>
+
+    <section class="checks-grid">
+      <article class="paper-card check-card budget-card">
+        <div class="card-head"><div><span class="step-index">B</span><span class="card-title">预算前后期对账</span></div><span class="check-type">数字计算</span></div>
+        <p class="card-description">检查两个阶段经费是否等于申请总额。示例金额仅为模拟测算。</p>
+        <div class="money-fields">
+          <label>申请总额 <span class="input-wrap"><input id="budgetTotal" inputmode="decimal" type="number" min="0" step="0.01" value="1200"><b>元</b></span></label>
+          <span class="operator" aria-hidden="true">=</span>
+          <label>前期计划 <span class="input-wrap"><input id="budgetEarly" inputmode="decimal" type="number" min="0" step="0.01" value="600"><b>元</b></span></label>
+          <span class="operator" aria-hidden="true">+</span>
+          <label>后期计划 <span class="input-wrap"><input id="budgetLate" inputmode="decimal" type="number" min="0" step="0.01" value="800"><b>元</b></span></label>
+        </div>
+        <div class="calc-result" id="budgetResult" aria-live="polite"></div>
+        <div class="mini-citation"><span class="citation-pin">↳</span><span>只核算填入的金额加总；预算是否合理、是否获批仍需人工核对。</span></div>
+      </article>
+
+      <article class="paper-card check-card rule-card">
+        <div class="card-head"><div><span class="step-index">C</span><span class="card-title">本批次团队人数</span></div><span class="check-type">范围匹配</span></div>
+        <p class="card-description">只在学校、年份与赛道都匹配时显示历史要求。</p>
+        <label for="scope" class="select-label">你正在核对的范围</label>
+        <select id="scope"><option value="seu2026">东南大学 · 2026 · 创新训练</option><option value="other">其他学校或年份（未覆盖）</option></select>
+        <div class="team-row"><label for="studentCount">学生成员人数</label><div class="team-control"><input id="studentCount" type="number" min="1" max="99" step="1" value="6" aria-describedby="teamHelp"><span>名学生</span></div></div>
+        <p class="helper-text" id="teamHelp">此处填写学生人数；团队人员范围请以学校原文及申报系统为准。</p>
+        <div class="rule-result" id="ruleResult" aria-live="polite"></div>
+        <a class="official-link" href="https://jwc.seu.edu.cn/_upload/article/files/71/75/58681d784ea4a3430f796a7d7003/f2be4fc1-b099-4458-adb5-f546070b6839.pdf" target="_blank" rel="noreferrer"><span>学校官方指南</span><span>指南第 1 页 ↗</span></a>
+      </article>
+    </section>
+
+    </details>
+    <footer class="footer">
+      <div class="footer-brand"><span class="brand-mark small-mark">L.</span><span>立项医生<small>SUBMISSION CHECK / DEMO</small></span></div>
+      <p>只对照你提供的文字与有出处的要求。<br>不打分，不预测立项或获奖概率。</p>
+      <div class="privacy-stamp"><span>LOCAL</span><span>本地页面</span></div>
+    </footer>
+  </main>
+  <script src="engine.js" defer></script><script src="app.js" defer></script><script src="doctor.js" defer></script>
+</body>
+</html>

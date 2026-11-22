@@ -15,6 +15,7 @@ from docx.shared import Cm, Pt, RGBColor
 
 from utils.docx_common import harden_table
 
+from .markdown_tables import is_header_separator, pipe_cells
 from .materials import material_view
 
 STYLE = {
@@ -35,12 +36,13 @@ def blocks(content: str) -> list[dict[str, Any]]:
         if line.startswith("|"):
             rows = []
             header_rows = 0
+            table_start = i
             while i < len(lines) and lines[i].strip().startswith("|"):
-                cells = [x.strip() for x in lines[i].strip().strip("|").split("|")]
-                if not all(re.fullmatch(r"[:\- ]*", x) for x in cells):
-                    rows.append(cells)
-                elif len(rows) == 1:
+                cells = pipe_cells(lines[i])
+                if i == table_start + 1 and is_header_separator(cells, rows[0]):
                     header_rows = 1
+                else:
+                    rows.append(cells)
                 i += 1
             if rows:
                 result.append({"type": "table", "rows": rows, "header_rows": header_rows})

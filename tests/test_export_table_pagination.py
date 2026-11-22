@@ -95,6 +95,17 @@ def test_headerless_tables_do_not_repeat_the_first_record(export_path):
     assert not any(flag(row, "tblHeader") for row in table.rows)
 
 
+def test_placeholder_and_empty_cells_survive_word_export(export_path):
+    store, export = export_path
+    content = "|项目|状态|\n|---|---|\n|---|---|\n| | |\n|预算|待定|\n||未定|\n|试剂||"
+    document = export(project_with_table(store, content))
+    table = next(t for t in document.tables if t.cell(0, 0).text == "项目")
+    assert [[cell.text for cell in row.cells] for row in table.rows] == [
+        ["项目", "状态"], ["---", "---"], ["", ""], ["预算", "待定"],
+        ["", "未定"], ["试剂", ""],
+    ]
+
+
 def test_school_table_pagination_and_page_setup_are_preserved(export_path, tmp_path):
     store, export = export_path
     template = Document()

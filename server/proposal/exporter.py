@@ -20,6 +20,7 @@ from docx.shared import Cm, Pt
 
 from utils.docx_common import harden_table
 
+from .markdown_tables import is_header_separator, pipe_cells
 from .storage import Store
 
 LABEL_FIELDS = {
@@ -612,11 +613,10 @@ def _append_draft(
                     index += 1
                 rows = []
                 header_rows = 0
-                for table_line in table_lines:
-                    cells = [cell.strip() for cell in table_line.strip("|").split("|")]
-                    if cells and all(re.fullmatch(r"[:\- ]+", cell or " ") for cell in cells):
-                        if len(rows) == 1:
-                            header_rows = 1
+                for table_index, table_line in enumerate(table_lines):
+                    cells = pipe_cells(table_line)
+                    if table_index == 1 and is_header_separator(cells, rows[0]):
+                        header_rows = 1
                         continue
                     rows.append(cells)
                 if rows:
