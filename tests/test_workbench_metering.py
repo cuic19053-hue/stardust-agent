@@ -24,15 +24,20 @@ class FakeResponse(io.BytesIO):
         self.close()
 
 
+def provider_page(rows, *, total=None):
+    return json.dumps({"code": 0, "data": {"items": rows, "total": len(rows) if total is None else total,
+                                            "page": 1, "page_size": 1000}}).encode()
+
+
 def test_usage_matches_unique_marker_and_key_and_uses_exact_decimal(monkeypatch):
     request_id = "b" * 32
     def open_request(request, timeout):
-        return FakeResponse(json.dumps({"code": 0, "data": {"items": [
+        return FakeResponse(provider_page([
             {"id": 55, "api_key_id": 684, "model": "deepseek-v4-flash",
              "user_agent": f"StardustWorkbench/{request_id}", "actual_cost": "0.00000025"},
-        ]}}).encode())
+        ]))
 
-    monkeypatch.setattr("proposal.wopally_usage.urllib.request.urlopen", open_request)
+    monkeypatch.setattr("proposal.wopally_transport.urllib.request.urlopen", open_request)
     assert WopallyUsage(token="test-only").find(request_id, 684, "deepseek-v4-flash") == (1, "55")
     with pytest.raises(UsageUnavailable, match="归属不符"):
         WopallyUsage(token="test-only").find(request_id, 999, "deepseek-v4-flash")
@@ -46,15 +51,15 @@ def test_new_requests_charge_official_two_times(monkeypatch, tmp_path):
     assert request_id.startswith("o2x1_")
 
     def open_request(request, timeout):
-        return FakeResponse(json.dumps({"code": 0, "data": {"items": [
+        return FakeResponse(provider_page([
             {"id": 55, "api_key_id": 684, "model": "deepseek-v4-flash",
              "user_agent": f"StardustWorkbench/{request_id}", "actual_cost": "999",
              "input_tokens": 10000, "output_tokens": 10000, "cache_read_tokens": 0,
              "input_cost": ".02", "output_cost": ".08", "cache_read_cost": 0,
              "total_cost": ".10"},
-        ]}}).encode())
+        ]))
 
-    monkeypatch.setattr("proposal.wopally_usage.urllib.request.urlopen", open_request)
+    monkeypatch.setattr("proposal.wopally_transport.urllib.request.urlopen", open_request)
     assert WopallyUsage(token="test-only").find(request_id, 684, "deepseek-v4-flash") == (200_000, "55")
     meter.usage = WopallyUsage(token="test-only")
     meter.settle(request_id, "deepseek-v4-flash")
@@ -67,13 +72,34 @@ def test_new_requests_charge_official_two_times(monkeypatch, tmp_path):
 def test_pending_pre_change_request_keeps_original_price(monkeypatch, legacy_request_id, expected):
 
     def open_request(request, timeout):
-        return FakeResponse(json.dumps({"code": 0, "data": {"items": [
+        return FakeResponse(provider_page([
             {"id": 56, "api_key_id": 684, "model": "deepseek-v4-flash",
              "user_agent": f"StardustWorkbench/{legacy_request_id}", "actual_cost": "0.01"},
-        ]}}).encode())
+        ]))
 
-    monkeypatch.setattr("proposal.wopally_usage.urllib.request.urlopen", open_request)
+    monkeypatch.setattr("proposal.wopally_transport.urllib.request.urlopen", open_request)
     assert WopallyUsage(token="test-only").find(legacy_request_id, 684, "deepseek-v4-flash") == (expected, "56")
+
+
+@pytest.mark.parametrize("duplicate", [True, False])
+def test_immediate_settlement_refuses_ambiguous_or_truncated_receipts(monkeypatch, tmp_path, duplicate):
+    store = Store(tmp_path)
+    store.grant_workbench_payment_credits("alice", "paid-test-unsafe-lookup", 1_000_000)
+    meter = WorkbenchMeter(store, "alice", 684)
+    request_id = meter.reserve("deepseek-v4-flash")
+    row = {"id": 55, "api_key_id": 684, "model": "deepseek-v4-flash",
+           "user_agent": f"StardustWorkbench/{request_id}", "input_tokens": 10000,
+           "output_tokens": 10000, "cache_read_tokens": 0, "input_cost": ".02",
+           "output_cost": ".08", "cache_read_cost": "0", "total_cost": ".10"}
+    rows = [row, {**row, "id": 56}] if duplicate else [row]
+    body = provider_page(rows, total=len(rows) if duplicate else 1001)
+    monkeypatch.setattr("proposal.wopally_transport.urllib.request.urlopen",
+                        lambda request, timeout: FakeResponse(body))
+    meter.usage = WopallyUsage(token="test-only")
+    assert meter.settle(request_id, "deepseek-v4-flash") is None
+    with store.connect() as db:
+        event = db.execute("SELECT status FROM workbench_usage_events WHERE request_id=?", (request_id,)).fetchone()
+    assert event["status"] == "reserved"
 
 
 def test_official_image_standard_token_prices_and_fixed_fx():

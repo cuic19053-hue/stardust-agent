@@ -45,7 +45,9 @@ class WorkbenchMeter:
         )
         self.usage = WopallyUsage(
             timeout=2 if self.background_reconciliation else 8,
-            max_pages=1 if self.background_reconciliation else 5,
+            # Never hold an interactive response for a multi-page scan. The
+            # background reconciler can safely verify larger snapshots.
+            max_pages=1,
         )
 
     def reserve(

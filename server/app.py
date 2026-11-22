@@ -1420,7 +1420,7 @@ def get_provider_health(request: Request) -> dict[str, Any]:
         result["error"] = str(exc)
         return result
     try:
-        WopallyUsage().find("health-check-no-charge", key_id, "deepseek-v4-flash")
+        WopallyUsage().find("0" * 32, key_id, "deepseek-v4-flash")
         result["usage_query"] = True
     except UsageUnavailable:
         pass
