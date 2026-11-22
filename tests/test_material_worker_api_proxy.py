@@ -173,6 +173,29 @@ def test_platform_model_proxy_preserves_confirmation_metering_and_no_secret_echo
     assert "test-only-provider-key" not in response.text
 
 
+def test_model_interaction_failure_refunds_before_any_provider_request(api, monkeypatch):
+    client, _, _ = api
+    context = {"id": JOB_ID, "project_id": PROJECT_ID, "owner_id": OWNER_ID,
+               "kind": "outline", "payload": {"paid": True, "platform": True}}
+    calls = setup_proxy(monkeypatch, context)
+    from proposal.material_worker_proxy import MaterialWorkerBridgeError
+    def unavailable(*args, **kwargs):
+        raise MaterialWorkerBridgeError("worker bridge unavailable")
+    monkeypatch.setattr(app.MaterialWorkerBridge, 'record_model_interaction', unavailable)
+    monkeypatch.setattr(app, '_platform_bundle_ready', lambda **_: True)
+    monkeypatch.setenv('WOPALLY_MODEL_BASE_URL', 'https://api.wopally.cn/v1')
+    monkeypatch.setenv('WOPALLY_WORKBENCH_API_KEY', 'test-only-provider-key')
+    monkeypatch.setenv('WOPALLY_WORKBENCH_API_KEY_ID', '17')
+    upstream = []
+    monkeypatch.setattr(app, 'wopally_urlopen', lambda *a, **kw: upstream.append(True))
+    response = client.post('/api/material/internal/model', headers=auth_headers(), json={
+        'job_id': JOB_ID, 'lease': LEASE, 'request_body': {'messages': [], 'stream': False},
+    })
+    assert response.status_code == 409
+    assert [action for action, _ in calls] == ['reserve', 'refund']
+    assert not upstream
+
+
 def test_platform_proxy_does_not_reserve_or_call_when_billing_is_not_ready(api, monkeypatch):
     client, _, _ = api
     calls = setup_proxy(monkeypatch, {

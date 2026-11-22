@@ -191,6 +191,70 @@ def test_worker_only_claims_and_updates_trusted_submissions(hardened_sql):
         "'{\"id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"lease\":\"legacy-lease\"}')", ok=False)
 
 
+def test_worker_interaction_rpc_requires_secret_lease_and_trusted_job(hardened_sql):
+    sql = hardened_sql
+    sql((ROOT / 'supabase/migrations/20261113090000_workbench_model_interactions.sql').read_text())
+    sql((ROOT / 'supabase/migrations/20261122065513_restrict_worker_to_trusted_material_jobs.sql').read_text())
+    hardened_submit(sql)
+    claimed = worker(sql, 'claim')
+    request_id = 'o2x1_' + 'a' * 32
+    worker(sql, 'reserve', claimed, request_id=request_id, model='deepseek-v4-flash', api_key_id=692)
+
+    def interaction(secret='worker-test-secret', lease=None, rid=request_id, model='deepseek-v4-flash'):
+        return ("set role anon; select public.material_worker_record_model_interaction("
+                f"'{secret}','{JOB}','{lease or claimed['lease']}','{rid}','{model}',"
+                "'synthetic input','','started',null);")
+
+    # Reproduce the production failure: the invoker wrapper was executable,
+    # but its private callee had no EXECUTE privilege for the caller.
+    assert sql("select has_function_privilege('anon',"
+               "'material_private.record_model_interaction(text,text,text,text,text,text,text,text,text)',"
+               "'EXECUTE')") == 'f'
+    sql(interaction(), ok=False)
+    migration = (ROOT / 'supabase/migrations/20261122083000_restore_worker_interaction_capability.sql').read_text()
+    sql(migration)
+    sql(interaction(secret='wrong-secret'), ok=False)
+    sql(interaction(lease='wrong-lease'), ok=False)
+    sql(interaction(rid='o2x1_' + 'b' * 32), ok=False)
+    sql(interaction(model='gpt-image-2'), ok=False)
+    assert sql(interaction()) == 't'
+    assert sql("select count(*) from public.workbench_model_interactions where "
+               f"request_id='{request_id}' and user_id='{UID}' and project_id='p'") == '1'
+
+    sql(f"update public.material_jobs set lease_until=now()-interval '1 second' where id='{JOB}'")
+    sql(interaction(), ok=False)
+    sql(f"update public.material_jobs set lease_until=now()+interval '1 minute' where id='{JOB}'")
+    sql(f"update public.material_jobs set trusted_submission=false where id='{JOB}'")
+    sql(interaction(), ok=False)
+    sql(f"update public.material_jobs set trusted_submission=true,status='cancelled' where id='{JOB}'")
+    sql(interaction(), ok=False)
+    sql("revoke execute on function public.material_worker_record_model_interaction("
+        "text,text,text,text,text,text,text,text,text) from anon,authenticated")
+    sql(migration)
+    assert sql("select has_function_privilege('anon',"
+               "'public.material_worker_record_model_interaction(text,text,text,text,text,text,text,text,text)',"
+               "'EXECUTE')") == 'f'
+
+
+def test_worker_context_and_byok_reject_untrusted_leases(hardened_sql):
+    sql = hardened_sql
+    sql((ROOT / 'supabase/migrations/20261113090000_workbench_model_interactions.sql').read_text())
+    migration = (ROOT / 'supabase/migrations/20261122083000_restore_worker_interaction_capability.sql').read_text()
+    sql(migration)
+    hardened_submit(sql, payload={'paid': True, 'platform': False, 'base_revision': 0})
+    claimed = worker(sql, 'claim')
+    context = ("set role anon; select public.material_worker_context("
+               f"'worker-test-secret','{JOB}','{claimed['lease']}');")
+    def authorize(call_id):
+        return ("set role anon; select public.material_worker_authorize_byok("
+                f"'worker-test-secret','{JOB}','{claimed['lease']}','{call_id}','text');")
+    assert json.loads(sql(context))['id'] == JOB
+    assert json.loads(sql(authorize('1' * 32)))['ok'] is True
+    sql(f"update public.material_jobs set trusted_submission=false where id='{JOB}'")
+    sql(context, ok=False)
+    sql(authorize('2' * 32), ok=False)
+
+
 def test_trusted_worker_migration_does_not_unpause_worker(hardened_sql):
     sql = hardened_sql
     pause = next((ROOT / 'supabase/migrations').glob('*_pause_material_worker_and_writes.sql')).read_text()
