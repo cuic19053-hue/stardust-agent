@@ -13,7 +13,7 @@ class UsageClient:
 
     def _request(self, path):
         self.paths.append(path)
-        return {"items": self.rows}
+        return {"items": self.rows, "total": len(self.rows), "page": 1, "page_size": 1000}
 
 
 def receipt(**changes):
@@ -33,12 +33,12 @@ def test_receipt_confirms_exact_cost_without_content_or_secrets():
     assert result["status"] == "confirmed"
     assert result["actual_micro_cny"] == 200000
     assert "secret" not in str(result) and "never expose" not in str(result)
-    assert client.paths == ["/api/v1/usage?page=1&page_size=100&api_key_id=692"]
+    assert client.paths == ["/api/v1/usage?page=1&page_size=1000&api_key_id=692"]
 
 
 @pytest.mark.parametrize(("rows", "status"), [
     ([], "receipt_not_found"),
-    ([receipt(), receipt()], "ambiguous_receipts"),
+    ([receipt(), receipt(id=1000)], "ambiguous_receipts"),
     ([receipt(api_key_id=111)], "ownership_mismatch"),
     ([receipt(total_cost=".99")], "invalid_receipt_pricing"),
     ([receipt(model="arbitrary")], "unsupported_model"),
@@ -76,12 +76,24 @@ def test_historical_receipt_uses_its_original_price(request_id, multiplier):
     assert inspect_receipt(request_id, 692, UsageClient([row]))["actual_micro_cny"] == 10000 * multiplier
 
 
-def test_full_five_page_window_does_not_claim_unique_receipt():
-    class FullPages:
+@pytest.mark.parametrize("response", [
+    {"items": [receipt()] + [{"id": n} for n in range(1000, 1999)], "total": 1001, "page": 1, "page_size": 1000},
+    {"items": [receipt()], "total": 1, "page": 1, "page_size": 100},
+    {"items": [receipt()], "total": 2, "page": 1, "page_size": 1000},
+    {"items": [receipt()], "page": 1, "page_size": 1000},
+    {"items": [receipt()], "total": 1, "page": 2, "page_size": 1000},
+    {"items": [receipt(), receipt()], "total": 2, "page": 1, "page_size": 1000},
+])
+def test_incomplete_or_silently_capped_snapshot_never_settles(response):
+    class Snapshot:
         def _request(self, path):
-            return {"items": [receipt()] + [{}] * 99 if "page=1&" in path else [{}] * 100}
+            return response
+    assert inspect_receipt(RID, 692, Snapshot())["status"] == "incomplete_scan"
 
-    assert inspect_receipt(RID, 692, FullPages())["status"] == "incomplete_scan"
+
+def test_unique_receipt_after_first_500_rows_can_be_reconciled():
+    rows = [{"id": n} for n in range(1, 502)] + [receipt()]
+    assert inspect_receipt(RID, 692, UsageClient(rows))["status"] == "confirmed"
 
 
 def test_usage_worker_does_not_depend_on_card_redemption_configuration(monkeypatch):

@@ -103,7 +103,7 @@ def run_batch(store, rpc=worker_rpc, clock=time.monotonic, *, include_alerts=Tru
     outcome = "idle"
     client = UsageOnlyClient(timeout=3)
     for _ in range(5):
-        # One remaining provider lookup may take five 3s pages + login timeout.
+        # Each provider lookup is one bounded snapshot plus the login timeout.
         if processed and clock() - started >= 15:
             break
         result = run_once(store, rpc, lambda request_id, key_id: inspect_receipt(
