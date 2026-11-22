@@ -67,7 +67,7 @@ class WopallyClient:
         url = f"{self.base_url}/{path.lstrip('/')}"
         payload = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
         try:
-            token = self.access_token or service_token(self.base_url)
+            token = self.access_token or service_token(self.base_url, timeout=min(self.timeout, 10))
         except ServiceLoginUnavailable as exc:
             raise WopallyUnavailable(str(exc)) from exc
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}

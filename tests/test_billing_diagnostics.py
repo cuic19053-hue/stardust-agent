@@ -33,13 +33,14 @@ def test_receipt_confirms_exact_cost_without_content_or_secrets():
     assert result["status"] == "confirmed"
     assert result["actual_micro_cny"] == 200000
     assert "secret" not in str(result) and "never expose" not in str(result)
-    assert client.paths == ["/api/v1/usage?page=1&page_size=1000&api_key_id=692"]
+    assert client.paths == ["/api/v1/usage?page=1&page_size=1000&api_key_id=692&sort_by=id&sort_order=asc"]
 
 
 @pytest.mark.parametrize(("rows", "status"), [
     ([], "receipt_not_found"),
     ([receipt(), receipt(id=1000)], "ambiguous_receipts"),
     ([receipt(api_key_id=111)], "ownership_mismatch"),
+    ([receipt(api_key_id=692.0)], "ownership_mismatch"),
     ([receipt(total_cost=".99")], "invalid_receipt_pricing"),
     ([receipt(model="arbitrary")], "unsupported_model"),
 ])
@@ -96,6 +97,59 @@ def test_unique_receipt_after_first_500_rows_can_be_reconciled():
     assert inspect_receipt(RID, 692, UsageClient(rows))["status"] == "confirmed"
 
 
+class PagedUsageClient:
+    def __init__(self, rows, *, mutation=None):
+        self.rows = rows
+        self.mutation = mutation
+        self.paths = []
+
+    def _request(self, path):
+        from urllib.parse import parse_qs, urlparse
+        self.paths.append(path)
+        page = int(parse_qs(urlparse(path).query)["page"][0])
+        rows = [dict(row) for row in self.rows[(page - 1) * 1000:page * 1000]]
+        total = len(self.rows)
+        if self.mutation == "total" and page == 2:
+            total += 1
+        if self.mutation == "marker" and len(self.paths) > 2 and page == 1:
+            rows[0]["user_agent"] = f"StardustWorkbench/{RID}"
+        if self.mutation == "price" and len(self.paths) > 2 and page == 2:
+            rows[49]["total_cost"] = ".11"
+        return {"items": rows, "total": total, "page": page, "page_size": 1000}
+
+
+def many_receipts():
+    rows = [{"id": n} for n in range(1, 1102)]
+    rows[1049] = receipt(id=1050)
+    return rows
+
+
+def test_multi_page_receipt_requires_two_identical_complete_scans():
+    client = PagedUsageClient(many_receipts())
+    result = inspect_receipt(RID, 692, client)
+    assert result["status"] == "confirmed" and result["actual_micro_cny"] == 200000
+    assert len(client.paths) == 4
+
+
+def test_multi_page_duplicate_is_never_settled():
+    rows = many_receipts()
+    rows[0] = receipt(id=1)
+    assert inspect_receipt(RID, 692, PagedUsageClient(rows))["status"] == "ambiguous_receipts"
+
+
+@pytest.mark.parametrize("mutation", ["total", "marker", "price"])
+def test_multi_page_changes_during_scan_are_deferred(mutation):
+    assert inspect_receipt(RID, 692, PagedUsageClient(many_receipts(), mutation=mutation))["status"] == "incomplete_scan"
+
+
+def test_multi_page_sorting_and_limit_fail_closed():
+    rows = many_receipts()
+    rows[0], rows[1] = rows[1], rows[0]
+    assert inspect_receipt(RID, 692, PagedUsageClient(rows))["status"] == "incomplete_scan"
+    assert inspect_receipt(RID, 692, PagedUsageClient(many_receipts()), max_pages=1)["status"] == "incomplete_scan"
+    assert inspect_receipt(RID, 692, PagedUsageClient([{"id": n} for n in range(1, 5002)]))["status"] == "incomplete_scan"
+
+
 def test_usage_worker_does_not_depend_on_card_redemption_configuration(monkeypatch):
     from proposal.billing_diagnostics import UsageOnlyClient
     monkeypatch.delenv("WOPALLY_CARD_REDEEM_PATH", raising=False)
@@ -104,6 +158,8 @@ def test_usage_worker_does_not_depend_on_card_redemption_configuration(monkeypat
     assert client.is_configured
     with pytest.raises(ValueError, match="read-only"):
         client._request("/api/v1/cards/redeem", "POST", {})
+    with pytest.raises(ValueError, match="read-only"):
+        client._request("/api/v1/usage?page=6&page_size=1000&api_key_id=692&sort_by=id&sort_order=asc")
 
 
 def test_background_worker_settles_only_confirmed_matched_model():
