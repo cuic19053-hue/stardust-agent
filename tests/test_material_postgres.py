@@ -173,6 +173,54 @@ def test_full_hardening_keeps_backup_select_without_exposing_jobs_to_owners(sql)
                 "values ('p','abstract','manual text','manual')"))
 
 
+def test_worker_only_claims_and_updates_trusted_submissions(hardened_sql):
+    sql = hardened_sql
+    hardened_submit(sql)
+    sql("""insert into public.material_jobs
+      (id,project_id,owner_id,kind,target,idempotency,payload,status,created_at,trusted_submission)
+      select 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',project_id,owner_id,kind,'legacy','legacy',payload,
+        'pending',created_at-interval '1 hour',false from public.material_jobs where id='""" + JOB + "'" )
+    migration = next((ROOT / 'supabase/migrations').glob('*_restrict_worker_to_trusted_material_jobs.sql')).read_text()
+    sql(migration)
+    claimed = worker(sql, 'claim')
+    assert claimed['id'] == JOB and claimed['trusted_submission'] is True
+    assert sql("select status from public.material_jobs where id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'") == 'pending'
+    sql("update public.material_jobs set status='running',lease='legacy-lease',lease_until=now()+interval '1 minute' "
+        "where id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'")
+    sql("set role anon; select public.material_worker_rpc('worker-test-secret','heartbeat',"
+        "'{\"id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"lease\":\"legacy-lease\"}')", ok=False)
+
+
+def test_trusted_worker_migration_does_not_unpause_worker(hardened_sql):
+    sql = hardened_sql
+    pause = next((ROOT / 'supabase/migrations').glob('*_pause_material_worker_and_writes.sql')).read_text()
+    migration = next((ROOT / 'supabase/migrations').glob('*_restrict_worker_to_trusted_material_jobs.sql')).read_text()
+    sql(pause)
+    sql(migration)
+    assert sql("select has_function_privilege('anon','public.material_worker_rpc(text,text,jsonb)','EXECUTE')") == 'f'
+    assert sql("select has_function_privilege('anon','material_private.worker_rpc(text,text,jsonb)','EXECUTE')") == 'f'
+
+
+def test_worker_resume_requires_separate_capabilities_and_preserves_rls(hardened_sql):
+    sql = hardened_sql
+    pause = next((ROOT / 'supabase/migrations').glob('*_pause_material_worker_and_writes.sql')).read_text()
+    migration = next((ROOT / 'supabase/migrations').glob('*_restrict_worker_to_trusted_material_jobs.sql')).read_text()
+    resume = (ROOT / 'ops/production_migrations/resume_trusted_material_worker.sql').read_text()
+    sql(pause)
+    sql(migration)
+    sql('delete from material_private.submit_capability')
+    sql(resume, ok=False)
+    assert sql("select has_function_privilege('anon','public.material_worker_rpc(text,text,jsonb)','EXECUTE')") == 'f'
+    sql("insert into material_private.submit_capability values (true,sha256(convert_to('worker-test-secret','UTF8')))")
+    sql(resume, ok=False)
+    sql("update material_private.submit_capability set secret_hash=sha256(convert_to('"+SUBMIT_SECRET+"','UTF8'))")
+    sql(resume)
+    assert worker(sql, 'claim') is None
+    assert sql("select has_table_privilege('authenticated','public.material_jobs','UPDATE')") == 'f'
+    hardened_submit(sql)
+    assert worker(sql, 'claim')['id'] == JOB
+
+
 def test_sql_ownership_idempotency_and_cas(sql):
     first = submit(sql)
     assert submit(sql)["id"] == first["id"]

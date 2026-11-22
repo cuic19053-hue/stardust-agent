@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from .material_figures import FigureSpec
 from .material_jobs import MaterialJobs, MaterialSecurityUnavailable, checked_bundle, job_id
+from .material_release_gate import platform_material_jobs_ready
 from .materials import (
     MaterialConflict, Requirement, RULES, TRACKING, enabled, material_view, digest, prepare_update,
 )
@@ -205,6 +206,8 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
             if not payload.confirm_paid:
                 raise HTTPException(422, "请明确确认本轮模型调用；平台模型按原积分规则，BYOK 按服务商规则")
         platform = model_call and config.get("provider") == "preset"
+        if queue.cloud and platform and not platform_material_jobs_ready():
+            raise HTTPException(503, "平台材料模型任务暂不可用，正在核对账务；可使用自带模型或继续导出。")
         identifier = job_id()
         owner = store._identity()["user_id"] if queue.cloud else "local_user"
         obs.bind(owner_id=owner, project_id=project_id, job_id=identifier,

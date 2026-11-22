@@ -9,6 +9,11 @@ from __future__ import annotations
 import os
 
 
+def platform_material_jobs_ready() -> bool:
+    """Keep platform-billed material calls closed until reconciliation is ready."""
+    return os.environ.get("MATERIAL_PLATFORM_JOBS_READY", "").lower() == "true"
+
+
 def gate_cloud_material_api(cloud_mode: bool) -> bool:
     """Disable cloud material entry points unless operator and secret agree.
 

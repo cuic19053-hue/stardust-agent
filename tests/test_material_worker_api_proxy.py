@@ -72,6 +72,7 @@ def setup_proxy(monkeypatch, context):
     monkeypatch.setattr(app, "CLOUD_MODE", True)
     monkeypatch.setenv("MATERIAL_PIPELINE_ENABLED", "true")
     monkeypatch.setenv("MATERIAL_WORKER_READY", "true")
+    monkeypatch.setenv("MATERIAL_PLATFORM_JOBS_READY", "true")
     monkeypatch.setattr(app, "MaterialWorkerBridge", FakeBridge)
     return calls
 
@@ -170,6 +171,40 @@ def test_platform_model_proxy_preserves_confirmation_metering_and_no_secret_echo
     assert json.loads(upstream_requests[0].data)["max_tokens"] == 2048
     assert calls[0][0] == "reserve"
     assert "test-only-provider-key" not in response.text
+
+
+def test_platform_proxy_does_not_reserve_or_call_when_billing_is_not_ready(api, monkeypatch):
+    client, _, _ = api
+    calls = setup_proxy(monkeypatch, {
+        "id": JOB_ID, "project_id": PROJECT_ID, "owner_id": OWNER_ID,
+        "kind": "section", "payload": {"paid": True, "platform": True},
+    })
+    monkeypatch.delenv("MATERIAL_PLATFORM_JOBS_READY", raising=False)
+    response = client.post("/api/material/internal/model", headers=auth_headers(), json={
+        "job_id": JOB_ID, "lease": LEASE, "request_body": {"messages": []},
+    })
+    assert response.status_code == 503 and "账务" in response.json()["detail"]
+    assert not calls
+
+
+def test_platform_image_proxy_does_not_reserve_when_billing_is_not_ready(api, monkeypatch):
+    client, _, _ = api
+    image_path = f"{OWNER_ID}/{PROJECT_ID}/_material/{JOB_ID}-image.png"
+    context = {"id": JOB_ID, "project_id": PROJECT_ID, "owner_id": OWNER_ID, "kind": "figure",
+               "payload": {"paid": True, "platform": True,
+                   "spec": {"id": "scene", "section_id": "method", "title": "示意",
+                            "renderer": "gpt", "prompt": "无字抽象场景"},
+                   "image_path": image_path,
+                   "image_upload_url": f"https://storage.example.supabase.co/storage/v1/object/upload/sign/stardust-project-files/{image_path}?token=upload",
+                   "image_download_url": f"https://storage.example.supabase.co/storage/v1/object/sign/stardust-project-files/{image_path}?token=download"}}
+    calls = setup_proxy(monkeypatch, context)
+    monkeypatch.setattr(app, "SUPABASE_URL", "https://storage.example.supabase.co")
+    monkeypatch.delenv("MATERIAL_PLATFORM_JOBS_READY", raising=False)
+    response = client.post("/api/material/internal/image", headers=auth_headers(), json={
+        "job_id": JOB_ID, "lease": LEASE, "prompt": "无字背景图",
+    })
+    assert response.status_code == 503 and "账务" in response.json()["detail"]
+    assert not calls
 
 
 def test_byok_model_proxy_decrypts_only_inside_vercel(api, monkeypatch):

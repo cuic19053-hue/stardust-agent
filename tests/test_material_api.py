@@ -164,6 +164,48 @@ def test_cloud_job_snapshots_retrieval_only_with_matching_user_consent(api, monk
     assert saved[-1]["private_retrieval"]["result"]["retrieval_mode"] == "hybrid"
 
 
+def test_cloud_platform_jobs_fail_closed_until_billing_is_ready(api, monkeypatch):
+    import app
+    import proposal.material_api as material_api
+    client, store, project = api
+    accepted = []
+
+    class FakeQueue:
+        cloud = True
+        def __init__(self, _store):
+            pass
+        def find(self, *_args):
+            return None
+        def submit(self, project_id, kind, target, payload, idempotency):
+            accepted.append(payload)
+            return {"id": payload["job_id"]}
+
+    async def bypass_auth(request, call_next):
+        return await call_next(request)
+
+    monkeypatch.setattr(app, "CLOUD_MODE", True)
+    monkeypatch.setattr(app, "_require_supabase_session", bypass_auth)
+    monkeypatch.setattr(app, "_agent_for_config", lambda *a, **kw: object())
+    monkeypatch.setattr(material_api, "MaterialJobs", FakeQueue)
+    monkeypatch.setattr(material_api, "encrypt_config", lambda *_args: "test-ciphertext")
+    monkeypatch.setattr(store, "_identity", lambda: {"user_id": "owner"}, raising=False)
+    monkeypatch.delenv("MATERIAL_PLATFORM_JOBS_READY", raising=False)
+    url = f"/api/projects/{project['id']}/material/jobs"
+    body = {"revision": project["material_revision"], "kind": "outline", "idempotency_key": "one",
+            "llm_config": {"provider": "preset"}, "confirm_paid": True}
+    response = client.post(url, json=body)
+    assert response.status_code == 503 and "账务" in response.json()["detail"]
+    assert not accepted
+    body["llm_config"] = {"provider": "openai_compatible", "base_url": "https://example.com/v1",
+                          "api_key": "test-key"}
+    assert client.post(url, json=body).status_code == 202
+    assert accepted[-1]["platform"] is False
+    monkeypatch.setenv("MATERIAL_PLATFORM_JOBS_READY", "true")
+    body["llm_config"] = {"provider": "preset"}
+    assert client.post(url, json=body).status_code == 202
+    assert accepted[-1]["platform"] is True
+
+
 def test_requirements_and_revision_conflict(api):
     client,store,p = api
     body = {"revision":p["material_revision"],"items":[{
