@@ -211,7 +211,7 @@ def test_worker_interaction_rpc_requires_secret_lease_and_trusted_job(hardened_s
                "'material_private.record_model_interaction(text,text,text,text,text,text,text,text,text)',"
                "'EXECUTE')") == 'f'
     sql(interaction(), ok=False)
-    migration = (ROOT / 'supabase/migrations/20261122083000_restore_worker_interaction_capability.sql').read_text()
+    migration = (ROOT / 'supabase/migrations/20261122083113_restore_worker_interaction_capability.sql').read_text()
     sql(migration)
     sql(interaction(secret='wrong-secret'), ok=False)
     sql(interaction(lease='wrong-lease'), ok=False)
@@ -239,7 +239,7 @@ def test_worker_interaction_rpc_requires_secret_lease_and_trusted_job(hardened_s
 def test_worker_context_and_byok_reject_untrusted_leases(hardened_sql):
     sql = hardened_sql
     sql((ROOT / 'supabase/migrations/20261113090000_workbench_model_interactions.sql').read_text())
-    migration = (ROOT / 'supabase/migrations/20261122083000_restore_worker_interaction_capability.sql').read_text()
+    migration = (ROOT / 'supabase/migrations/20261122083113_restore_worker_interaction_capability.sql').read_text()
     sql(migration)
     hardened_submit(sql, payload={'paid': True, 'platform': False, 'base_revision': 0})
     claimed = worker(sql, 'claim')

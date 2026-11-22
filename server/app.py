@@ -3209,6 +3209,8 @@ def material_worker_model_proxy(payload: MaterialWorkerProxyInput, request: Requ
     except HTTPException:
         observability.emit("model.worker_relay", stage="invoke", status="pending", level="warning",
                            usage_request_id=request_id, code="MODEL_RESULT_UNCONFIRMED")
+        if meter and request_id:
+            meter.fail_interaction(request_id, model, "UPSTREAM_UNCONFIRMED", status="unknown")
         raise
     except urllib.error.HTTPError as exc:
         observability.emit("model.worker_relay", stage="invoke", status="failed", level="error",
@@ -3218,18 +3220,32 @@ def material_worker_model_proxy(payload: MaterialWorkerProxyInput, request: Requ
                 meter.refund(request_id)
             except Exception:
                 pass
+        if meter and request_id:
+            meter.fail_interaction(request_id, model, "UPSTREAM_REJECTED" if exc.code in DEFINITE_HTTP_REJECTIONS
+                                   else "UPSTREAM_UNCONFIRMED",
+                                   status="failed" if exc.code in DEFINITE_HTTP_REJECTIONS else "unknown")
         raise HTTPException(502, "模型服务暂时拒绝了本次请求") from None
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         observability.emit("model.worker_relay", stage="invoke", status="pending", level="warning",
                            usage_request_id=request_id, code="MODEL_RESULT_UNCONFIRMED")
+        if meter and request_id:
+            meter.fail_interaction(request_id, model, "UPSTREAM_UNCONFIRMED", status="unknown")
         # A timeout can happen after the provider accepted the request; keep the
         # hold so the existing reconciliation path can verify its real charge.
         raise HTTPException(502, "模型请求结果暂未确认，费用正在核对") from None
 
     try:
         decoded = json.loads(raw)
+        if not isinstance(decoded, dict):
+            raise ValueError
         choices = decoded.get("choices") or []
+        if not isinstance(choices, list):
+            raise ValueError
+        if choices and not isinstance(choices[0], dict):
+            raise ValueError
         message = (choices[0].get("message") or {}) if choices else {}
+        if not isinstance(message, dict):
+            raise ValueError
         if not choices or not (
             (isinstance(message.get("content"), str) and message["content"].strip())
             or message.get("tool_calls")
@@ -3243,10 +3259,15 @@ def material_worker_model_proxy(payload: MaterialWorkerProxyInput, request: Requ
     except (TypeError, ValueError, IndexError, json.JSONDecodeError):
         observability.emit("model.worker_relay", stage="upstream_validated", status="failed", level="error",
                            usage_request_id=request_id, code="MODEL_EMPTY_RESULT")
+        if meter and request_id:
+            meter.fail_interaction(request_id, model, "MODEL_EMPTY_RESULT")
         raise HTTPException(502, "模型未返回可用正文，请稍后重试") from None
 
     observability.record_model_usage(decoded, request_id)
     observability.emit("model.worker_relay", stage="upstream_validated", usage_request_id=request_id)
+    if meter and request_id:
+        content = message.get("content")
+        meter.complete_interaction(request_id, model, content if isinstance(content, str) else "")
     headers = {"Cache-Control": "private, no-store"}
     if meter and request_id:
         # The Worker immediately calls the separate settlement endpoint after

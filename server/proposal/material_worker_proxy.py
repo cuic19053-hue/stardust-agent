@@ -33,7 +33,7 @@ class MaterialWorkerBridge:
         if not self.supabase_url.startswith("https://") or not self.publishable_key:
             raise MaterialWorkerBridgeError("worker bridge unavailable")
 
-    def _post(self, path: str, body: dict[str, Any]) -> Any:
+    def _post(self, path: str, body: dict[str, Any], *, timeout: float = 15) -> Any:
         request = urllib.request.Request(
             f"{self.supabase_url}/rest/v1/rpc/{path}",
             data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
@@ -45,7 +45,7 @@ class MaterialWorkerBridge:
             method="POST",
         )
         try:
-            with supabase_urlopen(request, timeout=15) as response:
+            with supabase_urlopen(request, timeout=timeout) as response:
                 raw = response.read(1_000_001)
             if len(raw) > 1_000_000:
                 raise MaterialWorkerBridgeError("worker bridge response too large")
@@ -98,6 +98,9 @@ class MaterialWorkerBridge:
                 "p_status": status,
                 "p_error_code": error_code,
             },
+            # Terminal interaction logging is best effort and must not hold
+            # an already-returned model result behind a long database timeout.
+            timeout=15 if status == "started" else 3,
         )
 
     def authorize_byok(self, call_id: str, operation: str) -> Any:
