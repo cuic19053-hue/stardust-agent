@@ -1,0 +1,363 @@
+{
+  "synthetic": true,
+  "purpose": "public demonstration",
+  "created_utc": "2026-11-24T06:46:48.175578+00:00",
+  "model": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+  "revision": "c26a38f6a37d0a51b4e9a1eb3026530fa35d9fed",
+  "adapter_sha256": "62a732c6f8c870fa8abd18ca0412df988af03c0e2b53341bea590e17304d299c",
+  "epoch": 3,
+  "labels": {
+    "identity.name": "姓名",
+    "identity.school": "学校",
+    "identity.college": "学院",
+    "identity.major": "专业",
+    "identity.grade": "年级",
+    "application.type": "申请类型",
+    "application.track": "申报类别或赛道",
+    "application.year": "申报年度",
+    "application.deadline": "截止日期",
+    "academic.gpa": "绩点",
+    "academic.gpa_scale": "绩点满分",
+    "academic.rank": "排名名次",
+    "academic.rank_total": "排名总人数",
+    "academic.rank_percent": "前百分之几",
+    "academic.rank_scope": "排名范围",
+    "academic.rank_period": "排名统计期间",
+    "academic.failed_courses": "挂科门数",
+    "academic.english": "英语考试与成绩",
+    "award.name": "赛事或荣誉名称",
+    "award.level": "奖项级别",
+    "award.prize": "奖项等次",
+    "award.time": "获奖时间",
+    "research.experience": "科研经历",
+    "research.output": "论文专利等成果",
+    "service.role": "学生职务",
+    "service.period": "任职期间",
+    "service.volunteer_hours": "志愿服务时长",
+    "project.name": "项目名称",
+    "project.problem": "拟解决的问题",
+    "project.target_user": "服务对象",
+    "project.method": "拟用技术或方法",
+    "project.stage": "当前进展",
+    "project.team_size": "团队人数",
+    "project.member_role": "团队成员及分工",
+    "project.advisor": "导师",
+    "project.budget_yuan": "项目预算",
+    "project.duration": "项目周期",
+    "project.expected_output": "预期成果",
+    "financial.annual_income_yuan": "家庭年收入",
+    "financial.household_size": "家庭人数",
+    "financial.hardship_status": "困难认定状态"
+  },
+  "examples": [
+    {
+      "title": "成绩与获奖",
+      "turns": [
+        {
+          "role": "user",
+          "turn_id": "u1",
+          "content": "我读环境设计专业。校园英语配音赛我拿了二等奖。"
+        }
+      ],
+      "base": {
+        "raw": "{\"schema_version\":\"student-intake-v1\",\"facts\":[],\"follow_up_fields\":[]}",
+        "finish": "complete",
+        "prompt_tokens": 683,
+        "output_tokens": 20,
+        "review": {
+          "decision": "pending_student_confirmation",
+          "candidate": {
+            "schema_version": "student-intake-v1",
+            "facts": [],
+            "follow_up_fields": []
+          },
+          "events": []
+        }
+      },
+      "tuned": {
+        "raw": "{\"schema_version\":\"student-intake-v1\",\"facts\":[{\"field\":\"identity.major\",\"record_id\":\"self\",\"value\":\"环境设计\",\"status\":\"stated\",\"evidence\":[{\"turn_id\":\"u1\",\"quote\":\"我读环境设计专业\"}]},{\"field\":\"award.name\",\"record_id\":\"self\",\"value\":\"校园英语配音赛\",\"status\":\"stated\",\"evidence\":[{\"turn_id\":\"u1\",\"quote\":\"校园英语配音赛\"}]},{\"field\":\"award.prize\",\"record_id\":\"self\",\"value\":\"二等奖\",\"status\":\"stated\",\"evidence\":[{\"turn_id\":\"u1\",\"quote\":\"我拿了二等奖\"}]}],\"follow_up_fields\":[]}",
+        "finish": "complete",
+        "prompt_tokens": 683,
+        "output_tokens": 133,
+        "review": {
+          "decision": "pending_student_confirmation",
+          "candidate": {
+            "schema_version": "student-intake-v1",
+            "facts": [
+              {
+                "field": "identity.major",
+                "record_id": "self",
+                "value": "环境设计",
+                "status": "stated",
+                "evidence": [
+                  {
+                    "turn_id": "u1",
+                    "quote": "我读环境设计专业"
+                  }
+                ]
+              }
+            ],
+            "follow_up_fields": []
+          },
+          "events": [
+            "award.name/ambiguous_record",
+            "award.prize/ambiguous_record"
+          ]
+        }
+      }
+    },
+    {
+      "title": "两份预算",
+      "turns": [
+        {
+          "role": "user",
+          "turn_id": "u1",
+          "content": "我的项目预算是8400元。"
+        },
+        {
+          "role": "user",
+          "turn_id": "u2",
+          "content": "我看到另一份表，项目预算是4800元。"
+        }
+      ],
+      "base": {
+        "raw": "{\"schema_version\":\"student-intake-v1\",\"facts\":[],\"follow_up_fields\":[]}",
+        "finish": "complete",
+        "prompt_tokens": 713,
+        "output_tokens": 20,
+        "review": {
+          "decision": "pending_student_confirmation",
+          "candidate": {
+            "schema_version": "student-intake-v1",
+            "facts": [
+              {
+                "field": "project.budget_yuan",
+                "record_id": "self",
+                "value": null,
+                "status": "conflict",
+                "evidence": [
+                  {
+                    "turn_id": "u1",
+                    "quote": "我的项目预算是8400元"
+                  },
+                  {
+                    "turn_id": "u2",
+                    "quote": "项目预算是4800元"
+                  }
+                ]
+              }
+            ],
+            "follow_up_fields": [
+              "project.budget_yuan"
+            ]
+          },
+          "events": [
+            "project.budget_yuan/source_conflict",
+            "recomputed_follow_up"
+          ]
+        }
+      },
+      "tuned": {
+        "raw": "{\"schema_version\":\"student-intake-v1\",\"facts\":[{\"field\":\"project.budget_yuan\",\"record_id\":\"self\",\"value\":\"8400\",\"status\":\"stated\",\"evidence\":[{\"turn_id\":\"u1\",\"quote\":\"我的项目预算是8400元\"}]}],\"follow_up_fields\":[]}",
+        "finish": "complete",
+        "prompt_tokens": 713,
+        "output_tokens": 65,
+        "review": {
+          "decision": "pending_student_confirmation",
+          "candidate": {
+            "schema_version": "student-intake-v1",
+            "facts": [
+              {
+                "field": "project.budget_yuan",
+                "record_id": "self",
+                "value": null,
+                "status": "conflict",
+                "evidence": [
+                  {
+                    "turn_id": "u1",
+                    "quote": "我的项目预算是8400元"
+                  },
+                  {
+                    "turn_id": "u2",
+                    "quote": "项目预算是4800元"
+                  }
+                ]
+              }
+            ],
+            "follow_up_fields": [
+              "project.budget_yuan"
+            ]
+          },
+          "events": [
+            "project.budget_yuan/source_conflict",
+            "recomputed_follow_up"
+          ]
+        }
+      }
+    },
+    {
+      "title": "尚在计划中的作品",
+      "turns": [
+        {
+          "role": "user",
+          "turn_id": "u1",
+          "content": "我准备做一面校园声景地图，还没开始录音。"
+        }
+      ],
+      "base": {
+        "raw": "{\"schema_version\":\"student-intake-v1\",\"facts\":[],\"follow_up_fields\":[]}",
+        "finish": "complete",
+        "prompt_tokens": 682,
+        "output_tokens": 20,
+        "review": {
+          "decision": "pending_student_confirmation",
+          "candidate": {
+            "schema_version": "student-intake-v1",
+            "facts": [],
+            "follow_up_fields": []
+          },
+          "events": []
+        }
+      },
+      "tuned": {
+        "raw": "{\"schema_version\":\"student-intake-v1\",\"facts\":[{\"field\":\"project.name\",\"record_id\":\"self\",\"value\":\"一面校园声景地图\",\"status\":\"planned\",\"evidence\":[{\"turn_id\":\"u1\",\"quote\":\"我准备做一面校园声景地图\"}]},{\"field\":\"project.stage\",\"record_id\":\"self\",\"value\":\"还没开始录音\",\"status\":\"stated\",\"evidence\":[{\"turn_id\":\"u1\",\"quote\":\"我准备做一面校园声景地图，还没开始录音\"}]}],\"follow_up_fields\":[]}",
+        "finish": "complete",
+        "prompt_tokens": 682,
+        "output_tokens": 109,
+        "review": {
+          "decision": "pending_student_confirmation",
+          "candidate": {
+            "schema_version": "student-intake-v1",
+            "facts": [
+              {
+                "field": "project.name",
+                "record_id": "self",
+                "value": "一面校园声景地图",
+                "status": "planned",
+                "evidence": [
+                  {
+                    "turn_id": "u1",
+                    "quote": "我准备做一面校园声景地图"
+                  }
+                ]
+              }
+            ],
+            "follow_up_fields": []
+          },
+          "events": [
+            "project.stage/future_in_current_stage"
+          ]
+        }
+      }
+    },
+    {
+      "title": "范文里的论文",
+      "turns": [
+        {
+          "role": "user",
+          "turn_id": "u1",
+          "content": "我读到样表写着“我已经发表过两篇论文”。我本人还没有发表过论文。"
+        }
+      ],
+      "base": {
+        "raw": "{\"schema_version\":\"student-intake-v1\",\"facts\":[],\"follow_up_fields\":[]}",
+        "finish": "complete",
+        "prompt_tokens": 690,
+        "output_tokens": 20,
+        "review": {
+          "decision": "pending_student_confirmation",
+          "candidate": {
+            "schema_version": "student-intake-v1",
+            "facts": [],
+            "follow_up_fields": []
+          },
+          "events": []
+        }
+      },
+      "tuned": {
+        "raw": "{\"schema_version\":\"student-intake-v1\",\"facts\":[{\"field\":\"research.output\",\"record_id\":\"self\",\"value\":null,\"status\":\"negated\",\"evidence\":[{\"turn_id\":\"u1\",\"quote\":\"我本人还没有发表过论文\"}]}],\"follow_up_fields\":[]}",
+        "finish": "complete",
+        "prompt_tokens": 690,
+        "output_tokens": 56,
+        "review": {
+          "decision": "pending_student_confirmation",
+          "candidate": {
+            "schema_version": "student-intake-v1",
+            "facts": [
+              {
+                "field": "research.output",
+                "record_id": "self",
+                "value": null,
+                "status": "negated",
+                "evidence": [
+                  {
+                    "turn_id": "u1",
+                    "quote": "我本人还没有发表过论文"
+                  }
+                ]
+              }
+            ],
+            "follow_up_fields": []
+          },
+          "events": []
+        }
+      }
+    },
+    {
+      "title": "国奖与家庭信息",
+      "turns": [
+        {
+          "role": "user",
+          "turn_id": "u1",
+          "content": "我正在申请国家奖学金。家庭人数我不想透露。"
+        }
+      ],
+      "base": {
+        "raw": "{\"schema_version\":\"student-intake-v1\",\"facts\":[],\"follow_up_fields\":[]}",
+        "finish": "complete",
+        "prompt_tokens": 680,
+        "output_tokens": 20,
+        "review": {
+          "decision": "pending_student_confirmation",
+          "candidate": {
+            "schema_version": "student-intake-v1",
+            "facts": [],
+            "follow_up_fields": []
+          },
+          "events": []
+        }
+      },
+      "tuned": {
+        "raw": "{\"schema_version\":\"student-intake-v1\",\"facts\":[{\"field\":\"application.type\",\"record_id\":\"self\",\"value\":\"国家奖学金\",\"status\":\"stated\",\"evidence\":[{\"turn_id\":\"u1\",\"quote\":\"我正在申请国家奖学金\"}]},{\"field\":\"financial.household_size\",\"record_id\":\"self\",\"value\":null,\"status\":\"unknown\",\"evidence\":[{\"turn_id\":\"u1\",\"quote\":\"家庭人数我不想透露\"}]}],\"follow_up_fields\":[\"financial.household_size\"]}",
+        "finish": "complete",
+        "prompt_tokens": 680,
+        "output_tokens": 98,
+        "review": {
+          "decision": "pending_student_confirmation",
+          "candidate": {
+            "schema_version": "student-intake-v1",
+            "facts": [
+              {
+                "field": "application.type",
+                "record_id": "self",
+                "value": "国家奖学金",
+                "status": "stated",
+                "evidence": [
+                  {
+                    "turn_id": "u1",
+                    "quote": "我正在申请国家奖学金"
+                  }
+                ]
+              }
+            ],
+            "follow_up_fields": []
+          },
+          "events": [
+            "financial.household_size/economic_scope_or_quote",
+            "recomputed_follow_up"
+          ]
+        }
+      }
+    }
+  ]
+}

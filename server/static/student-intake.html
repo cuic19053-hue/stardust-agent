@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>学生口述微调实测 · Stardust Agent</title>
+  <link rel="stylesheet" href="/static/student-intake-demo.css">
+  <script src="/static/student-intake-demo.js" defer></script>
+</head>
+<body>
+  <header><a href="/">Stardust Agent</a><a href="/">进入工作台 ↗</a></header>
+  <main>
+    <h1>学生口述微调实测</h1>
+    <p class="lede">一句口述如何成为带有原话的候选记录？选一段对话，对照同一个 Qwen2.5 7B 在微调前后的实际回答。</p>
+    <section id="replay" data-src="/static/student-intake-demo.json" aria-labelledby="replay-heading">
+      <div class="section-head"><h2 id="replay-heading">原话与提取结果</h2><label>选择示例 <select id="examples" disabled aria-label="选择口述示例"><option>正在载入…</option></select></label></div>
+      <p>五段虚构口述专为公开展示编写。切换示例免费，浏览器读取本机实测回放。工作台里的自由输入使用当前配置的模型，平台默认使用 DeepSeek V4 Flash。</p>
+      <div id="demoContent" aria-live="polite"><p>正在载入实测结果…</p></div>
+      <noscript>请启用 JavaScript 切换口述示例。下方表格可直接阅读。</noscript>
+    </section>
+    <section aria-labelledby="test-heading">
+      <h2 id="test-heading">20 段封存口述的同题比较</h2>
+      <p>参考答案共 41 项，覆盖字段字典中的 29 项。字段 F1 同时考察值、状态和记录归属。整例通过还要求原话和追问符合标注。</p>
+      <div class="table-wrap"><table><thead><tr><th scope="col">7B 模型与处理方式</th><th scope="col">字段 F1</th><th scope="col">整例通过</th><th scope="col">原话命中</th><th scope="col">必要追问</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">历史 Ollama 配置</th><td>35.1%</td><td>3/20</td><td>11/41</td><td>2/5</td></tr>
+          <tr><th scope="row">同底座 MLX 未调</th><td>0.0%</td><td>1/20</td><td>0/41</td><td>0/5</td></tr>
+          <tr><th scope="row">同底座 MLX LoRA</th><td>48.0%</td><td>1/20</td><td>12/41</td><td>2/5</td></tr>
+          <tr><th scope="row">历史 Ollama ＋规则</th><td>56.25%</td><td>8/20</td><td>16/41</td><td>3/5</td></tr>
+          <tr><th scope="row">MLX 未调＋规则</th><td>13.6%</td><td>2/20</td><td>3/41</td><td>1/5</td></tr>
+          <tr><th scope="row">MLX LoRA＋规则</th><td>55.07%</td><td>3/20</td><td>14/41</td><td>3/5</td></tr>
+        </tbody></table></div>
+      <p>MLX 同底座对照使用相同提示词、量化和紧凑 JSON 解码。未调模型在 18/20 例给出空字段。微调后能提取更多候选，但仍可能漏掉拒答、混淆范文归属或丢失文字冲突。历史 Ollama 使用另一套推理配置。以上数字均来自 Qwen 的离线实验。</p>
+    </section>
+    <section aria-labelledby="method-heading">
+      <h2 id="method-heading">训练与适用范围</h2>
+      <p>本轮在 M1 Pro 上用 4-bit Qwen2.5 7B 和秩为 8 的 LoRA 训练 3 轮。训练、验证和封存测试分别有 60、20、20 段合成对话，按虚构学生、会话和改写家族隔离。语料经同一作者复核，真实学生、真实语音转写及长对话仍待验证。</p>
+      <p>此前已看过的 24 例用于开发回归。历史 Schema 基线为字段 F1 58.0%、整例 6/24。微调原答为 65.9%、12/24。上面的五个展示例独立于这些计分。</p>
+      <details><summary>检查点与复现代码</summary><p>第 3 轮适配器 SHA-256</p><code>62a732c6f8c870fa8abd18ca0412df988af03c0e2b53341bea590e17304d299c</code>
+        <p><a href="https://github.com/cuic19053-hue/stardust-agent/tree/main/server/evals/student_intake_pilot">训练、推理、评分与演示生成代码 ↗</a></p></details>
+    </section>
+  </main>
+</body>
+</html>

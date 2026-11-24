@@ -75,3 +75,6 @@ tools/
 
 # ===== 仅本地留存的运维提示词（不进公开仓库）=====
 docs/ops/
+
+# Authorized only for local intake training and evaluation.
+/datasets/student_intake/v2/

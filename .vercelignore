@@ -16,3 +16,9 @@ __pycache__/
 **/__pycache__/
 mcp_server.py
 server/mcp_server.py
+
+# Local intake experiment and development fixtures.
+datasets/student_intake/
+server/evals/fixtures/student_intake/
+server/evals/student_intake_pilot/
+server/evals/student_intake_baseline.py

@@ -16,6 +16,7 @@
       <div class="eyebrow"><span class="sparkle">✦</span> PRIVATE PROJECT WORKSPACE</div>
       <h1 id="authTitle">登录你的项目空间</h1>
       <p>登录后即可访问并管理你的申报项目与材料。</p>
+      <p><a href="/student-intake">查看学生口述微调演示与评测</a></p>
       <form id="authForm">
         <label class="field"><span>邮箱</span><input id="authEmail" type="email" autocomplete="email" required placeholder="name@example.com"></label>
         <label class="field"><span>密码</span><input id="authPassword" type="password" autocomplete="current-password" minlength="8" required placeholder="至少 8 位"></label>
@@ -427,6 +428,16 @@
                   <button id="editFactsBtn" class="button button-small button-quiet">编辑全部字段</button>
                 </div>
               </div>
+              <details class="intake-panel">
+                <summary>学生口述档案</summary>
+                <p id="intakeModelNote" class="inline-hint"></p>
+                <div class="panel-actions">
+                  <button type="button" id="proposeIntakeBtn" class="button button-small button-primary">提取本项目口述</button>
+                  <a href="/student-intake" class="button button-small button-quiet" target="_blank" rel="noopener">查看微调实测</a>
+                </div>
+                <div id="intakeCandidates" class="fact-candidates" aria-live="polite"></div>
+                <div id="intakeArchive" class="fact-candidates"></div>
+              </details>
               <div id="factsSummary" class="facts-summary"></div>
               <div id="factCandidates" class="fact-candidates"></div>
               <div id="factsEditor" class="facts-editor hidden">
