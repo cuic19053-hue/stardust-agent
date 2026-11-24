@@ -4895,3 +4895,10 @@ button[type="submit"]:active,
     pointer-events: none;
   }
 }
+
+
+.intake-panel { margin: 12px 0; padding: 12px; border: 1px solid var(--border-light); border-radius: var(--radius-md); }
+.intake-panel summary { cursor: pointer; font-weight: 650; }
+.intake-panel .inline-hint { margin: 10px 0; }
+.intake-panel .fact-candidates { overflow-wrap: anywhere; }
+.intake-panel .fact-candidates:empty { display: none; }

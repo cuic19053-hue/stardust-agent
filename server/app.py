@@ -29,7 +29,8 @@ SERVER_DIR = Path(__file__).resolve().parent
 STATIC_DIR = SERVER_DIR / "static"
 ASSET_VERSIONS = {
     name: hashlib.sha256((STATIC_DIR / name).read_bytes()).hexdigest()[:16]
-    for name in ("app.js", "app.css", "material.js", "review.js", "material-upload.js", "word-export.js")
+    for name in ("app.js", "app.css", "material.js", "review.js", "material-upload.js", "word-export.js",
+                 "student-intake-demo.js", "student-intake-demo.css", "student-intake-demo.json")
 }
 MICRO_CNY_PER_CREDIT = 100_000  # 1 CNY = 10 workbench credits
 if str(ROOT) not in sys.path:
@@ -40,7 +41,7 @@ if str(SERVER_DIR) not in sys.path:
 from proposal.agent import DEFINITE_HTTP_REJECTIONS, ModelUnavailable, OllamaAgent
 from proposal.documents import ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, Extraction, extract_file
 from proposal.export_api import register_export_api
-from proposal import observability
+from proposal import observability, student_intake_workbench as intake
 from proposal.ops_api import register_ops_api
 from proposal.chat_drafts import register_chat_drafts
 from proposal.credit_security import (
@@ -360,7 +361,7 @@ async def _require_supabase_session(request: Request, call_next):
         return await call_next(request)
     path = request.url.path
     if (
-        path == "/"
+        path in {"/", "/student-intake"}
         or path in {
             "/health", "/api/health", "/api/config", "/api/skills", "/api/skill-cards", "/api/route",
             "/api/models/preset", "/api/pay/notify", "/api/admin/provider-health",
@@ -530,6 +531,14 @@ def home() -> str:
     html = index.read_text(encoding="utf-8")
     for filename, digest in ASSET_VERSIONS.items():
         html = html.replace(f'/static/{filename}"', f'/static/{filename}?v={digest}"')
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache, must-revalidate"})
+
+
+@app.get("/student-intake", response_class=HTMLResponse)
+def student_intake_demo():
+    html = (STATIC_DIR / "student-intake.html").read_text(encoding="utf-8")
+    for name, digest in ASSET_VERSIONS.items():
+        html = html.replace(f'/static/{name}"', f'/static/{name}?v={digest}"')
     return HTMLResponse(html, headers={"Cache-Control": "no-cache, must-revalidate"})
 
 
@@ -1011,6 +1020,10 @@ def _metered_invoke(
         if config is not None and config.provider == "preset"
         else _agent_for_config(config)
     )
+    if action == "student_intake" and candidate.meter is not None:
+        # This preset agent and meter are request-scoped. Keep the ledger, but
+        # keep unconfirmed student quotes and predictions out of interaction logs.
+        candidate.meter.record_interaction_text = False
     reservation = _maybe_deduct_credits(config, request, action, project_id)
     observability.emit("model.execution", stage="invoke", status="started")
     try:
@@ -2865,6 +2878,33 @@ def update_project_facts(project_id: str, payload: dict[str, Any]) -> dict[str, 
         update_fields["title"] = facts["project_name"]
     store.update_project(project_id, **update_fields)
     return {"confirmed_facts": confirmed}
+
+
+@app.post("/api/projects/{project_id}/intake/propose")
+def propose_student_intake(project_id: str, request: Request, payload: LLMRequest | None = None) -> dict[str, Any]:
+    _safe_project(project_id)
+    config = payload.llm_config if payload else None
+    if CLOUD_MODE and config is None:
+        config = LLMConfigInput(provider="preset")
+    try:
+        turns, revision = intake.read_sources(store, project_id)
+        return _metered_invoke(config, request, "student_intake", project_id,
+                               lambda model: intake.preview(model, turns, revision))
+    except ModelUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/projects/{project_id}/intake/confirm")
+def confirm_student_intake(project_id: str, payload: intake.IntakeConfirmation) -> dict[str, Any]:
+    project = _safe_project(project_id)
+    try:
+        return intake.confirm(store, project, payload)
+    except MaterialConflict:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/api/projects/{project_id}/facts/propose")

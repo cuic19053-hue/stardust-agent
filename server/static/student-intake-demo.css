@@ -1,0 +1,26 @@
+:root { color-scheme: light; color: #162a32; background: #f8faf8; font: 16px/1.65 "Inter", "PingFang SC", "Microsoft YaHei", sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+header, main { max-width: 1024px; margin: auto; padding: 0 clamp(18px, 5vw, 56px); }
+header { display: flex; justify-content: space-between; align-items: center; padding-block: 18px; border-bottom: 1px solid #d1dad5; }
+a { color: #135a53; text-underline-offset: .2em; }
+header a:first-child { font-weight: 750; text-decoration: none; }
+h1 { font-size: clamp(30px, 5vw, 54px); letter-spacing: -.045em; margin: 40px 0 8px; line-height: 1.2; }
+.lede { max-width: 42em; margin: 0 0 30px; font-size: 18px; color: #3e555e; }
+section { border-top: 1px solid #cbd8d2; padding: 24px 0; }
+h2, h3, h4, p { margin: 0 0 10px; }
+h2 { font-size: 23px; letter-spacing: -.03em; }
+h3 { font-size: 17px; } h4 { font-size: 15px; }
+.section-head, .compare { display: flex; gap: 14px; }
+.section-head { justify-content: space-between; align-items: baseline; flex-wrap: wrap; }
+select, summary { font: inherit; cursor: pointer; }
+select { padding: 5px 8px; border-radius: 5px; border: 1px solid #9eafa8; background: #fff; color: inherit; }
+.source, .condition { padding: 16px; border: 1px solid #cbd8d2; border-radius: 8px; margin-top: 12px; overflow-wrap: anywhere; }
+.source { background: #e9f2ee; } .condition { background: white; flex: 1; min-width: 0; }
+.fact { border-top: 1px solid #e0e8e3; padding: 10px 0 3px; }
+small { display: block; color: #445959; font-size: 14px; }
+summary { color: #135a53; } pre { overflow-wrap: anywhere; white-space: pre-wrap; font: 13px/1.5 monospace; }
+.table-wrap { overflow-x: auto; margin: 14px 0; } table { width: 100%; border-collapse: collapse; }
+td, th { padding: 9px 12px; border-bottom: 1px solid #dee5e1; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+th:first-child { text-align: left; } thead { background: #e9f2ee; } code { overflow-wrap: anywhere; }
+@media (max-width: 680px) { .compare { display: block; } .section-head { display: block; } .section-head label { display: block; margin: 8px 0; } td, th { padding: 6px; font-size: 14px; } }

@@ -40,6 +40,7 @@ class WorkbenchMeter:
         self.user_id = user_id
         self.api_key_id = api_key_id
         self.project_id = project_id
+        self.record_interaction_text = True
         self.background_reconciliation = (
             os.environ.get("BILLING_BACKGROUND_RECONCILIATION", "").lower() == "true"
         )
@@ -62,7 +63,8 @@ class WorkbenchMeter:
             try:
                 self.store.record_workbench_interaction(
                     self.user_id, self.project_id, request_id, model,
-                    input_text=_safe_interaction_text(input_text), status="started",
+                    input_text=_safe_interaction_text(input_text) if self.record_interaction_text else "",
+                    status="started",
                 )
             except Exception:
                 try:
@@ -80,7 +82,8 @@ class WorkbenchMeter:
             try:
                 self.store.record_workbench_interaction(
                     self.user_id, self.project_id, request_id, model,
-                    output_text=_safe_interaction_text(output_text), status="completed",
+                    output_text=_safe_interaction_text(output_text) if self.record_interaction_text else "",
+                    status="completed",
                 )
             except Exception:
                 logger.warning("Model interaction output could not be saved; request_id=%s", request_id)

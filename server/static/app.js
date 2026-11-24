@@ -339,7 +339,7 @@
       headers.set("X-Private-RAG-Consent", "cloudflare-bge-m3-v1");
       headers.set("X-Private-RAG-Project", state.project.id);
     }
-    const usesLlm = method === "POST" && /\/api\/projects\/[^/]+\/(?:chat|outline\/generate|sections\/[^/]+\/generate|diagrams\/propose|facts\/propose|images\/generate)$/.test(path);
+    const usesLlm = method === "POST" && /\/api\/projects\/[^/]+\/(?:chat|outline\/generate|sections\/[^/]+\/generate|diagrams\/propose|facts\/propose|intake\/propose|images\/generate)$/.test(path);
     if (usesLlm) {
       if (state.cloudMode && state.modelConfigSyncStatus === "loading")
         throw new Error("正在同步你的云端模型配置，请稍候再试。");
@@ -390,6 +390,7 @@
   }
 
   function showModelStatus(localStatus) {
+    updateIntakeModelNote();
     if (typeof localStatus?.ollama_local === "boolean") {
       state.ollamaLocal = localStatus.ollama_local;
     }
@@ -941,6 +942,8 @@
   }
 
   function showAuthGate(message = "") {
+    $("#intakeCandidates")?.replaceChildren();
+    $("#intakeArchive")?.replaceChildren();
     state.appStarted = false;
     $("#appShell").classList.add("hidden");
     $("#authGate").classList.remove("hidden");
@@ -1336,6 +1339,7 @@
       const project = await api(`/api/projects/${projectId}`);
       if (revision !== projectLoadRevision) return;
       if (state.project?.id !== projectId) {
+        $("#intakeCandidates")?.replaceChildren();
         const input = $("#chatInput");
         const previousProjectId = state.project?.id;
         if (previousProjectId && input?.value?.trim()) {
@@ -2145,6 +2149,8 @@
   }
 
   function renderFacts() {
+    renderIntakeArchive();
+    updateIntakeModelNote();
     const facts = { ...(state.project?.state?.confirmed_facts || {}) };
     $("#politicalStageField").hidden = !["summary-report", "youth-league-conversion"].includes(state.project?.state?.skill_id);
     const factSources = state.project?.state?.fact_sources || {};
@@ -2656,6 +2662,113 @@
       toast("已保存为你确认的项目事实。");
     } catch (error) {
       toast(error.message, true);
+    }
+  }
+
+  function intakeCard(record) {
+    const card = document.createElement("article");
+    card.className = "fact-candidate";
+    const fact = record.fact;
+    const title = document.createElement("strong");
+    title.textContent = record.label + " · " + record.status_label;
+    if (fact.record_id !== "self") title.textContent += " · " + fact.record_id;
+    card.append(title);
+    if (fact.value !== null) {
+      const value = document.createElement("p");
+      value.textContent = fact.value;
+      card.append(value);
+    }
+    for (const source of fact.evidence) {
+      const line = document.createElement("small");
+      line.textContent = source.turn_id + " 原话　“" + source.quote + "”";
+      card.append(line);
+    }
+    return card;
+  }
+
+  function renderIntakeArchive() {
+    const root = $("#intakeArchive");
+    if (!root) return;
+    root.replaceChildren();
+    const records = state.project?.state?._student_intake_confirmed || [];
+    if (!records.length) return;
+    const heading = document.createElement("h4");
+    heading.textContent = "已核对的口述档案";
+    root.append(heading);
+    for (const record of records) root.append(intakeCard(record));
+  }
+
+  function updateIntakeModelNote() {
+    const node = $("#intakeModelNote");
+    if (!node) return;
+    const config = state.llmConfig;
+    const model = config.provider === "preset" ? "DeepSeek V4 Flash（按工作台现有积分计费）"
+      : (config.model || "尚未配置的模型") + (config.provider === "ollama" ? "（本机）" : "（自带 API）");
+    node.textContent = "点击后，本项目中的学生发言将交给 " + model + " 提取。请逐项核对状态和原话。";
+  }
+
+  async function proposeIntake() {
+    const projectId = state.project?.id;
+    if (!projectId) return;
+    const owner = state.authSession?.user?.id;
+    const active = () => chatProjectIsActive(projectId) && owner === state.authSession?.user?.id;
+    const root = $("#intakeCandidates");
+    const btn = $("#proposeIntakeBtn");
+    root.replaceChildren();
+    btn.disabled = true;
+    btn.textContent = "正在核对口述…";
+    try {
+      const result = await api("/api/projects/" + projectId + "/intake/propose", { method: "POST" });
+      if (!active()) return;
+      const note = document.createElement("p");
+      note.className = "inline-hint";
+      const prefix = result.model ? "本次模型 " + result.model + "。" : "";
+      note.textContent = prefix + (result.decision === "needs_manual_review"
+        ? "这次输出未通过校验，请在对话中补充原话或手动填写。"
+        : result.facts.length ? "请选择已核对的条目。" : "没有可核对的口述候选。");
+      root.append(note);
+      for (const record of result.facts) {
+        const card = intakeCard(record);
+        if (record.can_confirm) {
+          const save = button("我已核对，按此状态入档", "button button-small button-primary");
+          save.addEventListener("click", async () => {
+            if (!active()) return;
+            save.disabled = true;
+            try {
+              await api("/api/projects/" + projectId + "/intake/confirm", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ confirmed: true, source_revision: result.source_revision,
+                  fact: record.fact, model: result.model, ticket: record.ticket }),
+              });
+              if (!active()) return;
+              card.remove();
+              await loadProject(projectId);
+              if (active()) toast("已保存这项口述、状态和原话。");
+            } catch (error) {
+              if (active()) toast(error.message, true);
+              save.disabled = false;
+            }
+          });
+          card.append(save);
+        }
+        root.append(card);
+      }
+      if (result.questions.length) {
+        const title = document.createElement("strong");
+        title.textContent = "请在对话里补充";
+        const list = document.createElement("ul");
+        for (const question of result.questions) {
+          const li = document.createElement("li");
+          li.textContent = question;
+          list.append(li);
+        }
+        root.append(title, list);
+      }
+    } catch (error) {
+      if (active()) toast(error.message, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "提取本项目口述";
     }
   }
 
@@ -4862,6 +4975,7 @@
       if (e.target.files?.[0]) handleLeaderPhotoUpload(e.target.files[0]);
     });
     $("#removeLeaderPhotoBtn")?.addEventListener("click", handleLeaderPhotoDelete);
+    $("#proposeIntakeBtn").addEventListener("click", proposeIntake);
     $("#proposeFactsBtn").addEventListener("click", proposeFacts);
     $("#paperSearchBtn").addEventListener("click", () => searchSources("paper"));
     $("#officialSearchBtn").addEventListener("click", () => searchSources("official"));
