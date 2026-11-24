@@ -4,7 +4,7 @@
 
 **Stardust Agent** is an open source AI agent workbench for student research proposals, applications, business plans, social practice reports and personal statements. Students organize calls for applications and research notes in a project, ask the agent to find evidence, edit sections and export a Word draft. The Python and FastAPI backend supports local Ollama models and APIs compatible with OpenAI Chat Completions.
 
-[Open the workbench](https://agent.stardust.website) · [Download a sample Word proposal](./examples/demos/demo_innovation_research.docx) · [Agent design notes (Chinese)](./docs/design/AGENT_REFACTOR.md) · [简体中文](./README.md)
+[Open the workbench](https://agent.stardust.website) · [Explore the Qwen fine-tuning demo](https://agent.stardust.website/student-intake) · [Download a sample Word proposal](./examples/demos/demo_innovation_research.docx) · [Agent design notes (Chinese)](./docs/design/AGENT_REFACTOR.md) · [简体中文](./README.md)
 
 [Download the desktop client](https://github.com/cuic19053-hue/stardust-agent/releases/latest) · [Desktop guide](./desktop/README.md)
 
@@ -13,6 +13,14 @@
 The 35-scenario catalog describes domain guidance. Drafting, templates, charts and export support vary, and not every scenario has completed end-to-end delivery validation. Repository changes do not establish that the live site has been updated.
 
 User confirmation records information the student has supplied or accepted; it is not independent verification. Numerical, source and completeness checks cover selected cases. Models can still omit, misread or invent claims, so applicants must check the facts, citations and current school requirements.
+
+## Turn a student's account into a structured record
+
+Describe your grades, experience or plans in the project chat, then choose **事实矩阵 → 学生口述档案 → 提取本项目口述** to review what the workbench found. Live extraction defaults to DeepSeek V4 Flash and uses workbench credits. The extractor supports 41 fields and shows your exact words and the chat turn for each suggestion. You can confirm individual self-reports, estimates, plans and explicit negative statements. The saved record preserves that status. Unknowns, refusals and unresolved conflicts stay in review.
+
+The free public demo replays Qwen2.5 7B's actual answers to five synthetic conversations before and after fine-tuning. No sign-in is required. In the “两份预算” (two budgets) example, the tuned model extracted only 8,400 yuan. The source check recovered the 4,800 yuan figure from another turn, kept both quotes and flagged the budget for clarification. [Explore the replay and results (Chinese)](https://agent.stardust.website/student-intake)
+
+On a separate set of 20 held-out synthetic conversations, LoRA raised field F1 from 13.6% to 55.07% with the same MLX base model and source checks. Before tuning, 2 of 20 conversations passed all checks. After tuning, 3 passed. The historical Ollama configuration passed 8 of 20 with the same checks. The original 24 cases served only as development regression tests. [Training and evaluation notes (Chinese)](./server/evals/student_intake_pilot/README.md)
 
 ## Follow a tool call
 
