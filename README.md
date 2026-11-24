@@ -11,7 +11,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/cuic19053-hue/stardust-agent?style=social)](https://github.com/cuic19053-hue/stardust-agent/stargazers) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE) [![Python 3.12+](https://img.shields.io/badge/Python-3.12+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/) [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/) [![MCP Protocol](https://img.shields.io/badge/MCP-Protocol-blue.svg)](https://modelcontextprotocol.io/) [![Online Platform](https://img.shields.io/badge/Online-agent.stardust.website-7952CC.svg)](https://agent.stardust.website)
 [![cuic19053-hue/stardust-agent MCP server](https://glama.ai/mcp/servers/cuic19053-hue/stardust-agent/badges/score.svg)](https://glama.ai/mcp/servers/cuic19053-hue/stardust-agent)
 
-[打开在线工作台](https://agent.stardust.website) · [查看大创 Word 样例](./examples/demos/demo_innovation_research.docx) · [Agent 设计说明](./docs/design/AGENT_REFACTOR.md) · [English](./README_EN.md)
+[打开在线工作台](https://agent.stardust.website) · [看 Qwen 口述微调回放](https://agent.stardust.website/student-intake) · [查看大创 Word 样例](./examples/demos/demo_innovation_research.docx) · [Agent 设计说明](./docs/design/AGENT_REFACTOR.md) · [English](./README_EN.md)
 
 [下载桌面客户端](https://github.com/cuic19053-hue/stardust-agent/releases/latest) · [桌面版使用说明](./desktop/README.md)
 
@@ -24,6 +24,14 @@
 例如，可以先问：“我想申报大创创新训练项目，课题是校园无人机巡检。请帮我梳理申报书结构，还需要准备哪些材料？”
 
 在线入口无需安装 Python 或使用命令行。使用平台模型无需自备 API Key，账号额度、模型可用性与费用以工作台提示为准。未知事实应保留待补充；用户确认只代表其提供或认可了信息，不代表系统完成独立核验。
+
+## 学生口述转结构化档案
+
+在项目对话里用自己的话写下成绩、经历或计划，再打开 **事实矩阵 → 学生口述档案 → 提取本项目口述**。实时提取默认使用 DeepSeek V4 Flash，按工作台积分计费。系统从 41 个字段中提取候选，每条都附有对话回合和学生原话。自述、模糊、计划和否定由学生逐项确认后按原状态入档。未知、拒答和未解决的冲突留在核对区。
+
+免登录的免费演示回放了 Qwen2.5 7B 在五段合成口述上微调前后的真实回答。选「两份预算」可以看到，微调模型只提取了 8400 元，来源校验找回了另一回合的 4800 元，保留两处原话并请学生核对。[查看演示与评测](https://agent.stardust.website/student-intake)
+
+在另行封存的 20 段合成对话上，使用同一 MLX 底座和来源校验规则，LoRA 微调使字段 F1 从 13.6% 升至 55.07%，整例通过数从 2/20 升至 3/20。历史 Ollama 配置加相同规则通过了 8/20。最初的 24 例只用于开发回归。[训练与评测说明](./server/evals/student_intake_pilot/README.md)
 
 ## 支持哪些大学生申报材料？
 
