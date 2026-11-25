@@ -271,3 +271,16 @@ def test_reconcile_two_real_budget_values_even_when_the_second_claim_is_malforme
     assert row["fact"]["status"] == "conflict" and row["fact"]["value"] is None
     assert [e["turn_id"] for e in row["fact"]["evidence"]] == ["u1", "u2"]
     assert result["questions"] and not row["can_confirm"]
+
+
+def test_financial_refusal_keeps_form_reference_and_masks_actual_amount(api):
+    client, store, pid, model = api
+    for text in ("我正在办理国家助学金。", "我家年收入这一栏之前写四万元。", "家庭年收入这一栏我选择不填。"):
+        store.add_message(pid, "user", text)
+    model._post.return_value = response()
+    result = client.post(f"/api/projects/{pid}/intake/propose").json()
+    visible = model._post.call_args.args[1]["messages"][-1]["content"]
+    assert "四万元" not in visible and "家庭年收入这一栏我选择不填" in visible
+    row, = result["facts"]
+    assert row["fact"] == fact("financial.annual_income_yuan", "withheld", None, "家庭年收入这一栏我选择不填", "u3")
+    assert not row["can_confirm"] and not result["questions"]

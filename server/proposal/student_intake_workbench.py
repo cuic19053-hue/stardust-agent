@@ -18,7 +18,9 @@ from .student_intake import (
     FIELDS, IntakeCandidate, IntakeFact, StrictModel, evidence_errors, extraction_messages,
     follow_up_questions,
 )
-from .student_intake_guard import ECON, NUM, PRIVACY_FIELDS, REFUSE, clauses, financial_scope, inspect_candidate
+from .student_intake_guard import (
+    ECON, PRIVACY_FIELDS, REFUSE, clauses, contains_disclosed_number, financial_scope, inspect_candidate,
+)
 
 MAX_MESSAGES = 40
 MAX_CHARS = 14000
@@ -81,7 +83,7 @@ def model_turns(turns):
                 continue
             financial = ECON.search(p.text) or ECONOMIC.search(p.text)
             privacy = PRIVATE.search(p.text) or redact_source_contacts(p.text) != p.text
-            declined = any(PRIVACY_FIELDS[field].search(p.text) and NUM.search(p.text) for field in refused)
+            declined = any(PRIVACY_FIELDS[field].search(p.text) and contains_disclosed_number(p.text) for field in refused)
             if p.external or privacy or (financial and not allowed) or declined:
                 spans.append((p.start, p.end))
         for start, end in reversed(spans):

@@ -18,7 +18,7 @@ EXTERNAL = re.compile(r"范文|样表|示例|示范|范本|台词|角色|举例|
 OWN = re.compile(r"(?:我自己|我本人|而我|但我|我的(?:绩点|成绩单|部分)|我这次|我们(?:的)?(?:团队|项目))")
 FAB = re.compile(r"编(?:个|一个|造|一篇)|捏造|虚构|杜撰|凭空|冒充|伪造|包装成|就当.{0,3}真的|忽略.{0,5}规则|抄到")
 REFUSE = re.compile(r"不想(?:提供|说|填|透露)|不(?:愿|便|方便|打算透露)|拒绝|不填|不要再问|别再问|不透露|不公开")
-SELF_REFUSAL = re.compile(rf"我(?:本人|自己)?(?:暂时|目前)?(?:{REFUSE.pattern})|(?:不要再问|别再问)我")
+SELF_REFUSAL = re.compile(rf"我(?:本人|自己)?(?:暂时|目前|选择)?(?:{REFUSE.pattern})|(?:不要再问|别再问)我")
 UNKNOWN = re.compile(r"不(?:知道|清楚|确定)|没(?:听清|弄清|定|选)|还.{0,4}定|记不[清准]|说不[上准]|没法确定|录得.{0,2}糊")
 NEG = re.compile(r"没(?:有|找到|发表|拿过|参加|经历|导师)|尚无|从未|未曾|还没|未找到")
 PLAN = re.compile(r"打算|计划|准备|预计|拟(?:用|做|申|交|采)|希望|考虑|想(?:要|申请|参加|报|请|用|交|投|做)|要申请")
@@ -149,6 +149,11 @@ def numeric_values(text):
     return result
 
 
+def contains_disclosed_number(text):
+    """The 一 in 这一栏 or 那一项 identifies a form field, not an amount."""
+    return bool(NUM.search(re.sub(r"[这那]一[栏项]", "", text)))
+
+
 def source_parts(e, turns, parts):
     source = turns.get(e.turn_id,"")
     hits = [m.start() for m in re.finditer(re.escape(e.quote),source)]
@@ -165,7 +170,8 @@ def review_field(f, turns, parts, allowed, refused, identities):
         return None, "unverified_source_or_owner"
     if (not allowed and (f.field.startswith("financial.") or ECON.search(quotes))):
         return None, "economic_scope_or_quote"
-    if any(field != f.field and field in PRIVACY_FIELDS and PRIVACY_FIELDS[field].search(quotes) and NUM.search(quotes) for field in refused):
+    if any(field != f.field and field in PRIVACY_FIELDS and PRIVACY_FIELDS[field].search(quotes)
+           and contains_disclosed_number(quotes) for field in refused):
         return None, "refused_information_in_other_quote"
     if f.field in refused and f.status != "withheld":
         return None, "refused_field"
@@ -419,7 +425,7 @@ def inspect_candidate(raw, turns):
         if "academic.gpa_scale" in fields and "绩点" not in p.text.replace("绩点满分", ""):
             fields.discard("academic.gpa")
         refused.update(fields)
-        if (len(fields) == 1 and SELF_REFUSAL.search(p.text) and not NUM.search(p.text)
+        if (len(fields) == 1 and SELF_REFUSAL.search(p.text) and not contains_disclosed_number(p.text)
                 and len(p.text) <= MAX_QUOTE_CHARS and source[p.turn][p.end:p.end+1] not in ("?", "？")):
             field = next(iter(fields))
             if field in REFUSAL_MARKERS and (allowed or not (field.startswith("financial.") or ECON.search(p.text))):
