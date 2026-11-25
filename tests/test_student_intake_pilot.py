@@ -85,3 +85,63 @@ def test_approximate_budget_does_not_change_exact_headcount_in_same_quote():
     fs=[fact("project.budget_yuan","5200",t["content"]),fact("project.team_size","7",t["content"])]
     result=inspect_candidate(prediction(fs),[t])["candidate"]["facts"]
     assert [f["status"] for f in result]==["approximate","stated"]
+
+
+@pytest.mark.parametrize(("later", "expected"), [
+    ("我的专业是城市设计。", "conflict"),
+    ("我更正一下，我的专业是城市设计。", "stated"),
+])
+def test_explicit_identity_claims_preserve_disagreement_or_correction(later, expected):
+    turns = [turn("我的专业是城市规划。"), turn(later, "u2")]
+    facts = [fact("identity.major", "城市规划", "我的专业是城市规划"),
+             fact("identity.college", "城市设计", "我的专业是城市设计", "u2")]
+    result = inspect_candidate(prediction(facts), turns)["candidate"]
+    only, = result["facts"]
+    assert only["field"] == "identity.major" and only["status"] == expected
+    if expected == "conflict":
+        assert only["value"] is None and result["follow_up_fields"] == ["identity.major"]
+        assert [e["turn_id"] for e in only["evidence"]] == ["u1", "u2"]
+    else:
+        assert only["value"] == "城市设计" and "更正" in only["evidence"][0]["quote"]
+
+
+def test_explicit_school_label_takes_precedence_over_institution_suffix():
+    t = turn("我的学校是青岚学院。")
+    raw = prediction([fact("identity.college", "青岚学院", "我的学校是青岚学院")])
+    only, = inspect_candidate(raw, [t])["candidate"]["facts"]
+    assert only["field"] == "identity.school"
+
+
+@pytest.mark.parametrize("text", ["我的专业是产品设计吗？", "我的专业是产品设计还是工业设计？",
+                                   "室友说：“我的专业是产品设计。”"])
+def test_question_or_someone_elses_identity_cannot_supply_a_stated_value(text):
+    raw = prediction([fact("identity.major", "产品设计", "产品设计")])
+    assert inspect_candidate(raw, [turn(text)])["candidate"]["facts"] == []
+
+
+def test_unlabelled_position_cannot_become_a_college_while_recovering_other_fields():
+    text = "我担任过学习委员。"
+    raw = prediction([fact("identity.college", "学习委员", text),
+                      fact("identity.grade", None, text, status="planned")])
+    assert inspect_candidate(raw, [turn(text)])["candidate"] is None
+
+
+def test_damaged_envelope_fails_closed_even_if_a_fact_matches():
+    t = turn("我的专业是钟表修复。")
+    f = fact("identity.major", "钟表修复", t["content"])
+    obj = json.loads(prediction([f]))
+    for patch in ({"schema_version": "other"}, {"extra": 1}, {"facts": [f] * 101},
+                  {"facts": [f, {"field": "nonexistent"}]}, {"follow_up_fields": ["bad"]}):
+        assert inspect_candidate(json.dumps({**obj, **patch}), [t])["candidate"] is None
+
+
+@pytest.mark.parametrize("turns", [
+    [turn("我准备做一次校外调查。")],
+    [turn("我准备制作一个潮汐模型吗？")],
+    [turn("我准备制作一个潮汐模型。"), turn("我改做调研，刚才的计划取消。", "u2")],
+])
+def test_activity_question_or_withdrawn_plan_does_not_supply_artifact_or_name(turns):
+    text = turns[0]["content"]
+    value = "潮汐模型" if "模型" in text else "校外调查"
+    raw = prediction([fact("project.name", value, text)])
+    assert inspect_candidate(raw, turns)["candidate"]["facts"] == []

@@ -91,20 +91,25 @@ def model_turns(turns):
     return visible
 
 
-def verified(raw, visible, original):
-    checked = inspect_candidate(raw, visible)["candidate"]
-    if checked is None:
-        return None
-    result = IntakeCandidate.model_validate(checked)
+def verified_review(raw, visible, original):
+    review = inspect_candidate(raw, visible)
+    if review["candidate"] is None:
+        return None, "needs_manual_review"
+    result = IntakeCandidate.model_validate(review["candidate"])
     # Synthetic masking tokens or joined-up redacted spans cannot be evidence.
     if evidence_errors(result, original) or any(MASK in e.quote for f in result.facts for e in f.evidence):
-        return None
-    return result
+        return None, "needs_manual_review"
+    return result, review["decision"]
+
+
+def verified(raw, visible, original):
+    return verified_review(raw, visible, original)[0]
 
 
 def preview(model, turns, revision):
     visible = model_turns(turns)
     candidate = IntakeCandidate(schema_version="student-intake-v1", facts=[], follow_up_fields=[])
+    decision = "pending_student_confirmation"
     if visible:
         # The platform uses DeepSeek JSON output mode. Local Ollama accepts
         # the full Pydantic schema as a constrained generation grammar.
@@ -114,11 +119,13 @@ def preview(model, turns, revision):
             "options": {"temperature": 0, "num_predict": 2048},
         })
         message = response.get("message") or {}
-        candidate = (None if message.get("finish_reason") in {"length", "content_filter"}
-                     else verified(message.get("content", ""), visible, turns))
+        if message.get("finish_reason") in {"length", "content_filter"}:
+            candidate, decision = None, "needs_manual_review"
+        else:
+            candidate, decision = verified_review(message.get("content", ""), visible, turns)
     return {
         "model": model.model if visible else None, "saved": False, "source_revision": revision,
-        "decision": "pending_student_confirmation" if candidate is not None else "needs_manual_review",
+        "decision": decision,
         "facts": [{**present(f), "ticket": confirmation_ticket(revision, f, model.model)}
                   for f in candidate.facts] if candidate else [],
         "questions": follow_up_questions(candidate) if candidate else [],
