@@ -90,7 +90,7 @@ uv run --no-sync python server/evals/review_benchmark.py --output outputs/evals/
 
 [对比方法、指标口径与复现步骤](./server/evals/REVIEW_BENCHMARK.md) · [合成样例和预期问题](./server/evals/review_cases.json) · [逐项结果与原始模型记录](./server/evals/baselines/review_pilot_20261117.json)
 
-[后续提示词实验](./docs/reports/REVIEW_CALIBRATION_2026-11-18.md)固定候选并增加四个合成回归样例。候选减少了输出条数，却增加了误报，并出现新的学校规则漏检。仓库保留失败候选、原始响应和可复现比较：核对实际输入与参数，同时检查误报、漏检和具体漏掉的问题，避免用单一汇总指标掩盖退化。
+[后续提示词实验](./docs/reports/REVIEW_CALIBRATION_2026-11-18.md) 固定候选并增加四个合成回归样例。候选减少了输出条数，却增加了误报，并出现新的学校规则漏检。仓库保留失败候选、原始响应和可复现比较：核对实际输入与参数，同时检查误报、漏检和具体漏掉的问题，避免用单一汇总指标掩盖退化。
 
 ## 本地运行与复现
 
@@ -139,7 +139,7 @@ uv run --no-sync python server/evals/run.py
 | 8 | 互联网+ · 红旅赛道 | `internet-plus-red-tour` | 65 KB |
 | 9 | 国家级项目立项逻辑评测 | `national-project-eval` | 44 KB |
 
-**🏆 评优与资助· 12 个**
+**🏆 评优与资助 · 12 个**
 
 | # | 赛道 | 编码 | 内容量 |
 |---|---|---|---|
@@ -199,7 +199,7 @@ uv run --no-sync python server/evals/run.py
 
 ## 项目与社区
 
-项目源自团队参加挑战杯、反复修改申报书的实践。同时感谢[@richyhu](https://github.com/richyhu)的帮助。欢迎通过 Issue 提供学校模板的差异、更新的申报要求和能够复现的问题。[项目演示视频](https://www.douyin.com/video/7692700167341985051) · [贡献指南](./CONTRIBUTING.md)
+项目源自团队参加挑战杯、反复修改申报书的实践。同时感谢 [@richyhu](https://github.com/richyhu) 的帮助。欢迎通过 Issue 提供学校模板的差异、更新的申报要求和能够复现的问题。[项目演示视频](https://www.douyin.com/video/7692700167341985051) · [贡献指南](./CONTRIBUTING.md)
 
 ### 交流与合作
 
@@ -214,10 +214,11 @@ uv run --no-sync python server/evals/run.py
 <details>
 <summary>社区路线图</summary>
 
-> 已突破 140 ⭐，「讲莲杯 / 创青春 / 三创赛」已进入开发队列。**点 Star = 催更。**
+> 「学创杯 / 创青春 / 三创赛」已进入开发队列（已达成 100 ⭐ 里程碑）。
 
 | 里程碑 | 解锁赛道 |
 |---|---|
+| ⭐ 100 | 学创杯、创青春、三创赛（已解锁，开发中） |
 | ⭐ 300 | 节能减排大赛、生命科学竞赛（学科专项类） |
 | ⭐ 500 | 服务外包大赛、商业精英挑战赛（商科类） |
 | ⭐ 1000 | 师范生教学技能、英语类竞赛 |
