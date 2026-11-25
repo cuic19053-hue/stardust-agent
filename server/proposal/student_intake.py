@@ -58,6 +58,8 @@ FIELDS = {
 }
 FieldId = Literal[tuple(FIELDS)]
 Status = Literal["stated", "approximate", "negated", "planned", "conflict", "unknown", "withheld"]
+MAX_FACTS = 100
+MAX_QUOTE_CHARS = 1500
 
 
 class StrictModel(BaseModel):
@@ -66,7 +68,7 @@ class StrictModel(BaseModel):
 
 class Evidence(StrictModel):
     turn_id: str = Field(min_length=1, max_length=64)
-    quote: str = Field(min_length=1, max_length=1500)
+    quote: str = Field(min_length=1, max_length=MAX_QUOTE_CHARS)
 
 
 class IntakeFact(StrictModel):
@@ -90,7 +92,7 @@ class IntakeFact(StrictModel):
 
 class IntakeCandidate(StrictModel):
     schema_version: Literal["student-intake-v1"]
-    facts: list[IntakeFact] = Field(max_length=100)
+    facts: list[IntakeFact] = Field(max_length=MAX_FACTS)
     follow_up_fields: list[FieldId] = Field(max_length=3)
 
     @model_validator(mode="after")
@@ -146,5 +148,24 @@ def evidence_errors(candidate: IntakeCandidate, turns: list[dict]) -> list[str]:
 def follow_up_questions(candidate: IntakeCandidate) -> list[str]:
     """Only a preview. No calls to Store/save_confirmed_fact are permitted here."""
     withheld = {x.field for x in candidate.facts if x.status == "withheld"}
-    return [f"请补充或核对{FIELDS[field][0]}；不确定也可以说明。"
-            for field in candidate.follow_up_fields if field not in withheld]
+    conflicts = {x.field: x for x in candidate.facts if x.status == "conflict"}
+    questions = []
+    for field in candidate.follow_up_fields:
+        if field in withheld:
+            continue
+        label = FIELDS[field][0]
+        if field in conflicts:
+            evidence = conflicts[field].evidence
+            if (not field.startswith("financial.") and len(evidence) == 2
+                    and all(len(e.quote) <= 60 for e in evidence)):
+                context = f"你提到“{evidence[0].quote}”，也提到“{evidence[1].quote}”。"
+            else:
+                context = "上面几处原话的说法不一致。"
+            questions.append(f"{context}这次申报的{label}应以哪一项为准？暂时不确定也可以。")
+        elif field == "academic.gpa_scale":
+            questions.append("你刚才说的绩点，满分是几分？")
+        elif field == "application.track":
+            questions.append("这次申报选的是哪个类别或赛道？还没选定也可以说明。")
+        else:
+            questions.append(f"你现在能确认{label}吗？不确定也可以说明。")
+    return questions

@@ -4,11 +4,12 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
+import json
 import re
 
 from pydantic import ValidationError
 
-from .student_intake import FIELDS, IntakeCandidate, IntakeFact
+from .student_intake import Evidence, FIELDS, MAX_FACTS, MAX_QUOTE_CHARS, IntakeCandidate, IntakeFact
 
 ECON = re.compile(r"年收[入益]|年入|(?:我家|家里|家中)(?:的)?收入|家庭(?:经济|收入|人口|人数)|困难(?:认定|户)|家(?:里|庭|中)?.{0,7}[零一二两三四五六七八九十\d]+[口人]")
 EXTERNAL = re.compile(r"范文|样表|示例|示范|范本|台词|角色|举例|通知说|政策|校规|手册|海报上|助手说|机器人说|"
@@ -17,6 +18,7 @@ EXTERNAL = re.compile(r"范文|样表|示例|示范|范本|台词|角色|举例|
 OWN = re.compile(r"(?:我自己|我本人|而我|但我|我的(?:绩点|成绩单|部分)|我这次|我们(?:的)?(?:团队|项目))")
 FAB = re.compile(r"编(?:个|一个|造|一篇)|捏造|虚构|杜撰|凭空|冒充|伪造|包装成|就当.{0,3}真的|忽略.{0,5}规则|抄到")
 REFUSE = re.compile(r"不想(?:提供|说|填|透露)|不(?:愿|便|方便|打算透露)|拒绝|不填|不要再问|别再问|不透露|不公开")
+SELF_REFUSAL = re.compile(rf"我(?:本人|自己)?(?:暂时|目前|选择)?(?:{REFUSE.pattern})|(?:不要再问|别再问)我")
 UNKNOWN = re.compile(r"不(?:知道|清楚|确定)|没(?:听清|弄清|定|选)|还.{0,4}定|记不[清准]|说不[上准]|没法确定|录得.{0,2}糊")
 NEG = re.compile(r"没(?:有|找到|发表|拿过|参加|经历|导师)|尚无|从未|未曾|还没|未找到")
 PLAN = re.compile(r"打算|计划|准备|预计|拟(?:用|做|申|交|采)|希望|考虑|想(?:要|申请|参加|报|请|用|交|投|做)|要申请")
@@ -30,6 +32,8 @@ CANCEL = re.compile(r"取消|放弃|撤回|不再|不(?:申|办|打算申)|原�
 PRIVACY_FIELDS = {"financial.annual_income_yuan":re.compile("收入|年入"),
                   "financial.household_size":re.compile("家庭(?:人数|人口)|家.{0,4}几口|家里人数"),
                   "financial.hardship_status":re.compile("困难|认定")}
+REFUSAL_MARKERS = {**PRIVACY_FIELDS, "academic.gpa_scale": re.compile("满分|分制"),
+                   "application.track": re.compile("赛道|类别")}
 MONEY_OR_NUMBER = r"[\d零〇一二两三四五六七八九十百千万]+(?:[.点][\d零〇一二两三四五六七八九]+)?(?:万|千|百)?"
 NUM = re.compile(MONEY_OR_NUMBER)
 DIGITS = dict(zip("零〇一二两三四五六七八九", [0,0,1,2,2,3,4,5,6,7,8,9]))
@@ -45,6 +49,25 @@ UNCERTAIN_FIELDS = {"academic.gpa","academic.rank","academic.rank_total","academ
                     "financial.annual_income_yuan","financial.household_size"}
 PLAN_FIELDS = {"application.type","application.track","research.output","project.method","project.advisor",
                "project.expected_output","service.role"}
+IDENTITY_LABELS = {"学校": "identity.school", "学院": "identity.college", "专业": "identity.major",
+                   "姓名": "identity.name", "年级": "identity.grade"}
+IDENTITY_EVIDENCE = {"identity.school": re.compile(r"学校|就读于|校名"),
+                     "identity.college": re.compile(r"学院|院系|学部|所属系"),
+                     "identity.major": re.compile(r"专业|主修"),
+                     "identity.name": re.compile(r"姓名|我叫|名叫|名字"),
+                     "identity.grade": re.compile(r"年级|[大研博][一二三四五六]|\d{4}\s*级")}
+IDENTITY_CLAIM = re.compile(r"我(?:本人|自己)?(?:目前|现在)?(?:的|所在的|所学的)(学校|学院|专业|姓名|年级)"
+                            r"\s*(?:是|为|叫|[：:])\s*([\u3400-\u9fffA-Za-z][\u3400-\u9fffA-Za-z0-9· -]*)")
+NO_ADVISOR = re.compile(r"我(?:本人|自己)?(?:目前|现在)?(?:还没有|没有|尚无)(?:指导老师|导师)")
+PLANNED_ARTIFACT = re.compile(
+    r"(?:我(?:们)?(?:这次)?)?(?:准备|打算|计划|预计|想|拟)(?:要)?(?:制作|做出|做|绘制|编写|开发|交付)"
+    r"(一[件套份本张幅部款个面册][\u3400-\u9fffA-Za-z0-9·-]{0,36}(?:教具|卡片|地图|手册|小册子|图册|"
+    r"原型|样机|模型|工具|装置|软件|程序|标本|报告))")
+WITHDRAWAL = re.compile(r"取消|作废|撤回|放弃|不再|不做了|改做|没决定要不要|不打算|与(?:本|这次)?项目无关")
+NAME_CUE = re.compile(r"项目名|名称|题名|题目|命名|取名|叫作|名叫|叫做")
+OTHER_PROJECT = re.compile(r"另(?:一[个项]|外的?)(?:项目|课题|团队)|子项目")
+PROJECT_LABEL = re.compile(r"([甲乙丙丁AB])项目|项目([甲乙丙丁AB])|第([一二三四\d]+)个项目")
+SENTENCE_BREAK = re.compile(r"[。！？!?；;\n]")
 
 
 @dataclass
@@ -126,6 +149,11 @@ def numeric_values(text):
     return result
 
 
+def contains_disclosed_number(text):
+    """The 一 in 这一栏 or 那一项 identifies a form field, not an amount."""
+    return bool(NUM.search(re.sub(r"[这那]一[栏项]", "", text)))
+
+
 def source_parts(e, turns, parts):
     source = turns.get(e.turn_id,"")
     hits = [m.start() for m in re.finditer(re.escape(e.quote),source)]
@@ -135,17 +163,28 @@ def source_parts(e, turns, parts):
             and any(p.start < i+len(e.quote) and i < p.end for i in hits)]
 
 
-def review_field(f, turns, parts, allowed, refused):
+def review_field(f, turns, parts, allowed, refused, identities):
     quotes = " ".join(e.quote for e in f.evidence)
     contexts = [source_parts(e,turns,parts) for e in f.evidence]
     if not all(contexts) or any(p.external for ps in contexts for p in ps):
         return None, "unverified_source_or_owner"
     if (not allowed and (f.field.startswith("financial.") or ECON.search(quotes))):
         return None, "economic_scope_or_quote"
-    if any(field != f.field and field in PRIVACY_FIELDS and PRIVACY_FIELDS[field].search(quotes) and NUM.search(quotes) for field in refused):
+    if any(field != f.field and field in PRIVACY_FIELDS and PRIVACY_FIELDS[field].search(quotes)
+           and contains_disclosed_number(quotes) for field in refused):
         return None, "refused_information_in_other_quote"
     if f.field in refused and f.status != "withheld":
         return None, "refused_field"
+    if f.field in IDENTITY_EVIDENCE and f.value is not None:
+        for context in contexts:
+            for p in context:
+                label = IDENTITY_CLAIM.fullmatch(p.text.strip())
+                if label and f.value in p.text:
+                    declared = identities.get((p.turn, p.start))
+                    if (IDENTITY_LABELS[label[1]] != f.field or (declared and declared[1] != f.value)
+                            or turns[p.turn][p.end:p.end+1] in ("?", "？")
+                            or re.search(r"还是|或者|也许|吗$", label[2])):
+                        return None, "identity_label_or_value_not_supported"
     if f.field in {"research.output","project.advisor"}:
         cue = r"论文|文章|专利|投稿|投给|发表|综述" if f.field == "research.output" else r"导师|指导|老师|教授"
         if not re.search(cue, quotes) or FAB.search(quotes):
@@ -154,6 +193,8 @@ def review_field(f, turns, parts, allowed, refused):
             return None, "qualified_paper_or_advisor"
     if f.field == "project.stage" and PLAN.search(quotes):
         return None, "future_in_current_stage"
+    if f.field == "project.name" and f.value is not None and PLAN.search(quotes) and not NAME_CUE.search(quotes):
+        return None, "plan_does_not_name_project"
     if f.status == "conflict" and len({(e.turn_id,e.quote) for e in f.evidence}) < 2:
         return None, "missing_conflicting_claims"
     status = f.status
@@ -190,12 +231,36 @@ def review_field(f, turns, parts, allowed, refused):
     return f.model_copy(update={"status":status, "record_id":rec}), None
 
 
-def scalar_reconciliation(parts, source):
-    """Only resolve clear single-entity scalar claims with local source anchors."""
+def explicit_identity(part, source):
+    """A current, self-labelled identity statement that occupies a whole sentence."""
+    match = IDENTITY_CLAIM.fullmatch(part.text.strip())
+    if part.external or not match or len(part.text) > MAX_QUOTE_CHARS:
+        return None
+    text = source[part.turn]
+    prefix = SENTENCE_BREAK.split(text[:part.start])[-1].strip(" ，,")
+    if prefix and not re.fullmatch(r"(?:我)?(?:更正一下|更正|说错了|纠正一下)", prefix):
+        return None
+    if text[part.end:part.end+1] not in ("", "。", "！", "!", "；", ";", "\n"):
+        return None
+    value = match[2].strip()
+    if (UNKNOWN.search(value) or REFUSE.search(value) or PLAN.search(value)
+            or re.search(r"还是|或者|可能|好像|也许|不再|并非|以前|不叫|不是|吗|的话", value)):
+        return None
+    return IDENTITY_LABELS[match[1]], value
+
+
+def source_reconciliation(parts, source, identities):
+    """Reconcile competing claims about the same singleton using student turns."""
     found = defaultdict(list)
     for p in parts:
         if p.external or UNKNOWN.search(p.text) or REFUSE.search(p.text):
             continue
+        if (source[p.turn][p.end:p.end+1] in ("？", "?") or NEG.search(p.text)
+                or re.search(r"是不是|是否|并非|不是|假设|能否|吗$|作废", p.text)):
+            continue
+        if (identity := identities.get((p.turn, p.start))) is not None:
+            field, value = identity
+            found[field].append((p, value))
         for field, pattern in SCALAR.items():
             for m in pattern.finditer(p.text):
                 try:
@@ -207,7 +272,10 @@ def scalar_reconciliation(parts, source):
     for field, claims in found.items():
         if len({v for _,v in claims}) <= 1:
             continue
-        # Link only an immediate, unambiguous correction cue to the current scalar.
+        if any(len(q.text) > MAX_QUOTE_CHARS for q,_ in claims):
+            conflicts[field] = None
+            continue
+        # Link only an immediate, unambiguous correction cue to this claim.
         p, latest = claims[-1]
         prior = [q for q in parts if q.turn == p.turn and q.end <= p.start]
         start = p.start
@@ -216,13 +284,25 @@ def scalar_reconciliation(parts, source):
             previous = prior.pop()
             cue = cue or CORRECT.search(previous.text)
             start = previous.start
+        # A qualifier can precede a comma ("上学期，我的绩点是…").
+        scopes = [SENTENCE_BREAK.split(source[q.turn][:q.end])[-1] for q,_ in claims]
+        periods = {m.group() for scope in scopes for m in PERIOD.finditer(scope)}
+        project_labels = {m.group(m.lastindex) for scope in scopes for m in PROJECT_LABEL.finditer(scope)}
+        if len(periods) > 1 or (field.startswith("project.") and
+                (len(project_labels) > 1 or any(OTHER_PROJECT.search(scope) for scope in scopes))):
+            conflicts[field] = None
+            continue
         if cue:
             quote = source[p.turn][start:p.end]
-            conflicts[field] = IntakeFact(field=field,record_id="self",value=format(latest,"f"),
+            if len(quote) > MAX_QUOTE_CHARS:
+                conflicts[field] = None
+                continue
+            value = format(latest,"f") if isinstance(latest, Decimal) else latest
+            conflicts[field] = IntakeFact(field=field,record_id="self",value=value,
                 status="approximate" if APPROX.search(p.text) else "stated", evidence=[{"turn_id":p.turn,"quote":quote}])
             continue
-        if any(PERIOD.search(q.text) for q,_ in claims):
-            conflicts[field] = None  # v1 cannot represent term-specific singleton fields
+        if periods:
+            conflicts[field] = None
             continue
         unique = {}
         for q,v in claims:
@@ -235,24 +315,134 @@ def scalar_reconciliation(parts, source):
     return conflicts
 
 
+def declared_fact(fact, source, parts, identities):
+    """Only relabel when the cited clause itself supplies the field and its value or denial."""
+    if len(fact.evidence) != 1:
+        return None
+    evidence = fact.evidence[0]
+    contexts = source_parts(evidence, source, parts)
+    if len(contexts) != 1 or contexts[0].external:
+        return None
+    part = contexts[0]
+    identity = identities.get((part.turn, part.start))
+    if identity and fact.status == "stated" and fact.value == identity[1] and fact.value in evidence.quote:
+        field, value = identity
+        status = "stated"
+    elif (fact.field in {"research.experience", "project.advisor"} and fact.status in {"unknown", "negated"}
+          and NO_ADVISOR.fullmatch(part.text.strip()) and NO_ADVISOR.fullmatch(evidence.quote.strip().rstrip("。！!"))
+          and (not part.start or source[part.turn][part.start-1] in "。！？!?；;\n")
+          and source[part.turn][part.end:part.end+1] not in ("?", "？")
+          and not any(other != part and not other.external and re.search(r"导师|指导老师", other.text)
+                      and not NO_ADVISOR.fullmatch(other.text.strip()) for other in parts)):
+        field, value, status = "project.advisor", None, "negated"
+    else:
+        return None
+    return IntakeFact(field=field, value=value, status=status, record_id="self",
+                      evidence=[Evidence(turn_id=part.turn, quote=part.text.strip())])
+
+
+def parse_fact(item, source, parts):
+    # Relabel only an explicitly proposed deliverable supported by a literal
+    # creation clause. A plan to conduct an activity need not name any artifact.
+    if (item["field"] in {"project.name", "project.stage", "project.expected_output"}
+            and item.get("status") in ("planned", "stated") and item.get("record_id") == "self"
+            and isinstance(item.get("evidence"), list) and len(item["evidence"]) == 1):
+        evidence = Evidence.model_validate(item["evidence"][0])
+        contexts = source_parts(evidence, source, parts)
+        matches = [(p, m[1]) for p in contexts if (m := PLANNED_ARTIFACT.fullmatch(p.text.strip()))
+                   and p.text.strip() in evidence.quote and source[p.turn][p.end:p.end+1] not in ("?", "？")]
+        if (len(matches) == 1 and not any(p.external for p in contexts)
+                and not any(WITHDRAWAL.search(p.text) for p in parts if not p.external)):
+            part, value = matches[0]
+            proposed = item.get("value")
+            missing_plan = proposed is None and item.get("status") == "planned"
+            quoted_value = isinstance(proposed, str) and proposed.strip() and proposed in value
+            if (missing_plan or quoted_value) and not re.search(r"还是|或者|也许|要不要|或是", value):
+                if item["field"] == "project.expected_output" and item["status"] == "planned" and proposed == value:
+                    return IntakeFact.model_validate(item)
+                item = {**item, "field": "project.expected_output", "status": "planned", "value": value,
+                        "evidence": [{"turn_id": part.turn, "quote": part.text.strip()}]}
+    return IntakeFact.model_validate(item)
+
+
+def parse_proposal(raw, source, parts, identities, reconciled):
+    data = json.loads(raw)
+    if not isinstance(data, dict) or not isinstance(data.get("facts"), list) or len(data["facts"]) > MAX_FACTS:
+        raise ValueError("invalid candidate envelope")
+    envelope = IntakeCandidate.model_validate({**data, "facts": []})
+    normalized = {}
+    blocked = set()
+    events = []
+    for item in data["facts"]:
+        if not isinstance(item, dict) or not isinstance(item.get("field"), str) or item["field"] not in FIELDS:
+            raise ValueError("cannot identify the affected field")
+        try:
+            fact = parse_fact(item, source, parts)
+        except ValidationError:
+            # An invalid claim can contradict a valid-looking sibling. Withhold
+            # the entire field, retaining only independently checked other fields.
+            blocked.add(item["field"])
+            events.append(f"{item['field']}/invalid_claim")
+            continue
+        if fact.field == "project.expected_output" and (fact.field, fact.status, fact.value) != (
+                item["field"], item.get("status"), item.get("value")):
+            events.append(f"{item['field']}/source_planned_artifact")
+        declared = declared_fact(fact, source, parts, identities)
+        if declared is not None:
+            if fact != declared:
+                events.append(f"{fact.field}/source_declares_{declared.field}")
+            fact = declared
+        key = (fact.field, fact.record_id)
+        if key in normalized and normalized[key] != fact:
+            resolved = reconciled.get(fact.field)
+            if fact.record_id == "self" and resolved is not None:
+                fact = resolved
+            else:
+                blocked.add(fact.field)
+                events.append(f"{fact.field}/ambiguous_duplicate")
+        normalized[key] = fact
+    facts = [f for f in normalized.values() if f.field not in blocked]
+    return envelope.model_copy(update={"facts": facts}), blocked, events
+
+
 def inspect_candidate(raw, turns):
-    try:
-        parsed = IntakeCandidate.model_validate_json(raw)
-    except (ValidationError, ValueError, TypeError):
-        return {"decision":"needs_manual_review","candidate":None,"events":["invalid_response"]}
     source = {t["turn_id"]:t["content"] for t in turns if t["role"]=="user"}
     parts = clauses(turns)
+    identities = {(p.turn, p.start): identity for p in parts if (identity := explicit_identity(p, source))}
+    reconciled = source_reconciliation(parts, source, identities)
+    try:
+        parsed, invalid_fields, events = parse_proposal(raw, source, parts, identities, reconciled)
+    except (ValueError, TypeError, RecursionError):
+        return {"decision":"needs_manual_review","candidate":None,"events":["invalid_response"]}
     allowed = financial_scope(parts)
-    refused = {k for k,(label,_) in FIELDS.items() if any(
-        not p.external and REFUSE.search(p.text) and label in p.text for p in parts)}
-    refused.update(k for k,pattern in PRIVACY_FIELDS.items() if any(
-        not p.external and REFUSE.search(p.text) and pattern.search(p.text) for p in parts))
-    accepted, events = {}, []
+    refused = set()
+    refusals = {}
+    for p in parts:
+        if p.external or not REFUSE.search(p.text):
+            continue
+        fields = {k for k,(label,_) in FIELDS.items() if label in p.text}
+        fields.update(k for k, marker in REFUSAL_MARKERS.items() if marker.search(p.text))
+        if "academic.gpa_scale" in fields and "绩点" not in p.text.replace("绩点满分", ""):
+            fields.discard("academic.gpa")
+        refused.update(fields)
+        if (len(fields) == 1 and SELF_REFUSAL.search(p.text) and not contains_disclosed_number(p.text)
+                and len(p.text) <= MAX_QUOTE_CHARS and source[p.turn][p.end:p.end+1] not in ("?", "？")):
+            field = next(iter(fields))
+            if field in REFUSAL_MARKERS and (allowed or not (field.startswith("financial.") or ECON.search(p.text))):
+                refusals[field] = IntakeFact(field=field, record_id="self", status="withheld", value=None,
+                                             evidence=[Evidence(turn_id=p.turn, quote=p.text.strip())])
+    accepted = {}
     collisions = set()
     for fact in parsed.facts:
-        f, why = review_field(fact,source,parts,allowed,refused)
+        f, why = review_field(fact,source,parts,allowed,refused,identities)
         if why:
             events.append(f"{fact.field}/{why}")
+            continue
+        # When recovering only part of a malformed response, a name occurring
+        # in a quote is insufficient to identify it as someone's school or major.
+        marker = IDENTITY_EVIDENCE.get(f.field)
+        if invalid_fields and marker and not any(marker.search(e.quote) for e in f.evidence):
+            events.append(f"{f.field}/missing_identity_context")
             continue
         key = (f.field, f.record_id)
         if key in accepted:
@@ -263,15 +453,23 @@ def inspect_candidate(raw, turns):
             events.append(f"{f.field}/normalized_state_or_link")
     for key in collisions:
         accepted.pop(key)
-    for field, conflict in scalar_reconciliation(parts,source).items():
+    for field, conflict in reconciled.items():
         if field in refused:
+            continue
+        if field in invalid_fields and (conflict is None or conflict.status != "conflict"):
             continue
         accepted.pop((field,"self"),None)
         if conflict is not None and (allowed or not any(ECON.search(e.quote) for e in conflict.evidence)):
             accepted[field,"self"] = conflict
+            invalid_fields.discard(field)
             events.append(f"{field}/source_{conflict.status}")
         else:
             events.append(f"{field}/ambiguous_period_or_scope")
+    for field, refusal in refusals.items():
+        if (field, "self") not in accepted:
+            events.append(f"{field}/source_withheld")
+        accepted.setdefault((field, "self"), refusal)
+        invalid_fields.discard(field)
     facts = list(accepted.values())
     blocked = refused | {f.field for f in facts if f.status=="withheld"}
     qs = [f.field for st in ("conflict","unknown") for f in facts if f.status==st]
@@ -283,5 +481,8 @@ def inspect_candidate(raw, turns):
     qs = list(dict.fromkeys(q for q in qs if q not in blocked and (allowed or not q.startswith("financial."))))[:3]
     if qs != parsed.follow_up_fields:
         events.append("recomputed_follow_up")
+    if len(facts) > MAX_FACTS or (invalid_fields and not facts):
+        return {"decision":"needs_manual_review","candidate":None,"events":events}
     candidate = IntakeCandidate(schema_version="student-intake-v1",facts=facts,follow_up_fields=qs)
-    return {"decision":"pending_student_confirmation","candidate":candidate.model_dump(),"events":events}
+    decision = "partial_review" if invalid_fields else "pending_student_confirmation"
+    return {"decision":decision,"candidate":candidate.model_dump(),"events":events}

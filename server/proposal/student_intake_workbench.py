@@ -18,7 +18,9 @@ from .student_intake import (
     FIELDS, IntakeCandidate, IntakeFact, StrictModel, evidence_errors, extraction_messages,
     follow_up_questions,
 )
-from .student_intake_guard import ECON, NUM, PRIVACY_FIELDS, REFUSE, clauses, financial_scope, inspect_candidate
+from .student_intake_guard import (
+    ECON, PRIVACY_FIELDS, REFUSE, clauses, contains_disclosed_number, financial_scope, inspect_candidate,
+)
 
 MAX_MESSAGES = 40
 MAX_CHARS = 14000
@@ -81,7 +83,7 @@ def model_turns(turns):
                 continue
             financial = ECON.search(p.text) or ECONOMIC.search(p.text)
             privacy = PRIVATE.search(p.text) or redact_source_contacts(p.text) != p.text
-            declined = any(PRIVACY_FIELDS[field].search(p.text) and NUM.search(p.text) for field in refused)
+            declined = any(PRIVACY_FIELDS[field].search(p.text) and contains_disclosed_number(p.text) for field in refused)
             if p.external or privacy or (financial and not allowed) or declined:
                 spans.append((p.start, p.end))
         for start, end in reversed(spans):
@@ -91,20 +93,25 @@ def model_turns(turns):
     return visible
 
 
-def verified(raw, visible, original):
-    checked = inspect_candidate(raw, visible)["candidate"]
-    if checked is None:
-        return None
-    result = IntakeCandidate.model_validate(checked)
+def verified_review(raw, visible, original):
+    review = inspect_candidate(raw, visible)
+    if review["candidate"] is None:
+        return None, "needs_manual_review"
+    result = IntakeCandidate.model_validate(review["candidate"])
     # Synthetic masking tokens or joined-up redacted spans cannot be evidence.
     if evidence_errors(result, original) or any(MASK in e.quote for f in result.facts for e in f.evidence):
-        return None
-    return result
+        return None, "needs_manual_review"
+    return result, review["decision"]
+
+
+def verified(raw, visible, original):
+    return verified_review(raw, visible, original)[0]
 
 
 def preview(model, turns, revision):
     visible = model_turns(turns)
     candidate = IntakeCandidate(schema_version="student-intake-v1", facts=[], follow_up_fields=[])
+    decision = "pending_student_confirmation"
     if visible:
         # The platform uses DeepSeek JSON output mode. Local Ollama accepts
         # the full Pydantic schema as a constrained generation grammar.
@@ -114,11 +121,13 @@ def preview(model, turns, revision):
             "options": {"temperature": 0, "num_predict": 2048},
         })
         message = response.get("message") or {}
-        candidate = (None if message.get("finish_reason") in {"length", "content_filter"}
-                     else verified(message.get("content", ""), visible, turns))
+        if message.get("finish_reason") in {"length", "content_filter"}:
+            candidate, decision = None, "needs_manual_review"
+        else:
+            candidate, decision = verified_review(message.get("content", ""), visible, turns)
     return {
         "model": model.model if visible else None, "saved": False, "source_revision": revision,
-        "decision": "pending_student_confirmation" if candidate is not None else "needs_manual_review",
+        "decision": decision,
         "facts": [{**present(f), "ticket": confirmation_ticket(revision, f, model.model)}
                   for f in candidate.facts] if candidate else [],
         "questions": follow_up_questions(candidate) if candidate else [],

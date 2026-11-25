@@ -1,4 +1,5 @@
 """Public replay, transport privacy and explicit, project-bound oral filing."""
+import hashlib
 import json
 from copy import deepcopy
 from unittest.mock import Mock
@@ -134,12 +135,152 @@ def test_public_replay_and_private_routes_in_cloud(api, monkeypatch):
     assert page.status_code == 200 and "同底座 MLX LoRA" in page.text
     data = client.get("/static/student-intake-demo.json").json()
     assert data["synthetic"] and len(data["examples"]) == 5
+    # The public replay records the answers and checks from the published experiment.
+    frozen = json.dumps(data["examples"], ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    assert hashlib.sha256(frozen).hexdigest() == "ab478627dfd8fd23c5761709e16750334e898bc124a6f354e132e8b747b7c7d4"
     for example in data["examples"]:
         for condition in ("base", "tuned"):
             row = example[condition]
             assert row["finish"] == "complete" and row["output_tokens"] > 0
-            checked = intake.verified(row["raw"], example["turns"], example["turns"])
-            assert (checked.model_dump() if checked else None) == row["review"]["candidate"]
+            archived = intake.IntakeCandidate.model_validate(row["review"]["candidate"])
+            assert not intake.evidence_errors(archived, example["turns"])
     assert client.post(f"/api/projects/{pid}/intake/propose").status_code == 401
     assert client.post(f"/api/projects/{pid}/intake/confirm", json={}).status_code == 401
     model._post.assert_not_called()
+
+
+def test_label_in_student_quote_selects_one_field_and_binds_confirmation(api):
+    client, store, pid, model = api
+    store.add_message(pid, "user", "我的专业是文物保护。")
+    wrong = fact("identity.college", "stated", "文物保护", "文物保护")
+    model._post.return_value = response(wrong, {**wrong, "field": "identity.name"}, wrong)
+    url = f"/api/projects/{pid}/intake"
+    preview = client.post(url + "/propose").json()
+    row, = preview["facts"]
+    assert row["fact"] == fact("identity.major", "stated", "文物保护", "我的专业是文物保护")
+    assert not store.get_project(pid)["state"].get(intake.ARCHIVE)
+    payload = body(preview)
+    # A ticket for an old, incorrectly labelled candidate no longer passes source review.
+    old_fact = intake.IntakeFact.model_validate(wrong)
+    old_ticket = intake.confirmation_ticket(payload["source_revision"], old_fact, payload["model"])
+    assert client.post(url + "/confirm", json={**payload, "fact": wrong, "ticket": old_ticket}).status_code == 422
+    assert client.post(url + "/confirm", json=payload).status_code == 200
+    assert model._post.call_count == 1
+
+
+def test_one_sided_budget_conflict_is_rebuilt_and_follow_up_names_both_claims(api):
+    client, store, pid, model = api
+    budget = "project.budget_yuan"
+    store.add_message(pid, "user", "我的项目预算是4100元。")
+    store.add_message(pid, "user", "申报表上项目预算是6900元。")
+    model._post.return_value = response(fact(budget, "conflict", None, "我的项目预算是4100元"))
+    url = f"/api/projects/{pid}/intake"
+    result = client.post(url + "/propose").json()
+    row, = result["facts"]
+    assert row["fact"]["status"] == "conflict" and row["fact"]["value"] is None
+    assert row["fact"]["evidence"] == [
+        {"turn_id": "u1", "quote": "我的项目预算是4100元"},
+        {"turn_id": "u2", "quote": "申报表上项目预算是6900元"},
+    ]
+    question, = result["questions"]
+    assert "4100元" in question and "6900元" in question
+    assert not row["can_confirm"] and client.post(url + "/confirm", json=body(result)).status_code == 422
+    assert not store.get_project(pid)["state"].get(intake.ARCHIVE)
+
+
+@pytest.mark.parametrize("second", [
+    "还需要找表核实。", "同学的项目预算是6900元。", "另一个项目预算是6900元。", "上学期项目预算是6900元。",
+    "另一个项目，项目预算是6900元。", "上学期，项目预算是6900元。", "项目预算是6900元吗？",
+])
+def test_unrelated_or_missing_second_claim_cannot_complete_conflict(api, second):
+    client, store, pid, model = api
+    store.add_message(pid, "user", "我的项目预算是4100元。")
+    store.add_message(pid, "user", second)
+    model._post.return_value = response(fact("project.budget_yuan", "conflict", None, "我的项目预算是4100元"))
+    result = client.post(f"/api/projects/{pid}/intake/propose").json()
+    assert result["decision"] == "needs_manual_review" and result["facts"] == result["questions"] == []
+
+
+def test_explicit_refusal_overrides_a_guessed_scale_without_losing_gpa(api):
+    client, store, pid, model = api
+    store.add_message(pid, "user", "我的绩点是3.51。满分我不想说。")
+    model._post.return_value = response(
+        fact("academic.gpa", "stated", "3.51", "我的绩点是3.51"),
+        fact("academic.gpa_scale", "unknown", "5", "满分我不想说"),
+    )
+    result = client.post(f"/api/projects/{pid}/intake/propose").json()
+    assert result["decision"] == "pending_student_confirmation"
+    assert [row["fact"]["field"] for row in result["facts"]] == ["academic.gpa", "academic.gpa_scale"]
+    assert result["facts"][1]["fact"] == fact("academic.gpa_scale", "withheld", None, "满分我不想说")
+    assert not result["facts"][1]["can_confirm"]
+    assert result["questions"] == [] and result["saved"] is False
+
+
+def test_partial_review_cannot_release_another_value_for_a_damaged_field(api):
+    client, store, pid, model = api
+    store.add_message(pid, "user", "我的绩点是3.51。我的专业是城市规划。")
+    model._post.return_value = response(
+        fact("academic.gpa", "stated", "3.51", "我的绩点是3.51"),
+        fact("academic.gpa", "conflict", None, "我的绩点是3.51"),
+        fact("identity.major", "stated", "城市规划", "我的专业是城市规划"),
+    )
+    result = client.post(f"/api/projects/{pid}/intake/propose").json()
+    assert result["decision"] == "partial_review"
+    assert [r["fact"]["field"] for r in result["facts"]] == ["identity.major"]
+    model._post.return_value["message"]["finish_reason"] = "length"
+    truncated = client.post(f"/api/projects/{pid}/intake/propose").json()
+    assert truncated["decision"] == "needs_manual_review" and not truncated["facts"]
+
+
+def test_speaker_denies_having_an_advisor_next_to_a_template(api):
+    client, store, pid, model = api
+    store.add_message(pid, "user", "范文里的导师是侯老师。我本人还没有导师。")
+    model._post.return_value = response(fact("research.experience", "unknown", None, "我本人还没有导师"))
+    result = client.post(f"/api/projects/{pid}/intake/propose").json()
+    assert [r["fact"] for r in result["facts"]] == [fact("project.advisor", "negated", None, "我本人还没有导师")]
+    assert not result["questions"]
+
+
+@pytest.mark.parametrize(("field", "status", "value"), [
+    ("project.name", "stated", "潮汐模型"), ("project.name", "planned", None),
+    ("project.stage", "stated", "一个潮汐模型"),
+])
+def test_planned_artifact_keeps_its_source_and_can_only_be_confirmed_as_planned(api, field, status, value):
+    client, store, pid, model = api
+    text = "我们计划制作一个潮汐模型，还没开始测潮。"
+    store.add_message(pid, "user", text)
+    model._post.return_value = response(fact(field, status, value, text))
+    url = f"/api/projects/{pid}/intake"
+    result = client.post(url + "/propose").json()
+    row, = result["facts"]
+    assert row["fact"] == fact("project.expected_output", "planned", "一个潮汐模型", "我们计划制作一个潮汐模型")
+    payload = body(result)
+    assert client.post(url + "/confirm", json={**payload, "fact": {**payload["fact"], "status": "stated"}}).status_code == 422
+    assert client.post(url + "/confirm", json=payload).status_code == 200
+
+
+def test_reconcile_two_real_budget_values_even_when_the_second_claim_is_malformed(api):
+    client, store, pid, model = api
+    for v in ("4800", "7600"):
+        store.add_message(pid, "user", f"项目预算是{v}元。")
+    field = "project.budget_yuan"
+    model._post.return_value = response(fact(field, "stated", "4800", "项目预算是4800元"),
+                                        fact(field, "negated", "7600", "项目预算是7600元", "u2"))
+    result = client.post(f"/api/projects/{pid}/intake/propose").json()
+    row, = result["facts"]
+    assert row["fact"]["status"] == "conflict" and row["fact"]["value"] is None
+    assert [e["turn_id"] for e in row["fact"]["evidence"]] == ["u1", "u2"]
+    assert result["questions"] and not row["can_confirm"]
+
+
+def test_financial_refusal_keeps_form_reference_and_masks_actual_amount(api):
+    client, store, pid, model = api
+    for text in ("我正在办理国家助学金。", "我家年收入这一栏之前写四万元。", "家庭年收入这一栏我选择不填。"):
+        store.add_message(pid, "user", text)
+    model._post.return_value = response()
+    result = client.post(f"/api/projects/{pid}/intake/propose").json()
+    visible = model._post.call_args.args[1]["messages"][-1]["content"]
+    assert "四万元" not in visible and "家庭年收入这一栏我选择不填" in visible
+    row, = result["facts"]
+    assert row["fact"] == fact("financial.annual_income_yuan", "withheld", None, "家庭年收入这一栏我选择不填", "u3")
+    assert not row["can_confirm"] and not result["questions"]

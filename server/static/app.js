@@ -2725,6 +2725,7 @@
       const prefix = result.model ? "本次模型 " + result.model + "。" : "";
       note.textContent = prefix + (result.decision === "needs_manual_review"
         ? "这次输出未通过校验，请在对话中补充原话或手动填写。"
+        : result.decision === "partial_review" ? "部分信息无法核对。请逐项查看下方候选，其余信息可在对话中补充。"
         : result.facts.length ? "请选择已核对的条目。" : "没有可核对的口述候选。");
       root.append(note);
       for (const record of result.facts) {
