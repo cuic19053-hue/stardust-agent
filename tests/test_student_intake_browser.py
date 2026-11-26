@@ -5,9 +5,11 @@ import re
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from server import app as server_app
 from server.proposal import student_intake_browser as browser
+from server.proposal.student_intake import IntakeFact
 
 
 def test_on_device_review_keeps_both_sources_and_blocks_unresolved_conflicts():
@@ -174,6 +176,12 @@ def test_device_review_rejects_strings_over_the_limit_deferred_by_sampling(key, 
     quote = "我任学习委员"
     item = model_fact("service.role", "学习委员", "stated", "u1", quote)
     target = item["evidence"][0] if key in {"turn_id", "quote"} else item
-    target[key] = "甲" * (limit + 1)
+    target[key] = "甲" * limit
+    assert IntakeFact.model_validate(item).model_dump() == item
+    target[key] += "甲"
+    with pytest.raises(ValidationError) as error:
+        IntakeFact.model_validate(item)
+    issue, = error.value.errors()
+    assert issue["type"] == "string_too_long" and issue["loc"][-1] == key
     result = device_review(quote + "。", item)
     assert result["decision"] == "needs_manual_review" and result["facts"] == []
