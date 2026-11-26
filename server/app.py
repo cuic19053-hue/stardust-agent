@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import hashlib
 import hmac
@@ -34,6 +35,9 @@ ASSET_VERSIONS = {
                  "student-intake-local.js", "student-intake-worker.js", "student-intake-local.css",
                  "intake-0p5b-v1/model.json")
 }
+LOCAL_INTAKE_SCRIPT_SRI = "sha256-" + base64.b64encode(
+    hashlib.sha256((STATIC_DIR / "student-intake-local.js").read_bytes()).digest()
+).decode("ascii")
 MICRO_CNY_PER_CREDIT = 100_000  # 1 CNY = 10 workbench credits
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -544,10 +548,12 @@ def _intake_page(filename, *, local_input=False):
     if local_input:
         # Only the application's UI may read this DOM. The isolated worker has
         # its own resource loader and accepts the transcript after sealing it.
-        nonce = secrets.token_urlsafe(24)
-        html = html.replace("data-intake-script", f'nonce="{nonce}"', 1)
+        # The edge can copy a page nonce onto its own script. Bind execution to
+        # the exact UI bytes; a different script cannot reuse their integrity.
+        html = html.replace("data-intake-script", f'integrity="{LOCAL_INTAKE_SCRIPT_SRI}"', 1)
+        headers["Cache-Control"] += ", no-transform"
         headers["Content-Security-Policy"] = (
-            f"default-src 'self'; script-src 'nonce-{nonce}'; style-src 'self'; img-src 'self' data:; "
+            f"default-src 'self'; script-src '{LOCAL_INTAKE_SCRIPT_SRI}'; style-src 'self'; img-src 'self' data:; "
             "connect-src 'none'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
         )
     return HTMLResponse(html, headers=headers)
