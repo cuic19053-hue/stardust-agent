@@ -1,0 +1,28 @@
+{
+  "fixture_sha256": {
+    "cases.json": "4ed61a984a8c49cffb41764620af271e3237ed62bfcf2c523dec17cf070cbec3",
+    "quality_draft_cases.json": "383af990f5cb4b3db4bbac7316322bbc99bedd27b9972f3a91ae9119e9392c63",
+    "review_evidence_v2_20261118.json": "e4e952d7b93cc2add17e0132d39fbebc10c4b09f22d5a993bfd09038b91106c5"
+  },
+  "minimum": {
+    "intake": {"field_f1": 0.47619047619047616, "exact_cases": 2, "grounded_matches": 5},
+    "review_replay": {"target_hits": 8}
+  },
+  "maximum": {
+    "intake": {"forbidden_fields": 0},
+    "review_replay": {"missed_targets": 0, "false_positives": 0, "unreviewed_findings": 0}
+  },
+  "draft_cases": {
+    "research_foundation": {
+      "present": ["(?:12|十二)\\s*(?:处|个)", "积水", "(?:尚未|未曾|还未|尚无|没有|未)开展自动识别实验"],
+      "known_forbidden": ["积水(?:时间|深度)"]
+    },
+    "planned_deliverable": {
+      "present": ["树皮.{0,8}卡", "(?:计划|拟|将|预期).{0,30}(?:制作|完成|形成|产出)", "自然观察活动"],
+      "known_forbidden": [
+        "(?:下个月|下月|[0-9一二三四五六七八九十]+个月后|进入设计阶段|正在进行设计)",
+        "(?:全局事实黑板|该赛道章节写作规范标准)"
+      ]
+    }
+  }
+}

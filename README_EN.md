@@ -12,6 +12,8 @@
 
 The 35-scenario catalog describes domain guidance. Drafting, templates, charts and export support vary, and not every scenario has completed end-to-end delivery validation. Repository changes do not establish that the live site has been updated.
 
+The live workbench reports its Git commit in `commit_sha` and links to the source in `commit_url` when deployment metadata is available. [Live version endpoint](https://agent.stardust.website/api/ping)
+
 User confirmation records information the student has supplied or accepted; it is not independent verification. Numerical, source and completeness checks cover selected cases. Models can still omit, misread or invent claims, so applicants must check the facts, citations and current school requirements.
 
 ## Turn a student's account into a structured record
@@ -79,7 +81,11 @@ Run the evaluation from the repository root to reproduce the example above. It c
 uv run --no-sync python server/evals/run.py
 ```
 
+Required CI runs fresh local inference on synthetic intake and draft cases, and replays archived review outputs. [Quality metrics and reproduction (Chinese)](./server/evals/CI_QUALITY.md)
+
 ## Domain guides and integrations
+
+The catalog labels every scenario's support level. CI checks guide loading, standalone demo generation and workbench Word export for each scenario. [Support levels](./subskills/README.md) · [Machine-readable catalog](./index.json)
 
 The workbench loads filtered guidance for the selected scenario and can progressively read linked reference files. For example, `subskills/innovation-research/SKILL.md` describes the structure of an undergraduate innovation proposal. These guides are not official rules or student facts. Sample Word files use example data and illustrate layouts; they are not approved real student submissions. Chart generation requires a supported builder, valid image or graph data and rendering dependencies. Missing inputs or failed rendering can leave a placeholder. [Domain catalog](./subskills/README.md) · [Challenge Cup sample](./examples/demos/demo_challenge_cup.docx) · [Scholarship sample](./examples/demos/demo_national_scholarship.docx) · [All Word examples](./examples/demos/)
 

@@ -32,11 +32,22 @@
 1. 按[贡献指南](../CONTRIBUTING.md#本地开发与测试)安装锁定依赖并运行测试。
 2. 从干净的开发分支执行 `git pull --rebase origin main`，提交 PR。等待 `Required CI` 通过后合并到 `main`。
 
-3. **执行生产部署**：
+3. Git 集成部署启用 Vercel 的系统环境变量，运行时会读取 `VERCEL_GIT_COMMIT_SHA`。需要通过已链接的 `stardust-agent` 项目手动发布时，从已同步的 `main` 提交打包。下面的临时目录只包含该提交的文件和 Vercel 项目链接。
    ```bash
-   vercel --prod --yes
+   (
+     set -eu
+     test -z "$(git status --porcelain)"
+     source_commit=$(git rev-parse HEAD)
+     test "$source_commit" = "$(git rev-parse origin/main)"
+     release_dir=$(mktemp -d)
+     trap 'rm -rf "$release_dir"' EXIT
+     git archive "$source_commit" | tar -x -C "$release_dir"
+     mkdir "$release_dir/.vercel"
+     cp .vercel/project.json "$release_dir/.vercel/project.json"
+     vercel deploy --cwd "$release_dir" --prod --yes --env "STARDUST_SOURCE_COMMIT=$source_commit"
+   )
    ```
-   *注意观察终端输出：确保出现 `▲ Aliased https://agent.stardust.website` 且 `readyState: READY`。*
+   等生产域名完成切换，再按下文核对公开提交号。
 
 ---
 
@@ -50,17 +61,18 @@
 
 - 源码发版从已合并的提交打标签，创建 GitHub Release 时传入 `--verify-tag --latest=false`。仓库的 Latest Release 指向最近的桌面版，供 README 使用固定下载入口。
 - 桌面发版时更新桌面版本和 `desktop/RELEASE_NOTES.md`，从 `main` 手动运行 `Desktop packages`，开启 `publish`。六种架构通过验收后，流程上传安装包、核验 SHA-256 并公开发行。可用发行页和 `SHA256SUMS.txt` 核对最终资产。
-- Vercel 部署按本文的生产流程执行，部署标识以 Vercel 记录为准。
+- 生产 Web 版本可在公开 `/api/ping` 查看 `commit_sha` 与 `commit_url`，两者指向同一提交。`commit` 保留七位旧格式。无有效来源元数据的部署只报告存活和排版版本。
 
 ## 四、线上健康检查与验证清单 (Post-Deployment Verification)
 
 部署完成后，依次执行以下健康检查：
 
-1. **系统存活与赛道加载检查**：
+1. 从待验收的源码提交核对生产流量实际命中的版本和赛道加载。回滚后用回滚目标提交做相同核验。
    ```bash
+   python3 scripts/check_site_health.py --expected-commit "$(git rev-parse HEAD)"
    curl -sL https://agent.stardust.website/api/health
    ```
-   *预期响应*：`{"status":"ok","skills_loaded":35,...}`
+   版本核验要求 `commit_sha` 和 `commit_url` 同时吻合。`/api/health` 应返回 `status: ok` 和 `skills_loaded: 35`。
 
 2. **前端资源完整性验证**：
    * 打开浏览器访问 [https://agent.stardust.website](https://agent.stardust.website)；
@@ -118,7 +130,7 @@
 - 首次生成的加密主密钥备份仅保存在本机忽略目录 `.agent-data/secrets/`（目录 0700，文件 0600），应纳入受控密钥备份；丢失主密钥后已有密文无法恢复。不得在有数据后随意替换，轮换需双密钥迁移。
 
 ### 心跳监控（待接入外部监控账号）
-- 提供 `GET /api/ping`，只返回存活状态，不访问数据库、Ollama或模型。可供外部监控使用。
+- 公网心跳访问 `GET /api/ping`，在运行摘要记录站点返回的提交号。存活探测无需访问数据库或模型。
 - Vercel Hobby 原生 Cron 最小间隔为每日一次，不加入无效的每十分钟 Cron。无论外部心跳还是 Cron，均不能保证实例常驻或消除所有冷启动；监控调用也计入函数用量。
 - 有监控账号后可创建 HTTP GET 监控，路径 `/api/ping`，5 分钟检查；只在故障/恢复时告警。当前发布不声明已创建此监控。
 
