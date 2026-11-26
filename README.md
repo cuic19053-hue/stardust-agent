@@ -11,7 +11,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/cuic19053-hue/stardust-agent?style=social)](https://github.com/cuic19053-hue/stardust-agent/stargazers) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE) [![Python 3.12+](https://img.shields.io/badge/Python-3.12+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/) [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/) [![MCP Protocol](https://img.shields.io/badge/MCP-Protocol-blue.svg)](https://modelcontextprotocol.io/) [![Online Platform](https://img.shields.io/badge/Online-agent.stardust.website-7952CC.svg)](https://agent.stardust.website)
 [![cuic19053-hue/stardust-agent MCP server](https://glama.ai/mcp/servers/cuic19053-hue/stardust-agent/badges/score.svg)](https://glama.ai/mcp/servers/cuic19053-hue/stardust-agent)
 
-[打开在线工作台](https://agent.stardust.website) · [看 Qwen 口述微调回放](https://agent.stardust.website/student-intake) · [查看大创 Word 样例](./examples/demos/demo_innovation_research.docx) · [Agent 设计说明](./docs/design/AGENT_REFACTOR.md) · [English](./README_EN.md)
+[打开在线工作台](https://agent.stardust.website) · [用微调模型提取自己的口述](https://agent.stardust.website/student-intake/local) · [看 7B 微调回放](https://agent.stardust.website/student-intake) · [查看大创 Word 样例](./examples/demos/demo_innovation_research.docx) · [Agent 设计说明](./docs/design/AGENT_REFACTOR.md) · [English](./README_EN.md)
 
 [下载桌面客户端](https://github.com/cuic19053-hue/stardust-agent/releases/latest) · [桌面版使用说明](./desktop/README.md)
 
@@ -27,11 +27,27 @@
 
 ## 学生口述转结构化档案
 
-在项目对话里用自己的话写下成绩、经历或计划，再打开 **事实矩阵 → 学生口述档案 → 提取本项目口述**。实时提取默认使用 DeepSeek V4 Flash，按工作台积分计费。系统从 41 个字段中提取候选，每条都附有对话回合和学生原话。自述、模糊、计划和否定由学生逐项确认后按原状态入档。未知、拒答和未解决的冲突留在核对区。
+### 在自己的浏览器里提取口述
+
+微调后的 **Qwen2.5-0.5B** 可以直接处理你输入的中文口述。用支持 WebGPU 半精度运算的浏览器（如兼容的桌面 Chrome 或 Edge）打开端侧页面，无需登录，也不扣工作台积分。[打开端侧口述提取](https://agent.stardust.website/student-intake/local)
+
+1. 点击「加载端侧模型」。首次约需下载 320 MB。下载中断或刷新后，在同一设备、同一浏览器再点加载，页面会显示已恢复的底座分片数，只补缺失或损坏的分片。
+2. 模型就绪后，输入或粘贴自己的口述（最多 600 字、12 行），点击「提取口述」。此时可以断网，推理和原话核对都在设备上完成。
+3. 对照每条候选的字段、状态和原话，勾选核对无误的条目，再点「复制已核对的条目」。复制的 JSON 包含对应的发言回合和引文。刷新或关闭页面会清空本页口述和候选。
+
+> 我准备做一套校园树皮标本卡，还没开始制作。
+
+输入这段口述后，页面会把“一套校园树皮标本卡”列为 **预期成果 · 计划**，并引用“我准备做一套校园树皮标本卡”。在国奖申请口述中，页面会略去家庭收入，并单独核对学生自述的专业。
+
+在一台 **MacBook Pro** 的桌面 Chrome 上实测，模型就绪后，点击「提取口述」到首条短口述结果出现的中位耗时由 **24.67 秒降至 2.05 秒**。新旧版在 44 段合成回归口述上的字段、状态、引文和追问逐条一致。两版都漏掉了一段 600 字口述末尾的计划。[提速与质量实测](./docs/reports/STUDENT_INTAKE_BROWSER_LATENCY_2026-11-26.md) · [模型来源与使用条件](./server/static/intake-0p5b-v1/MODEL.md)
+
+### 在工作台确认入档
+
+在项目对话里写下成绩、经历或计划，再打开 **事实矩阵 → 学生口述档案 → 提取本项目口述**。这里使用工作台当前配置的模型，平台默认使用 DeepSeek V4 Flash，按工作台积分计费。系统从 41 个字段中提取候选，每条附有发言回合和学生原话。核对自述、模糊、计划或否定条目后，点击「我已核对，按此状态入档」，该条才会按原状态存入项目。未知、拒答和未解决的冲突留在核对区。
 
 例如，你说“我的专业是文物保护”，工作台会用这句话核对候选的字段和值。如果同一项目出现两个预算，工作台会列出能核实的两处原话，请你确认本次申报用哪一个。部分信息需要手动核对时，你可以先确认其余通过校验的条目。
 
-**在自己设备上实时提取。** 打开端侧入口，点击「加载端侧模型」，在支持 WebGPU 半精度运算的浏览器中运行微调 Qwen2.5 0.5B。首次约需下载 320 MB。模型就绪后，首条短口述在 M1 Pro 桌面 Chrome 上约 2 秒显示核对结果。中断后在同一浏览器再点「加载端侧模型」，会复用已保存的底座分片，只补缺失或校验失败的部分。口述、推理和原话核对都在设备上完成，不扣工作台积分。学生明确说出本人专业或计划制作的成果时，页面会从对应发言中核对并补回漏项。国奖口述中的家庭收入会略去。逐条核对后可复制带状态和原话的记录。[打开端侧提取](https://agent.stardust.website/student-intake/local) · [模型文件与限制](./server/static/intake-0p5b-v1/MODEL.md) · [提速与质量实测](./docs/reports/STUDENT_INTAKE_BROWSER_LATENCY_2026-11-26.md)
+### 查看 7B 微调回放与评测
 
 免登录的免费演示回放了 Qwen2.5 7B 在五段合成口述上微调前后的真实回答。选「两份预算」可以看到，微调模型只提取了 8400 元，来源校验找回了另一回合的 4800 元，保留两处原话并请学生核对。[查看演示与评测](https://agent.stardust.website/student-intake)
 
@@ -55,7 +71,7 @@
 
 **可以用自己的材料吗？** 可以上传学校通知、项目记录等资料，核对并确认提取结果后，再让 Agent 在项目资料中检索依据。现有数字、来源和完整性检查范围有限，模型仍可能遗漏、误解或编造；回答中的事实、引文及其适用性仍需要本人逐项检查。
 
-**需要付费或配置模型吗？** 代码按 MIT 协议开源。在线平台模型有试用额度与积分计费；使用自己的 API Key 时，费用按模型服务商规则计算。本机 Ollama 不扣工作台积分，但需自行准备运行环境。[模型与服务配置](./server/README.md)
+**需要付费或配置模型吗？** 浏览器端口述提取无需 API Key 或工作台积分。在线工作台的平台模型有试用额度，按积分计费。使用自己的 API Key 时，费用按服务商规则计算。本机 Ollama 也不扣工作台积分，需自行准备运行环境。项目代码按 MIT 协议开源。[模型与服务配置](./server/README.md)
 
 当前仓库实现中，国奖基础起稿可不调用模型；明确要求字数、风格或重点经历时使用所选模型。是否已在线上提供以部署版本为准。
 
