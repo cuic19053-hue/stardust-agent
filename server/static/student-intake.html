@@ -35,7 +35,7 @@
     </section>
     <section aria-labelledby="method-heading">
       <h2 id="method-heading">训练与适用范围</h2>
-      <p>本轮在 M1 Pro 上用 4-bit Qwen2.5 7B 和秩为 8 的 LoRA 训练 3 轮。训练、验证和封存测试分别有 60、20、20 段合成对话，按虚构学生、会话和改写家族隔离。语料经同一作者复核，真实学生、真实语音转写及长对话仍待验证。</p>
+      <p>本轮在 MacBook Pro 上用 4-bit Qwen2.5 7B 和秩为 8 的 LoRA 训练 3 轮。训练、验证和封存测试分别有 60、20、20 段合成对话，按虚构学生、会话和改写家族隔离。语料经同一作者复核，真实学生、真实语音转写及长对话仍待验证。</p>
       <p>此前已看过的 24 例用于开发回归。历史 Schema 基线为字段 F1 58.0%、整例 6/24。微调原答为 65.9%、12/24。上面的五个展示例独立于这些计分。</p>
       <details><summary>检查点与复现代码</summary><p>第 3 轮适配器 SHA-256</p><code>62a732c6f8c870fa8abd18ca0412df988af03c0e2b53341bea590e17304d299c</code>
         <p><a href="https://github.com/cuic19053-hue/stardust-agent/tree/main/server/evals/student_intake_pilot">训练、推理、评分与演示生成代码 ↗</a></p></details>
