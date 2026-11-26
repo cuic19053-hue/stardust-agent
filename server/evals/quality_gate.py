@@ -19,6 +19,8 @@ from server.proposal.workflow import AgenticWorkflowEngine
 MODEL = "qwen2.5:1.5b"
 MODEL_DIGEST = "65ec06548149b04c096a120e4a6da9d4017ea809c91734ea5631e89f96ddc57b"
 OLLAMA_VERSION = "0.34.1"
+# The pinned SSE4.2 runtime can take over two minutes to prefill on a cold hosted runner.
+INFERENCE_TIMEOUT_SECONDS = 300
 INTAKE_IDS = (
     "basic_identity", "gpa_scale_explicit", "unresolved_conflict", "third_party",
     "planned_not_completed", "budget_conversion", "national_award_privacy", "fabrication_request",
@@ -34,7 +36,7 @@ class Inference:
         self.calls = 0
         self.errors = 0
 
-    def post(self, endpoint, payload, timeout=120):
+    def post(self, endpoint, payload):
         self.calls += 1
         path = self.output / f"call-{self.calls:02d}"
         options = {**payload.get("options", {}), "temperature": 0, "seed": 42,
@@ -43,7 +45,7 @@ class Inference:
         payload = {**payload, "options": options}
         write(path.with_suffix(".request.json"), payload)
         try:
-            response = self.client.post(endpoint, json=payload, timeout=timeout)
+            response = self.client.post(endpoint, json=payload, timeout=INFERENCE_TIMEOUT_SECONDS)
             response.raise_for_status()
             result = response.json()
             write(path.with_suffix(".response.json"), result)
@@ -61,7 +63,7 @@ class Inference:
         payload = {"model": MODEL, "messages": messages, "stream": False, "options": options}
         if schema is not None:
             payload["format"] = schema
-        return self.post("/api/chat", payload, timeout=180)["message"]["content"]
+        return self.post("/api/chat", payload)["message"]["content"]
 
 
 def checked_json(client, path):
