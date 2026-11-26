@@ -24,3 +24,41 @@ test("MLX affine groups are repacked with the reference fp16 rounding and indepe
     0x11113333, 0x8888aaaa, 0x44440000, 0xbbbbdddd]);
   assert.deepEqual([...new Uint16Array(output, 32, 2)], [13605, 12727]);
 });
+
+function rangeLoader(fetch) {
+  const fs = require("node:fs"), vm = require("node:vm");
+  const worker = fs.readFileSync(require.resolve("../../server/static/student-intake-worker.js"), "utf8");
+  const context = vm.createContext({
+    self: { fetch, postMessage() {} }, URL, Response, Request,
+    location: { href: "https://example.test/static/worker.js" }, setTimeout: callback => callback(),
+  });
+  vm.runInContext(worker, context);
+  return vm.runInContext("downloadBase", context);
+}
+
+test("device download retries just an incomplete range and preserves the other bytes", async () => {
+  const src = Buffer.from("0123456789"), calls = [];
+  const load = rangeLoader(async (url, options) => {
+    const [,from,to] = /^bytes=(\d+)-(\d+)$/.exec(options.headers.Range).map(Number);
+    calls.push(from);
+    if (from === 4 && !url.searchParams.has("retry")) throw Error("transient");
+    return new Response(src.subarray(from, to + 1), {status: 206, headers: {
+      "Content-Range": "bytes " + from + "-" + to + "/" + src.length,
+    }});
+  });
+  assert.deepEqual(Buffer.from(await load({bytes: src.length}, new URL("https://example.test/base"), 4)), src);
+  assert.deepEqual(calls.sort((a,b) => a-b), [0,4,4,8]);
+});
+
+test("device download accepts a complete first response and rejects ranges from the wrong offset", async () => {
+  const src = Buffer.from("0123456789");
+  let requests = 0;
+  const load = rangeLoader(async () => { requests++; return new Response(src); });
+  const url = new URL("https://example.test/base");
+  assert.deepEqual(Buffer.from(await load({bytes: src.length}, url, 4)), src);
+  assert.equal(requests, 1);
+  const invalid = rangeLoader(async () => new Response(src.subarray(0,4), {status:206, headers: {
+    "Content-Range":"bytes 4-7/10",
+  }}));
+  await assert.rejects(invalid({bytes:src.length}, url, 4), /Unexpected base model range/);
+});

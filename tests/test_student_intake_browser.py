@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -36,6 +37,10 @@ def test_public_device_entry_ships_only_static_rules_and_pinned_tuned_assets(mon
     monkeypatch.setattr(server_app, "CLOUD_MODE", True)
     client = TestClient(server_app.app)
     html = client.get("/student-intake/local")
+    nonce = re.search(r'<script nonce="([^"]+)" src="/static/student-intake-local.js', html.text).group(1)
+    policy = html.headers["Content-Security-Policy"]
+    assert f"script-src 'nonce-{nonce}'" in policy and "connect-src 'none'" in policy
+    assert "worker-src 'self'" in policy and "unsafe-inline" not in policy
     assert html.status_code == 200 and 'data-worker="/static/student-intake-worker.js?v=' in html.text
     assert 'data-model="/static/intake-0p5b-v1/model.json?v=' in html.text
     assert "/student-intake/local" in client.get("/student-intake").text

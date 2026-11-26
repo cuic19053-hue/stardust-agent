@@ -21,30 +21,73 @@ async function download(url, options = {}) {
   return response;
 }
 
+async function downloadBase(file, url, chunkSize = 16 * 1024 * 1024) {
+  const bytes = new Uint8Array(file.bytes), count = Math.ceil(bytes.length / chunkSize);
+  const received = new Array(count).fill(0);
+  let lastPercent = -1;
+
+  async function readChunk(index) {
+    const start = index * chunkSize, end = Math.min(start + chunkSize, bytes.length) - 1;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const source = new URL(url);
+      source.searchParams.set("download", "true");
+      source.searchParams.set("part", String(index));
+      if (attempt) source.searchParams.set("retry", String(attempt));
+      try {
+        const response = await download(source, {
+          cache: "no-store", headers: { Range: "bytes=" + start + "-" + end },
+        });
+        // Some hosts ignore Range. Accept a whole file only on the first request.
+        const whole = response.status === 200 && index === 0;
+        const range = response.headers.get("Content-Range");
+        if (!whole && (response.status !== 206 || (range && range !== "bytes " + start + "-" + end + "/" + bytes.length))) {
+          await response.body?.cancel();
+          throw new Error("Unexpected base model range");
+        }
+        const target = whole ? bytes.length : end - start + 1;
+        const reader = response.body.getReader();
+        received[index] = 0;
+        try {
+          while (true) {
+            const {value, done} = await reader.read();
+            if (done) break;
+            if (received[index] + value.length > target) throw new Error("Oversize base model block");
+            bytes.set(value, start + received[index]);
+            received[index] += value.length;
+            const total = received.reduce((sum, n) => sum + n, 0);
+            const percent = Math.floor(100 * total / bytes.length);
+            if (percent > lastPercent) {
+              signalStatus("正在下载公开底座 " + percent + "%（约 278 MB）。");
+              lastPercent = percent;
+            }
+          }
+        } finally { reader.releaseLock(); }
+        if (received[index] !== target) throw new Error("Incomplete base model block");
+        return whole;
+      } catch (error) {
+        received[index] = 0;
+        if (attempt === 2) throw error;
+        signalStatus("正在重试未完成的模型分片，已下载的其他分片会保留。");
+        await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+      }
+    }
+  }
+
+  if (await readChunk(0)) return bytes.buffer;
+  let next = 1;
+  async function remaining() {
+    while (next < count) await readChunk(next++);
+  }
+  await Promise.all([remaining(), remaining()]);
+  return bytes.buffer;
+}
+
 async function verifiedBytes(file) {
-  const large = file === config?.source;
   const url = new URL(file.url, manifestUrl);
   if (url.origin === location.origin) url.searchParams.set("v", file.sha256.slice(0, 16));
-  const response = await download(url, large ? {cache: "no-store"} : {});
-  let data;
-  if (large && response.body) {
-    const bytes = new Uint8Array(file.bytes);
-    const reader = response.body.getReader();
-    let position = 0, previous = -1;
-    while (true) {
-      const {value, done} = await reader.read();
-      if (done) break;
-      if (position + value.length > bytes.length) throw new Error("Oversize base model");
-      bytes.set(value, position); position += value.length;
-      const percent = Math.floor(100 * position / bytes.length);
-      if (percent !== previous) signalStatus("正在下载公开底座 " + percent + "%（约 278 MB）。");
-      previous = percent;
-    }
-    if (position !== bytes.length) throw new Error("Incomplete base model");
-    data = bytes.buffer;
-  } else {
-    data = await response.arrayBuffer();
-  }
+  const data = file === config?.source
+    ? await downloadBase(file, url)
+    : await (await download(url)).arrayBuffer();
   if ((file.bytes !== undefined && data.byteLength !== file.bytes) || await digest(data) !== file.sha256) {
     throw new Error("Asset integrity check failed");
   }
