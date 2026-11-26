@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <link rel="icon" href="data:,">
+  <title>在此设备提取学生口述 · Stardust Agent</title>
+  <link rel="stylesheet" href="/static/student-intake-local.css">
+  <script src="/static/student-intake-local.js" defer></script>
+</head>
+<body>
+  <header><a href="/">Stardust Agent</a><a href="/student-intake">微调评测 ↗</a></header>
+  <main id="intake" data-worker="/static/student-intake-worker.js" data-model="/static/intake-0p5b-v1/model.json">
+    <h1>在此设备提取口述</h1>
+    <p class="intro">用自己的话说出专业、经历或计划，逐项核对模型找到的原话。</p>
+    <section class="model" aria-label="端侧模型">
+      <div><strong>Qwen2.5 · 0.5B 微调版</strong>
+        <p>首次约需下载 320 MB，建议使用 Wi-Fi 和支持 WebGPU 的新版桌面浏览器。推理使用你的设备，不扣工作台积分。</p></div>
+      <button type="button" id="load">加载端侧模型</button>
+    </section>
+    <p class="status" id="status" role="status" aria-live="polite">输入内容只在本页处理。模型可能漏提或错分，请对照原话核对。</p>
+    <section aria-labelledby="input-heading">
+      <h2 id="input-heading"><label for="oral">我的口述</label></h2>
+      <p id="input-help">每行可写一段，最多 600 字、12 段。</p>
+      <textarea id="oral" rows="6" maxlength="600" autocomplete="off" spellcheck="false" aria-describedby="input-help" placeholder="例如，我的专业是文物保护。我准备做一套校园导览卡，还没开始制作。"></textarea>
+      <div class="actions"><button type="button" id="extract" disabled>提取口述</button><button type="button" id="stop" class="secondary" hidden>停止</button><button type="button" id="clear" class="secondary">清空本页</button></div>
+    </section>
+    <section id="review" aria-labelledby="review-heading" hidden>
+      <h2 id="review-heading" tabindex="-1">核对候选</h2>
+      <p id="review-note"></p><div id="facts"></div><div id="questions"></div>
+      <button type="button" id="copy" class="secondary" disabled>复制已核对的条目</button>
+    </section>
+    <footer>口述和候选仅保留在当前页面。你可以勾选并复制已核对的条目。<a href="/static/intake-0p5b-v1/MODEL.md">模型来源与限制</a></footer>
+  </main>
+</body></html>
