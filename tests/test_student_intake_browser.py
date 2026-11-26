@@ -65,3 +65,101 @@ def test_public_device_entry_ships_only_static_rules_and_pinned_tuned_assets(mon
         if asset.get("url", "").startswith("./"):
             data = (folder / asset["url"]).read_bytes()
             assert len(data) == asset["bytes"] and hashlib.sha256(data).hexdigest() == asset["sha256"]
+
+
+def device_review(text, *facts, finish="stop"):
+    proposal = {"schema_version": "student-intake-v1", "facts": list(facts), "follow_up_fields": []}
+    return json.loads(browser.review(browser.prepare(text), json.dumps(proposal, ensure_ascii=False), finish))
+
+
+def model_fact(field, value, status, turn, quote):
+    return {"field": field, "record_id": "self", "value": value, "status": status,
+            "evidence": [{"turn_id": turn, "quote": quote}]}
+
+
+def test_browser_recovers_the_two_recorded_model_errors_at_the_actual_turn():
+    plan = "我准备做一套校园树皮标本卡"
+    wrong_name = model_fact("project.name", None, "planned", "u1", plan)
+    planned, = device_review(plan + "，还没开始制作。", wrong_name)["facts"]
+    assert planned["fact"] == model_fact("project.expected_output", "一套校园树皮标本卡", "planned", "u1", plan)
+    assert planned["can_confirm"]
+
+    major = "我的专业是环境设计"
+    text = f"这次我要申请国家奖学金。\n我家年收入是42000元。\n{major}。"
+    wrong_turn = model_fact("application.type", None, "unknown", "u1", major)
+    reviewed = device_review(text, wrong_turn)
+    own, = reviewed["facts"]
+    assert own["fact"] == model_fact("identity.major", "环境设计", "stated", "u3", major)
+    assert reviewed["questions"] == [] and "42000" not in json.dumps(reviewed, ensure_ascii=False)
+    assert not device_review(text, wrong_turn, finish="length")["facts"]
+
+
+@pytest.mark.parametrize(("text", "quote", "value"), [
+    ("我的专业是纺织工程，我家年收入为35800元。", "我的专业是纺织工程", "纺织工程"),
+    ("这次我申请国奖。我家年收入是51000元，我主修包装工程。", "我主修包装工程", "包装工程"),
+    ("我家收入不确定，我本人目前的专业是工业设计。", "我本人目前的专业是工业设计", "工业设计"),
+    ("我主修的是护理学，但我不确定家庭收入。", "我主修的是护理学", "护理学"),
+])
+def test_missing_major_survives_neighbouring_sensitive_clauses(text, quote, value):
+    prepared = json.loads(browser.prepare(text))
+    assert "收入" not in prepared["message"]
+    row, = device_review(text)["facts"]
+    assert row["fact"] == model_fact("identity.major", value, "stated", "u1", quote)
+    assert row["can_confirm"]
+
+
+@pytest.mark.parametrize(("text", "quote", "field", "value"), [
+    ("如果得到资助，我打算制作一本昆虫图册。", "我打算制作一本昆虫图册", "project.expected_output", "一本昆虫图册"),
+    ("我打算制作一张河网地图。\n现在已经完成了。", "我打算制作一张河网地图", "project.expected_output", "一张河网地图"),
+    ("我打算制作一张河网地图。\n这个计划取消了。", "我打算制作一张河网地图", "project.expected_output", "一张河网地图"),
+    ("我打算制作一张河网地图吗？", "我打算制作一张河网地图", "project.expected_output", "一张河网地图"),
+    ("如果要举例，我的专业是口腔医学。", "我的专业是口腔医学", "identity.major", "口腔医学"),
+    ("之前，我的专业是工业设计。", "我的专业是工业设计", "identity.major", "工业设计"),
+    ("我的专业是新闻学，不过我也不确定。", "我的专业是新闻学", "identity.major", "新闻学"),
+])
+def test_conditional_outdated_or_uncertain_claim_cannot_be_released_by_the_model(text, quote, field, value):
+    proposal = model_fact(field, value, "planned" if field == "project.expected_output" else "stated", "u1", quote)
+    assert device_review(text, proposal)["facts"] == []
+
+
+def test_mixed_fields_keep_their_own_sources_and_do_not_restore_redacted_examples():
+    text = ("下面是范文：\n我的专业是化学。\n我自己主修环境科学，我家年收入是46000元。\n"
+            "我计划编制一份湿地记录表，还没开始。")
+    prepared = json.loads(browser.prepare(text))
+    assert "化学" not in prepared["message"] and "46000" not in prepared["message"]
+    assert [r["fact"] for r in device_review(text)["facts"]] == [
+        model_fact("identity.major", "环境科学", "stated", "u3", "我自己主修环境科学"),
+        model_fact("project.expected_output", "一份湿地记录表", "planned", "u4", "我计划编制一份湿地记录表"),
+    ]
+
+
+def test_ambiguous_deliverables_or_major_conflict_never_become_one_confirmable_value():
+    text = "我计划制作一本昆虫图册。\n我还在考虑。\n我计划制作一个水流模型。"
+    assert device_review(text)["facts"] == []
+    text = "我家年收入是35000元，我主修产品设计。\n我的专业是工业设计。"
+    reviewed = device_review(text)
+    row, = reviewed["facts"]
+    assert not row["can_confirm"] and row["fact"]["status"] == "conflict"
+    assert row["fact"]["evidence"] == [{"turn_id": "u1", "quote": "我主修产品设计"},
+                                       {"turn_id": "u2", "quote": "我的专业是工业设计"}]
+    assert len(reviewed["questions"]) == 1 and "35000" not in reviewed["questions"][0]
+
+
+@pytest.mark.parametrize(("quote", "value"), [
+    ("我准备制作校园植物标本卡", "校园植物标本卡"),
+    ("我们打算撰写两份排水调查报告", "两份排水调查报告"),
+    ("我们这次的预期成果是地貌模型", "地貌模型"),
+])
+def test_plans_preserve_the_literal_object_with_or_without_a_classifier(quote, value):
+    reviewed = device_review(quote + "。", model_fact("project.name", value, "stated", "u1", value))
+    row, = reviewed["facts"]
+    assert row["fact"] == model_fact("project.expected_output", value, "planned", "u1", quote)
+
+
+def test_later_doubt_about_major_prevents_restoring_earlier_certainty():
+    text = "我的专业是雕塑。\n等等，我记不清自己的专业了。"
+    earlier = model_fact("identity.major", "雕塑", "stated", "u1", "我的专业是雕塑")
+    unsure = model_fact("identity.major", None, "unknown", "u2", "我记不清自己的专业了")
+    assert not device_review(text, earlier)["facts"]
+    row, = device_review(text, unsure)["facts"]
+    assert row["fact"] == unsure and not row["can_confirm"]
