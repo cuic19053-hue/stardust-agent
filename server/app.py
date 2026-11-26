@@ -536,12 +536,21 @@ def home() -> str:
     return HTMLResponse(html, headers={"Cache-Control": "no-cache, must-revalidate"})
 
 
-def _intake_page(filename):
+def _intake_page(filename, *, local_input=False):
     html = (STATIC_DIR / filename).read_text(encoding="utf-8")
     for name, digest in ASSET_VERSIONS.items():
         html = html.replace(f'/static/{name}"', f'/static/{name}?v={digest}"')
-    return HTMLResponse(html, headers={"Cache-Control": "no-cache, must-revalidate",
-                                       "Referrer-Policy": "no-referrer"})
+    headers = {"Cache-Control": "no-cache, must-revalidate", "Referrer-Policy": "no-referrer"}
+    if local_input:
+        # Only the application's UI may read this DOM. The isolated worker has
+        # its own resource loader and accepts the transcript after sealing it.
+        nonce = secrets.token_urlsafe(24)
+        html = html.replace("data-intake-script", f'nonce="{nonce}"', 1)
+        headers["Content-Security-Policy"] = (
+            f"default-src 'self'; script-src 'nonce-{nonce}'; style-src 'self'; img-src 'self' data:; "
+            "connect-src 'none'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+        )
+    return HTMLResponse(html, headers=headers)
 
 
 @app.get("/student-intake", response_class=HTMLResponse)
@@ -551,7 +560,7 @@ def student_intake_demo():
 
 @app.get("/student-intake/local", response_class=HTMLResponse)
 def student_intake_local():
-    return _intake_page("student-intake-local.html")
+    return _intake_page("student-intake-local.html", local_input=True)
 
 
 @app.get("/student-intake/local/rules")
