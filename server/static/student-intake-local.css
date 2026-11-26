@@ -1,0 +1,31 @@
+:root { color-scheme: light; font: 16px/1.65 system-ui, sans-serif; color: #213631; background: #f7f8f4; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+header, main { width: min(720px, calc(100% - 36px)); margin: auto; }
+header { display: flex; justify-content: space-between; align-items: center; padding: 19px 0; border-bottom: 1px solid #ccd6cf; }
+header a:first-child { font-size: 18px; font-weight: 700; text-decoration: none; color: #193e34; }
+a { color: #185c4d; text-underline-offset: 3px; }
+main { padding: 34px 0 24px; }
+h1 { font-size: clamp(32px, 6vw, 46px); line-height: 1.18; letter-spacing: -.04em; margin: 0 0 9px; }
+h2 { margin: 0; font-size: 21px; }
+p { margin: 6px 0 12px; }
+.intro { font-size: 17px; }
+.model { background: #e8f1e9; border: 1px solid #b9cdc0; border-radius: 12px; padding: 16px 20px; display: flex; gap: 22px; align-items: center; margin: 22px 0 10px; }
+.model p, footer, #input-help, .status { font-size: 14px; color: #465b53; }
+.model p { margin: 3px 0 0; }
+button { font: inherit; font-weight: 630; line-height: 1.35; border: 1px solid #245c4b; background: #205440; color: white; padding: 10px 15px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
+button.secondary { background: white; color: #1f4b3e; border-color: #a7bcb0; }
+button:disabled { opacity: .48; cursor: default; }
+button:focus-visible, a:focus-visible, textarea:focus-visible, input:focus-visible { outline: 3px solid #247352; outline-offset: 3px; }
+[hidden] { display: none !important; }
+.status { min-height: 24px; margin-bottom: 24px; }
+textarea { width: 100%; padding: 14px; min-height: 140px; border: 1px solid #8da99c; border-radius: 8px; background: white; color: inherit; font: inherit; resize: vertical; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 22px; }
+#review { border-top: 1px solid #ccd6cf; padding-top: 22px; }
+.fact { border: 1px solid #c4d3c9; border-radius: 9px; padding: 13px 16px; margin: 9px 0; background: white; overflow-wrap: anywhere; }
+.fact h3 { font-size: 16px; margin: 0; }
+.fact blockquote { margin: 5px 0 8px; padding-left: 10px; border-left: 3px solid #b1c4b5; color: #384f45; }
+.fact label { display: inline-flex; align-items: center; gap: 6px; }
+#questions ul { padding-left: 1.4em; }
+footer { margin: 28px 0 4px; border-top: 1px solid #ccd6cf; padding-top: 14px; }
+@media (max-width: 540px) { .model { align-items: flex-start; flex-direction: column; gap: 10px; } main { padding-top: 25px; } }

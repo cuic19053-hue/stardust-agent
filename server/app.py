@@ -30,7 +30,9 @@ STATIC_DIR = SERVER_DIR / "static"
 ASSET_VERSIONS = {
     name: hashlib.sha256((STATIC_DIR / name).read_bytes()).hexdigest()[:16]
     for name in ("app.js", "app.css", "material.js", "review.js", "material-upload.js", "word-export.js",
-                 "student-intake-demo.js", "student-intake-demo.css", "student-intake-demo.json")
+                 "student-intake-demo.js", "student-intake-demo.css", "student-intake-demo.json",
+                 "student-intake-local.js", "student-intake-worker.js", "student-intake-local.css",
+                 "intake-0p5b-v1/model.json")
 }
 MICRO_CNY_PER_CREDIT = 100_000  # 1 CNY = 10 workbench credits
 if str(ROOT) not in sys.path:
@@ -361,7 +363,7 @@ async def _require_supabase_session(request: Request, call_next):
         return await call_next(request)
     path = request.url.path
     if (
-        path in {"/", "/student-intake"}
+        path in {"/", "/student-intake", "/student-intake/local", "/student-intake/local/rules"}
         or path in {
             "/health", "/api/health", "/api/config", "/api/skills", "/api/skill-cards", "/api/route",
             "/api/models/preset", "/api/pay/notify", "/api/admin/provider-health",
@@ -534,12 +536,32 @@ def home() -> str:
     return HTMLResponse(html, headers={"Cache-Control": "no-cache, must-revalidate"})
 
 
-@app.get("/student-intake", response_class=HTMLResponse)
-def student_intake_demo():
-    html = (STATIC_DIR / "student-intake.html").read_text(encoding="utf-8")
+def _intake_page(filename):
+    html = (STATIC_DIR / filename).read_text(encoding="utf-8")
     for name, digest in ASSET_VERSIONS.items():
         html = html.replace(f'/static/{name}"', f'/static/{name}?v={digest}"')
-    return HTMLResponse(html, headers={"Cache-Control": "no-cache, must-revalidate"})
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache, must-revalidate",
+                                       "Referrer-Policy": "no-referrer"})
+
+
+@app.get("/student-intake", response_class=HTMLResponse)
+def student_intake_demo():
+    return _intake_page("student-intake.html")
+
+
+@app.get("/student-intake/local", response_class=HTMLResponse)
+def student_intake_local():
+    return _intake_page("student-intake-local.html")
+
+
+@app.get("/student-intake/local/rules")
+def student_intake_local_rules():
+    # This GET ships the same data-free reviewer imported by the workbench.
+    modules = ("source_contacts", "student_intake", "student_intake_guard",
+               "student_intake_review", "student_intake_browser")
+    directory = SERVER_DIR / "proposal"
+    return JSONResponse({name: (directory / f"{name}.py").read_text(encoding="utf-8") for name in modules},
+                        headers={"Cache-Control": "public, no-cache"})
 
 
 @app.get("/api/config")
