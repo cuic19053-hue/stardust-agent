@@ -300,6 +300,12 @@ async function initialize(url) {
   self.postMessage({ type: "ready" });
 }
 
+function samplingSchema(schema) {
+  // XGrammar expands string length limits during its first compile. The full
+  // Pydantic models enforce those limits before any candidate reaches the UI.
+  return JSON.stringify(schema, (key, value) => key === "maxLength" ? undefined : value);
+}
+
 async function extract(text) {
   stage = "running";
   issue = "本次端侧推理未完成，请缩短口述或重新加载模型。";
@@ -311,7 +317,7 @@ async function extract(text) {
       model: config.version,
       messages: [{ role: "system", content: config.prompt }, { role: "user", content: message }],
       temperature: 0, top_p: 1, repetition_penalty: 1, seed: 427, max_tokens: 768,
-      response_format: { type: "json_object", schema: JSON.stringify(config.schema) },
+      response_format: { type: "json_object", schema: samplingSchema(config.schema) },
     });
     const choice = answer.choices[0];
     result = JSON.parse(review(prepared, choice.message.content || "", choice.finish_reason));
