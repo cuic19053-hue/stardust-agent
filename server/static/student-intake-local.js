@@ -111,7 +111,7 @@
   });
   stop.addEventListener("click", () => {
     terminate(); forgetResults(); update("idle");
-    status.textContent = "已停止。可重新加载模型，已缓存的权重会复用。";
+    status.textContent = "已停止。再点加载，可复用本机已保存的模型分片或完整权重。";
   });
   byId("clear").addEventListener("click", () => {
     oral.value = ""; forgetResults();

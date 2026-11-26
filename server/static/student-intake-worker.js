@@ -21,13 +21,109 @@ async function download(url, options = {}) {
   return response;
 }
 
-async function downloadBase(file, url, chunkSize = 16 * 1024 * 1024) {
-  const bytes = new Uint8Array(file.bytes), count = Math.ceil(bytes.length / chunkSize);
-  const received = new Array(count).fill(0);
-  let lastPercent = -1;
+function partialCacheName(file) {
+  return "student-intake-base-parts-v1-" + file.sha256 + "-" + file.chunkBytes;
+}
 
-  async function readChunk(index) {
-    const start = index * chunkSize, end = Math.min(start + chunkSize, bytes.length) - 1;
+async function discardBaseParts(file) {
+  if (file?.chunkSha256) {
+    try { await self.caches?.delete(partialCacheName(file)); } catch { /* Storage is optional. */ }
+  }
+}
+
+async function downloadBase(file, url, chunkSize = file.chunkBytes || 16 * 1024 * 1024) {
+  const bytes = new Uint8Array(file.bytes);
+  const count = Math.ceil(bytes.length / chunkSize);
+  const hashes = file.chunkSha256;
+  if (hashes && (file.chunkBytes !== chunkSize || hashes.length !== count)) {
+    throw new Error("Invalid base model range manifest");
+  }
+  const blocks = Array.from({length: count}, (_, i) => ({
+    start: i * chunkSize, end: Math.min((i + 1) * chunkSize, bytes.length),
+    key: new URL("/__intake-base-part/" + i, location.href).href,
+    hash: hashes?.[i], received: 0, complete: false,
+  }));
+  let cache, quotaHit = false, lastPercent = -1;
+  if (hashes) {
+    try { cache = await self.caches?.open(partialCacheName(file)); } catch { /* Fall back to memory. */ }
+  }
+
+  function percent() {
+    return Math.floor(100 * blocks.reduce((total, block) => total + block.received, 0) / bytes.length);
+  }
+
+  async function restore(block) {
+    if (!cache) return;
+    try {
+      const saved = await cache.match(block.key);
+      if (!saved) return;
+      const data = await saved.arrayBuffer();
+      if (data.byteLength !== block.end - block.start || await digest(data) !== block.hash) {
+        await cache.delete(block.key);
+        return;
+      }
+      bytes.set(new Uint8Array(data), block.start);
+      block.received = data.byteLength;
+      block.complete = true;
+    } catch { /* An unreadable entry is downloaded again. */ }
+  }
+
+  async function finish(block) {
+    if (block.complete) return;
+    const data = bytes.subarray(block.start, block.end);
+    if (hashes && await digest(data) !== block.hash) throw new Error("Base model range integrity check failed");
+    if (cache) {
+      try {
+        // Cache Storage rejects HTTP 206 responses. Store only the verified payload.
+        await cache.put(block.key, new Response(data));
+      } catch (error) {
+        quotaHit ||= error?.name === "QuotaExceededError";
+        cache = undefined;
+        signalStatus("浏览器暂时无法保存更多分片，本页会继续下载。");
+      }
+    }
+    block.complete = true;
+  }
+
+  async function consume(response, first, last) {
+    const reader = response.body.getReader(), end = blocks[last].end;
+    let pos = blocks[first].start, index = first;
+    try {
+      while (true) {
+        const {value, done} = await reader.read();
+        if (done) break;
+        if (pos + value.length > end) throw new Error("Oversize base model range");
+        for (let offset = 0; offset < value.length;) {
+          const block = blocks[index];
+          const length = Math.min(block.end - pos, value.length - offset);
+          if (!block.complete) {
+            bytes.set(value.subarray(offset, offset + length), pos);
+            block.received = pos + length - block.start;
+          }
+          pos += length;
+          offset += length;
+          if (pos === block.end) {
+            // A 200 response may span several parts. Checkpoint each complete part.
+            if (index < last) await finish(block);
+            index++;
+          }
+        }
+        const progress = percent();
+        if (progress > lastPercent) {
+          signalStatus("正在下载公开底座 " + progress + "%（约 278 MB）。");
+          lastPercent = progress;
+        }
+      }
+      if (pos !== end) throw new Error("Incomplete base model range");
+      await finish(blocks[last]);
+    } catch (error) {
+      await reader.cancel().catch(() => {});
+      throw error;
+    } finally { reader.releaseLock(); }
+  }
+
+  async function readChunk(index, allowWhole = false) {
+    const block = blocks[index];
     for (let attempt = 0; attempt < 3; attempt++) {
       const source = new URL(url);
       source.searchParams.set("download", "true");
@@ -35,50 +131,61 @@ async function downloadBase(file, url, chunkSize = 16 * 1024 * 1024) {
       if (attempt) source.searchParams.set("retry", String(attempt));
       try {
         const response = await download(source, {
-          cache: "no-store", headers: { Range: "bytes=" + start + "-" + end },
+          cache: "no-store", headers: { Range: "bytes=" + block.start + "-" + (block.end - 1) },
         });
-        // Some hosts ignore Range. Accept a whole file only on the first request.
-        const whole = response.status === 200 && index === 0;
+        const whole = allowWhole && response.status === 200;
         const range = response.headers.get("Content-Range");
-        if (!whole && (response.status !== 206 || (range && range !== "bytes " + start + "-" + end + "/" + bytes.length))) {
+        if (!whole && (response.status !== 206 || (range && range !== "bytes " + block.start + "-" + (block.end - 1) + "/" + bytes.length))) {
           await response.body?.cancel();
           throw new Error("Unexpected base model range");
         }
-        const target = whole ? bytes.length : end - start + 1;
-        const reader = response.body.getReader();
-        received[index] = 0;
-        try {
-          while (true) {
-            const {value, done} = await reader.read();
-            if (done) break;
-            if (received[index] + value.length > target) throw new Error("Oversize base model block");
-            bytes.set(value, start + received[index]);
-            received[index] += value.length;
-            const total = received.reduce((sum, n) => sum + n, 0);
-            const percent = Math.floor(100 * total / bytes.length);
-            if (percent > lastPercent) {
-              signalStatus("正在下载公开底座 " + percent + "%（约 278 MB）。");
-              lastPercent = percent;
-            }
-          }
-        } finally { reader.releaseLock(); }
-        if (received[index] !== target) throw new Error("Incomplete base model block");
-        return whole;
+        await consume(response, whole ? 0 : index, whole ? count - 1 : index);
+        return;
       } catch (error) {
-        received[index] = 0;
+        // An interrupted full response may already have checkpointed this part.
+        if (block.complete) return;
+        block.received = 0;
         if (attempt === 2) throw error;
-        signalStatus("正在重试未完成的模型分片，已下载的其他分片会保留。");
+        signalStatus("正在重试未完成的模型分片。");
         await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
       }
     }
   }
 
-  if (await readChunk(0)) return bytes.buffer;
-  let next = 1;
-  async function remaining() {
-    while (next < count) await readChunk(next++);
+  // Read sequentially to avoid materializing a second 278 MB copy of the base.
+  for (const block of blocks) await restore(block);
+  const missing = [];
+  for (const [index, block] of blocks.entries()) {
+    if (!block.complete) missing.push(index);
   }
-  await Promise.all([remaining(), remaining()]);
+  if (missing.length < count) {
+    lastPercent = percent();
+    signalStatus("已从本机恢复 " + (count - missing.length) + "/" + count + " 个底座分片（" + lastPercent + "%）。");
+  }
+  if (missing.length) {
+    // Only the first missing request can fall back to an unsliced response.
+    await readChunk(missing[0], true);
+    let next = 1, failure;
+    async function remaining() {
+      try {
+        while (!failure && next < missing.length) {
+          const index = missing[next++];
+          if (!blocks[index].complete) await readChunk(index);
+        }
+      } catch (error) { failure = error; }
+    }
+    // Finish an in-flight verified cache write before the UI terminates a failed worker.
+    await Promise.all([remaining(), remaining()]);
+    if (failure) throw failure;
+  }
+  if (hashes) {
+    // The final WebLLM weights also need persistent space. On a nearly full
+    // device, release the temporary copy once all verified bytes are in memory.
+    try {
+      const storage = await self.navigator?.storage?.estimate?.();
+      if (quotaHit || (storage && storage.quota - storage.usage < bytes.length)) await discardBaseParts(file);
+    } catch { /* Storage estimates are not available in every browser. */ }
+  }
   return bytes.buffer;
 }
 
@@ -185,6 +292,8 @@ async function initialize(url) {
   config = await (await download(manifestUrl)).json();
   virtualBase = new URL("/static/intake-model/resolve/" + config.version + "/", location.origin).href;
   await Promise.all([loadReview(), loadModel()]);
+  // The finished, verified model now has its own persistent WebLLM cache.
+  await discardBaseParts(config.source);
   assemblerPromise = undefined;
   sealed = true;
   stage = "ready";

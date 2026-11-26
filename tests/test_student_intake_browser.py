@@ -57,6 +57,10 @@ def test_public_device_entry_ships_only_static_rules_and_pinned_tuned_assets(mon
     folder = server_app.STATIC_DIR / "intake-0p5b-v1"
     manifest = json.loads((folder / "model.json").read_text())
     assert manifest["adapterSha256"] == "f0c50e648d8b57fdc0c9118e52e92b4ee8e7e024190a277a68850486b58f6fa7"
+    source = manifest["source"]
+    assert source["chunkBytes"] == 16 * 1024 * 1024
+    assert len(source["chunkSha256"]) == (source["bytes"] + source["chunkBytes"] - 1) // source["chunkBytes"]
+    assert hashlib.sha256("".join(source["chunkSha256"]).encode()).hexdigest() == "ec05400086026695333791084bf997f9d8d31425e62a0ac79a90bd8304cae6ae"
     layers = [f for f in manifest["files"].values() if "patch" in f]
     assert len(layers) == 3
     shards = [manifest["files"][f"params_shard_{i}.bin"]["sha256"] for i in range(8)]
