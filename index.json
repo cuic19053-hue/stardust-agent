@@ -33,7 +33,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1252,
-      "id": "national_project_eval"
+      "id": "national_project_eval",
+      "support_level": "standard_draft"
     },
     {
       "name": "motivation-scholarship",
@@ -57,7 +58,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1570,
-      "id": "motivation_scholarship"
+      "id": "motivation_scholarship",
+      "support_level": "standard_draft"
     },
     {
       "name": "university-scholarship",
@@ -77,7 +79,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1598,
-      "id": "university_scholarship"
+      "id": "university_scholarship",
+      "support_level": "standard_draft"
     },
     {
       "name": "enterprise-scholarship",
@@ -97,7 +100,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1598,
-      "id": "enterprise_scholarship"
+      "id": "enterprise_scholarship",
+      "support_level": "standard_draft"
     },
     {
       "name": "single-scholarship",
@@ -118,7 +122,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1594,
-      "id": "single_scholarship"
+      "id": "single_scholarship",
+      "support_level": "standard_draft"
     },
     {
       "name": "grant-application",
@@ -137,7 +142,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1226,
-      "id": "grant_application"
+      "id": "grant_application",
+      "support_level": "standard_draft"
     },
     {
       "name": "outstanding-student",
@@ -157,7 +163,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1693,
-      "id": "outstanding_student"
+      "id": "outstanding_student",
+      "support_level": "standard_draft"
     },
     {
       "name": "outstanding-graduate",
@@ -175,7 +182,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1268,
-      "id": "outstanding_graduate"
+      "id": "outstanding_graduate",
+      "support_level": "standard_draft"
     },
     {
       "name": "outstanding-cadre",
@@ -195,7 +203,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1398,
-      "id": "outstanding_cadre"
+      "id": "outstanding_cadre",
+      "support_level": "standard_draft"
     },
     {
       "name": "civilized-student",
@@ -212,7 +221,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1694,
-      "id": "civilized_student"
+      "id": "civilized_student",
+      "support_level": "standard_draft"
     },
     {
       "name": "class-collective",
@@ -230,7 +240,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1254,
-      "id": "class_collective"
+      "id": "class_collective",
+      "support_level": "standard_draft"
     },
     {
       "name": "youth-league-application",
@@ -249,7 +260,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1293,
-      "id": "youth_league_application"
+      "id": "youth_league_application",
+      "support_level": "standard_draft"
     },
     {
       "name": "innovation-research",
@@ -269,7 +281,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1218,
-      "id": "innovation_research"
+      "id": "innovation_research",
+      "support_level": "specialized_draft"
     },
     {
       "name": "entrepreneurship-training",
@@ -287,7 +300,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1798,
-      "id": "entrepreneurship_training"
+      "id": "entrepreneurship_training",
+      "support_level": "standard_draft"
     },
     {
       "name": "entrepreneurship-practice",
@@ -306,7 +320,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1511,
-      "id": "entrepreneurship_practice"
+      "id": "entrepreneurship_practice",
+      "support_level": "standard_draft"
     },
     {
       "name": "university-research",
@@ -326,7 +341,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1817,
-      "id": "university_research"
+      "id": "university_research",
+      "support_level": "standard_draft"
     },
     {
       "name": "college-research",
@@ -344,7 +360,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1597,
-      "id": "college_research"
+      "id": "college_research",
+      "support_level": "standard_draft"
     },
     {
       "name": "challenge-cup",
@@ -363,7 +380,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1430,
-      "id": "challenge_cup"
+      "id": "challenge_cup",
+      "support_level": "standard_draft"
     },
     {
       "name": "internet-plus",
@@ -383,7 +401,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1531,
-      "id": "internet_plus"
+      "id": "internet_plus",
+      "support_level": "standard_draft"
     },
     {
       "name": "social-survey",
@@ -405,7 +424,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1688,
-      "id": "social_survey"
+      "id": "social_survey",
+      "support_level": "standard_draft"
     },
     {
       "name": "volunteer-teaching",
@@ -423,7 +443,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1692,
-      "id": "volunteer_teaching"
+      "id": "volunteer_teaching",
+      "support_level": "standard_draft"
     },
     {
       "name": "policy-lecture",
@@ -441,7 +462,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1698,
-      "id": "policy_lecture"
+      "id": "policy_lecture",
+      "support_level": "standard_draft"
     },
     {
       "name": "tech-service",
@@ -459,7 +481,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1450,
-      "id": "tech_service"
+      "id": "tech_service",
+      "support_level": "standard_draft"
     },
     {
       "name": "western-plan",
@@ -477,7 +500,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1342,
-      "id": "western_plan"
+      "id": "western_plan",
+      "support_level": "standard_draft"
     },
     {
       "name": "graduate-recommendation",
@@ -498,7 +522,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1598,
-      "id": "graduate_recommendation"
+      "id": "graduate_recommendation",
+      "support_level": "standard_draft"
     },
     {
       "name": "selected-graduate",
@@ -516,7 +541,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1250,
-      "id": "selected_graduate"
+      "id": "selected_graduate",
+      "support_level": "standard_draft"
     },
     {
       "name": "major-transfer",
@@ -534,7 +560,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1300,
-      "id": "major_transfer"
+      "id": "major_transfer",
+      "support_level": "standard_draft"
     },
     {
       "name": "military-enlistment",
@@ -559,7 +586,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1336,
-      "id": "military_enlistment"
+      "id": "military_enlistment",
+      "support_level": "standard_draft"
     },
     {
       "name": "csc-scholarship",
@@ -581,7 +609,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1368,
-      "id": "csc_scholarship"
+      "id": "csc_scholarship",
+      "support_level": "standard_draft"
     },
     {
       "name": "exchange-program",
@@ -603,7 +632,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1391,
-      "id": "exchange_program"
+      "id": "exchange_program",
+      "support_level": "standard_draft"
     },
     {
       "name": "internet-plus-red-tour",
@@ -626,7 +656,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1248,
-      "id": "internet_plus_red_tour"
+      "id": "internet_plus_red_tour",
+      "support_level": "standard_draft"
     },
     {
       "name": "outstanding-thesis",
@@ -646,7 +677,8 @@
       "version": "v1.0",
       "last_updated": "2025-05-20",
       "line_count": 1323,
-      "id": "outstanding_thesis"
+      "id": "outstanding_thesis",
+      "support_level": "standard_draft"
     },
     {
       "name": "national-scholarship",
@@ -672,7 +704,8 @@
       "version": "v1.0",
       "last_updated": "2026-09-05",
       "line_count": 1250,
-      "id": "national_scholarship"
+      "id": "national_scholarship",
+      "support_level": "standard_draft"
     },
     {
       "name": "summary-report",
@@ -692,7 +725,8 @@
       "version": "v1.0",
       "last_updated": "2026-09-05",
       "line_count": 1280,
-      "id": "summary_report"
+      "id": "summary_report",
+      "support_level": "standard_draft"
     },
     {
       "name": "youth-league-conversion",
@@ -713,7 +747,8 @@
       "version": "v1.0",
       "last_updated": "2026-09-05",
       "line_count": 1300,
-      "id": "youth_league_conversion"
+      "id": "youth_league_conversion",
+      "support_level": "standard_draft"
     }
   ]
 }

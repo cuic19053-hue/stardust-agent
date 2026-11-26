@@ -87,10 +87,14 @@ jobs:
         shell: bash
         run: |
           data_dir=$(mktemp -d "$RUNNER_TEMP/stardust-smoke.XXXXXX")
-          PROPOSAL_AGENT_DATA_DIR="$data_dir" uv run --no-sync uvicorn server.app:app --host 127.0.0.1 --port 8765 &
+          source_commit=$(git rev-parse HEAD)
+          STARDUST_SOURCE_COMMIT="$source_commit" PROPOSAL_AGENT_DATA_DIR="$data_dir" \
+            uv run --no-sync uvicorn server.app:app --host 127.0.0.1 --port 8765 &
           server_pid=$!
           trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
           curl -fsS --max-time 3 --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8765/api/ping | jq -e '.status == "ok"'
+          GITHUB_STEP_SUMMARY= uv run --no-sync python scripts/check_site_health.py \
+            --url http://127.0.0.1:8765/api/ping --expected-commit "$source_commit"
           curl -fsS --max-time 3 http://127.0.0.1:8765/ -o "$data_dir/home.html"
           test -s "$data_dir/home.html"
 
@@ -112,8 +116,11 @@ jobs:
       - name: 排版硬指标门禁（references/layout_standard.md，18 条静态条款）
         run: uv run --no-sync python utils/layout_audit.py examples/demos
 
+      - name: 逐赛道验证指南、CLI 生成和工作台 Word 导出
+        run: uv run --no-sync python -m pytest tests/test_track_smoke.py -v
+
       - name: 运行测试
-        run: uv run --no-sync python -m pytest tests -q -rs
+        run: uv run --no-sync python -m pytest tests --ignore=tests/test_track_smoke.py -q -rs
 
       - uses: actions/setup-node@v4
         with:
@@ -138,16 +145,81 @@ jobs:
             tests/test_workbench_reconciliation_postgres.py \
             tests/test_user_model_config.py -q
 
+  model-quality:
+    name: 模型质量回归
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.15'
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: 安装锁定的评测依赖
+        run: uv sync --locked --extra review
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/stardust-ollama/runtime
+            ${{ runner.temp }}/stardust-ollama/models
+          key: stardust-ollama-linux-sse42-0.34.1-qwen-65ec06548149-v1
+      - name: 准备固定 Ollama 精简 CPU 运行时
+        shell: bash
+        run: |
+          runtime="$RUNNER_TEMP/stardust-ollama/runtime"
+          if [[ ! -x "$runtime/bin/ollama" ]]; then
+            archive="$RUNNER_TEMP/ollama-linux-amd64.tar.zst"
+            trap 'rm -f "$archive"' EXIT
+            curl -fsSL --retry 3 --max-time 400 \
+              https://github.com/ollama/ollama/releases/download/v0.34.1/ollama-linux-amd64.tar.zst \
+              -o "$archive"
+            echo "f361dc3992ec07e4ad429f4bb2d10d4663ba2c295f9a9a688c7d52f4ba650034  $archive" | sha256sum -c -
+            mkdir -p "$runtime"
+            tar --zstd --ignore-zeros -xf "$archive" -C "$runtime" --wildcards \
+              bin/ollama lib/ollama/llama-server lib/ollama/libggml-cpu-sse42.so \
+              'lib/ollama/libggml-base.so*' 'lib/ollama/libggml.so*' 'lib/ollama/libgomp.so*' \
+              'lib/ollama/libllama*.so*' 'lib/ollama/libmtmd.so*'
+          fi
+      - name: 真实推理与冻结预审回放不得退化
+        shell: bash
+        env:
+          OLLAMA_HOST: 127.0.0.1:11434
+          OLLAMA_NUM_PARALLEL: '1'
+          OLLAMA_MODELS: ${{ runner.temp }}/stardust-ollama/models
+        run: |
+          ollama="$RUNNER_TEMP/stardust-ollama/runtime/bin/ollama"
+          "$ollama" serve > "$RUNNER_TEMP/ollama-quality.log" 2>&1 &
+          ollama_pid=$!
+          trap 'kill "$ollama_pid" 2>/dev/null || true; wait "$ollama_pid" 2>/dev/null || true' EXIT
+          curl -fsS --max-time 3 --retry 15 --retry-all-errors --retry-delay 1 http://127.0.0.1:11434/api/version
+          if ! "$ollama" show qwen2.5:1.5b >/dev/null 2>&1; then
+            "$ollama" pull qwen2.5:1.5b
+          fi
+          uv run --no-sync python -m server.evals.quality_gate --output "$RUNNER_TEMP/quality-results"
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: model-quality-results
+          path: |
+            ${{ runner.temp }}/quality-results
+            ${{ runner.temp }}/ollama-quality.log
+          if-no-files-found: ignore
+
   required-ci:
     name: Required CI
     runs-on: ubuntu-latest
     if: ${{ always() }}
-    needs: [material-worker-container, docs-and-tests]
+    needs: [material-worker-container, docs-and-tests, model-quality]
     env:
       WORKER_RESULT: ${{ needs.material-worker-container.result }}
       TEST_RESULT: ${{ needs.docs-and-tests.result }}
+      QUALITY_RESULT: ${{ needs.model-quality.result }}
     steps:
-      - name: Require both validation jobs to pass
+      - name: Require all validation jobs to pass
         run: |
           test "$WORKER_RESULT" = success
           test "$TEST_RESULT" = success
+          test "$QUALITY_RESULT" = success

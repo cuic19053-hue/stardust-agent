@@ -58,6 +58,32 @@ def test_health(client):
     assert r.json()["skills_loaded"] == 35
 
 
+@pytest.mark.parametrize(("vercel", "cli", "expected"), [
+    ("a" * 40, "b" * 40, "a" * 40),
+    (None, "b" * 40, "b" * 40),
+    ("invalid-value", "c" * 40, "c" * 40),
+    ("b" * 7, "other-metadata", None),
+    (None, None, None),
+])
+def test_public_ping_commit(client, monkeypatch, vercel, cli, expected):
+    import app as server_app
+
+    monkeypatch.setattr(server_app, "CLOUD_MODE", True)
+    for name, value in (("VERCEL_GIT_COMMIT_SHA", vercel), ("STARDUST_SOURCE_COMMIT", cli)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    response = client.get("/api/ping")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
+    wanted = {"status": "ok", "layout_rev": server_app.LAYOUT_REV}
+    if expected:
+        wanted.update(commit=expected[:7], commit_sha=expected,
+                      commit_url=f"https://github.com/cuic19053-hue/stardust-agent/commit/{expected}")
+    assert response.json() == wanted
+
+
 def test_login_sdk_is_accessible_without_signin_from_this_origin(client, monkeypatch):
     import app as server_app
     import hashlib

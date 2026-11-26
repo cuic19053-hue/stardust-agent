@@ -65,6 +65,8 @@
 
 样例使用示例数据，供了解材料结构和排版，不是已授权入库的真实学生范文。具体栏目、字数及提交要求请以所在学校的最新通知为准。[查看全部 35 个领域指南](./subskills/README.md) · [查看全部 Word 样例](./examples/demos/)
 
+每个赛道的工作台支持等级和冒烟范围见[赛道目录](./subskills/README.md)。核对线上工作台实际运行的源码版本时，可查看公开存活接口返回的 `commit_sha` 和 `commit_url`。[线上版本接口](https://agent.stardust.website/api/ping) · [发布验证说明](./docs/DEPLOYMENT_AND_ROLLBACK.md#四线上健康检查与验证清单-post-deployment-verification)
+
 ## 常见问题
 
 **不会编程，可以使用吗？** 可以直接使用在线工作台，按提示创建项目并填写或上传材料。本地部署和 MCP 接入面向需要自行配置环境的用户。
@@ -107,6 +109,8 @@ uv run --no-sync python server/evals/review_benchmark.py --output outputs/evals/
 ```
 
 [首轮 Qwen 本机试点](./docs/reports/REVIEW_BENCHMARK_2026-11-17.md)：按 Agent 辅助复核口径，直接模型命中 5 个目标问题中的 3 个，现有流程命中 5 个；两条路径各有 13 条误报（含重复提醒）。独立人工校准尚未完成，结果不代表线上模型效果。原始请求、响应和判定依据均可核对。
+
+必过 CI 在固定的本地模型上重新推理口述和草稿样例，并回放预审的真实模型输出。[质量门禁的指标与复现命令](./server/evals/CI_QUALITY.md)
 
 [对比方法、指标口径与复现步骤](./server/evals/REVIEW_BENCHMARK.md) · [合成样例和预期问题](./server/evals/review_cases.json) · [逐项结果与原始模型记录](./server/evals/baselines/review_pilot_20261117.json)
 

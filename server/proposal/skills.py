@@ -167,6 +167,7 @@ class SkillRegistry:
                 "category": item.get("category", ""),
                 "description": item.get("description", ""),
                 "triggers": item.get("triggers", []),
+                "support_level": item.get("support_level"),
             }
             for item in self.skills
         ]

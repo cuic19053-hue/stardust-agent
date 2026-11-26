@@ -831,18 +831,20 @@ def delete_user_model_config():
     return {"deleted": True}
 
 
-# 发版标记：凡涉及排版/导出行为的改动 +1。部署后用 /api/ping 核对，
-# 不依赖任何环境变量——CLI 直接部署时 Vercel 不会注入 commit sha。
+# 凡涉及排版或导出行为的改动 +1，供旧版发布检查继续使用。
 LAYOUT_REV = 3
+PUBLIC_SOURCE_REPO = "https://github.com/cuic19053-hue/stardust-agent"
 
 
 @app.get("/api/ping")
 def ping():
     # 只验证服务存活，不探测 Ollama、数据库或模型，不触发扣费。
-    commit = (os.environ.get("VERCEL_GIT_COMMIT_SHA") or "")[:7]
     payload = {"status": "ok", "layout_rev": LAYOUT_REV}
-    if commit:
-        payload["commit"] = commit
+    for name in ("VERCEL_GIT_COMMIT_SHA", "STARDUST_SOURCE_COMMIT"):
+        sha = os.environ.get(name, "")
+        if re.fullmatch(r"[0-9a-f]{40}", sha):
+            payload.update(commit=sha[:7], commit_sha=sha, commit_url=f"{PUBLIC_SOURCE_REPO}/commit/{sha}")
+            break
     return payload
 
 
