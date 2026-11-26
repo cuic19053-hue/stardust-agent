@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from .student_intake import Evidence, FIELDS, MAX_FACTS, MAX_QUOTE_CHARS, IntakeCandidate, IntakeFact
 
+MASK = "【已略去】"
 ECON = re.compile(r"年收[入益]|年入|(?:我家|家里|家中)(?:的)?收入|家庭(?:经济|收入|人口|人数)|困难(?:认定|户)|家(?:里|庭|中)?.{0,7}[零一二两三四五六七八九十\d]+[口人]")
 EXTERNAL = re.compile(r"范文|样表|示例|示范|范本|台词|角色|举例|通知说|政策|校规|手册|海报上|助手说|机器人说|"
                       r"室友|同桌|同学(?:的|说|家|绩点)|队友(?:的|以前)|学姐|学长|别人|另[一个名]+(?:人|位)|"
@@ -44,6 +45,12 @@ SCALAR = {
     "project.team_size": re.compile(r"(?:团队总人数|团队人数|团队一共)[有是为\s]*("+MONEY_OR_NUMBER+r")\s*(?:个)?人"),
     "service.volunteer_hours": re.compile(r"(?:志愿(?:服务)?时长|服务时长)[是为有\s]*("+MONEY_OR_NUMBER+r")\s*小时"),
 }
+SCALAR_SUBJECT = {
+    "academic.gpa": r"我(?:本人|自己)?(?:的)?",
+    "project.budget_yuan": r"(?:我(?:们)?(?:的)?|本(?:次|项目的)?)",
+    "project.team_size": r"(?:我们?(?:的)?|本(?:项目的)?)?",
+}
+GPA_SCALE = re.compile(r"(?P<label>(?:(?:绩点|GPA)满分|满分))(?:为|是|[：:])?\s*(?P<value>" + MONEY_OR_NUMBER + r")\s*分?", re.I)
 UNCERTAIN_FIELDS = {"academic.gpa","academic.rank","academic.rank_total","academic.rank_percent",
                     "service.volunteer_hours","project.budget_yuan","project.duration","project.team_size",
                     "financial.annual_income_yuan","financial.household_size"}
@@ -68,6 +75,17 @@ QUALIFIED_TAIL = re.compile(r"[，,]\s*(?:但|不过)?(?:我)?(?:也|还)?(?:不
 NON_VALUE = re.compile(r"还是|或者|或是|也许|可能|好像|大概|要不要|不再|并非|不叫|不是|没想好|"
                        r"尚未|还没|的话|但|其实|我|吗|也说不准|并且|而且|并在|同时|已经")
 NO_ADVISOR = re.compile(r"我(?:本人|自己)?(?:目前|现在)?(?:还没有|没有|尚无)(?:指导老师|导师)")
+NO_RESEARCH = re.compile(r"我(?:本人|自己)?(?:目前|现在)?(?:还没有|没有|尚无|从未有过)科研(?:项目)?经历")
+RESEARCH_HISTORY = re.compile(r"科研(?:项目)?经历|(?:参加|参与|做过|加入)(?:了|过)?[^，。]{0,12}(?:课题|科研项目)")
+SELF_INTRO = re.compile(r"(?:我叫|我的(?:姓名|名字)是)[\u3400-\u9fff·]{2,16}")
+STUDY_INTRO = re.compile(r"(?:我(?:目前|现在)?)?在(?P<school>[\u3400-\u9fff]{2,30}(?:大学|学院|学校))"
+                         r"(?:就读|攻读|读|主修)(?!到|完|过|了|着|一篇|一本)(?P<major>[\u3400-\u9fff]{2,24}?)(?:专业)?")
+FIELD_OF_STUDY = re.compile(r"(?:学|工程|设计|管理|技术|教育|护理|会计|语言|科学)$")
+GRADE_INTRO = re.compile(r"(?:我)?(?:目前|现在|现读)(?P<grade>大[一二三四五]|[研博][一二三四五六])")
+ACTIVE_APPLICATION = re.compile(r"(?:这次)?我(?:这次|本次|目前)?(?:想|准备|计划|打算|要)(?:申请|申报|报名|报)"
+                                r"(?P<target>" + TARGET.pattern + r")")
+WITHDRAWN_APPLICATION = re.compile(r"改报|换报|(?:取消|撤回|放弃)(?:了)?(?:这次|本次)?(?:申请|申报)|"
+                                   r"不(?:再|准备|打算|想)(?:申请|申报|报名|报)")
 PLANNED_ARTIFACT = re.compile(
     r"(?:我(?:们)?(?:这次)?)?(?:(?:准备|打算|计划|预计|想|拟)(?:要)?"
     r"(?:制作|做出|做|绘制|编写|开发|交付|设计|编制|撰写|完成|整理出)|(?:的)?预期成果(?:是|为))"
@@ -188,6 +206,8 @@ def source_parts(e, turns, parts):
 
 def review_field(f, turns, parts, allowed, refused, identities, plans):
     quotes = " ".join(e.quote for e in f.evidence)
+    if MASK in quotes:
+        return None, "quote_crosses_masked_source"
     contexts = [source_parts(e,turns,parts) for e in f.evidence]
     if not all(contexts) or any(p.external for ps in contexts for p in ps):
         return None, "unverified_source_or_owner"
@@ -309,6 +329,64 @@ def explicit_identity(part, source):
     return field, value
 
 
+def current_scalar(text, field):
+    """Canonicalize a whole, explicitly scoped value rather than any nearby numeral."""
+    match = SCALAR[field].search(text)
+    if (not match or not re.fullmatch(SCALAR_SUBJECT[field], text[:match.start()])
+            or not re.fullmatch(r"\s*(?:左右|上下)?", text[match.end():])):
+        return None
+    try:
+        return number(match[1])
+    except (ValueError, KeyError, ArithmeticError):
+        return None
+
+
+def adjacent(part, neighbor, source):
+    return (neighbor is not None and neighbor.turn == part.turn and not neighbor.external
+            and bool(re.fullmatch(r"\s*[，,]\s*", source[part.turn][neighbor.end:part.start])))
+
+
+def explicit_fields(part, before, preceding, source):
+    """Find additional single-valued declarations and bind continuations to their subject."""
+    text = part.text.strip()
+    if part.external or not text or len(text) > MAX_QUOTE_CHARS or not assertion_context(part, source):
+        return ()
+    previous = before.text.strip() if adjacent(part, before, source) else ""
+    earlier = preceding.text.strip() if previous and adjacent(before, preceding, source) else ""
+    if SELF_INTRO.fullmatch(text) and not NON_VALUE.search(text[2:]):
+        return (("identity.name", re.split(r"叫|是", text, maxsplit=1)[1], "stated"),)
+    study = STUDY_INTRO.fullmatch(text)
+    if (study and (text.startswith("我") or SELF_INTRO.fullmatch(previous))
+            and (text.endswith("专业") or FIELD_OF_STUDY.search(study["major"]))
+            and not NON_VALUE.search(study["major"])):
+        return (("identity.school", study["school"], "stated"), ("identity.major", study["major"], "stated"))
+    grade = GRADE_INTRO.fullmatch(text)
+    if grade and (text.startswith("我") or SELF_INTRO.fullmatch(previous)
+                  or (SELF_INTRO.fullmatch(earlier) and STUDY_INTRO.fullmatch(previous))):
+        return (("identity.grade", grade["grade"], "stated"),)
+    if application := ACTIVE_APPLICATION.fullmatch(text):
+        return (("application.type", application["target"], "planned"),)
+    if NO_RESEARCH.fullmatch(text):
+        return (("research.experience", None, "negated"),)
+    scale = GPA_SCALE.fullmatch(text)
+    if scale and (scale["label"] != "满分" or current_scalar(previous, "academic.gpa") is not None):
+        try:
+            value = number(scale["value"])
+        except (ValueError, KeyError, ArithmeticError):
+            return ()
+        return (("academic.gpa_scale", value, "stated"),) if value > 0 else ()
+    if not previous or not (PERIOD.search(previous) or OTHER_PROJECT.search(previous)):
+        for field in SCALAR_SUBJECT:
+            value = current_scalar(text, field)
+            if field == "project.team_size" and value is not None and (
+                    value <= 0 or value != value.to_integral_value()
+                    or (text.startswith("团队") and current_scalar(previous, "project.budget_yuan") is None)):
+                continue
+            if value is not None:
+                return ((field, value, "approximate" if APPROX.search(text) else "stated"),)
+    return ()
+
+
 def source_declarations(original, visible_parts):
     """Map explicit declarations back to the visible clauses without guessing a turn ID."""
     source = {t["turn_id"]: t["content"] for t in original if t["role"] == "user"}
@@ -316,28 +394,37 @@ def source_declarations(original, visible_parts):
     # is usable only if every occurrence supports the same interpretation.
     identity_readings = defaultdict(set)
     plan_readings = defaultdict(set)
-    for part in clauses(original):
+    field_readings = defaultdict(set)
+    original_parts = clauses(original)
+    for i, part in enumerate(original_parts):
         key = (part.turn, part.text)
         identity_readings[key].add(explicit_identity(part, source))
+        previous = original_parts[i - 1] if i else None
+        preceding = original_parts[i - 2] if i >= 2 else None
+        field_readings[key].add(explicit_fields(part, previous, preceding, source))
         artifact = PLANNED_ARTIFACT.fullmatch(part.text.strip())
         if artifact:
             value = artifact[1]
             active = (not part.external and assertion_context(part, source)
                       and not (NON_VALUE.search(value) or NEG.search(value) or REFUSE.search(value)))
-            plan_readings[key].add(value if active else None)
+            own = (part.text.lstrip().startswith("我") or (adjacent(part, previous, source)
+                   and ACTIVE_APPLICATION.fullmatch(previous.text.strip())))
+            plan_readings[key].add((value, bool(own)) if active else None)
     # A later cancellation or completion can supersede a plan. An earlier one
     # cannot cancel a new plan that the student goes on to declare.
     plan_superseded = False
-    major_retracted = False
-    identities, plans = {}, {}
+    retracted = set()
+    identities, plans, direct = {}, {}, {}
     for visible in reversed(visible_parts):
         if not visible.external and not FINANCIAL_CONTEXT.search(visible.text):
             if WITHDRAWAL.search(visible.text) or COMPLETED_PLAN.search(visible.text):
                 plan_superseded = True
+            if WITHDRAWN_APPLICATION.search(visible.text):
+                retracted.add("application.type")
             if IDENTITY_EVIDENCE["identity.major"].search(visible.text) and (
                     UNKNOWN.search(visible.text) or REFUSE.search(visible.text)
                     or re.search(r"专业.{0,3}(?:说错|记错|换了|改了)|(?:不是|不再主修)", visible.text)):
-                major_retracted = True
+                retracted.add("identity.major")
         if visible.external:
             continue
         literal = (visible.turn, visible.text)
@@ -345,19 +432,29 @@ def source_declarations(original, visible_parts):
         readings = identity_readings.get(literal, ())
         if len(readings) == 1:
             identity = next(iter(readings))
-            if identity and not (identity[0] == "identity.major" and major_retracted):
+            if identity and identity[0] not in retracted:
                 identities[location] = identity
+        readings = field_readings.get(literal, ())
+        if len(readings) == 1:
+            direct[location] = tuple(x for x in next(iter(readings)) if x[0] not in retracted)
         if literal in plan_readings:
             # A rejected match also prevents the model from releasing an inactive plan.
             readings = plan_readings[literal]
-            plans[location] = next(iter(readings)) if len(readings) == 1 and not plan_superseded else None
-    return identities, plans
+            plan = next(iter(readings)) if len(readings) == 1 and not plan_superseded else None
+            plans[location] = plan[0] if plan else None
+            if plan and plan[1]:
+                direct[location] = (*direct.get(location, ()), ("project.expected_output", plan[0], "planned"))
+    return identities, plans, direct
 
 
-def source_reconciliation(parts, source, identities, plans):
+def source_reconciliation(parts, source, identities, direct):
     """Recover explicit singleton values and reconcile competing claims using student turns."""
     found = defaultdict(list)
+    preferred = {}
     for p in parts:
+        for field, value, status in direct.get((p.turn, p.start), ()):
+            found[field].append((p, value))
+            preferred.setdefault((field, value), (p, status))
         if p.external or UNKNOWN.search(p.text) or REFUSE.search(p.text):
             continue
         if (source[p.turn][p.end:p.end+1] in ("？", "?") or NEG.search(p.text)
@@ -366,9 +463,6 @@ def source_reconciliation(parts, source, identities, plans):
         if (identity := identities.get((p.turn, p.start))) is not None:
             field, value = identity
             found[field].append((p, value))
-        artifact = plans.get((p.turn, p.start))
-        if artifact and p.text.lstrip().startswith("我"):
-            found["project.expected_output"].append((p, artifact))
         for field, pattern in SCALAR.items():
             for m in pattern.finditer(p.text):
                 try:
@@ -379,10 +473,19 @@ def source_reconciliation(parts, source, identities, plans):
     resolved = {}
     for field, claims in found.items():
         if len({v for _,v in claims}) == 1:
-            if field in {"identity.major", "project.expected_output"}:
-                part, value = claims[0]
+            part, value = claims[0]
+            match = preferred.get((field, value))
+            if field == "research.experience" and any(not p.external and RESEARCH_HISTORY.search(p.text)
+                    and not NO_RESEARCH.fullmatch(p.text.strip()) for p in parts):
+                continue
+            if match or field == "identity.major":
+                part, status = match or (part, "stated")
+                if isinstance(value, Decimal):
+                    value = format(value, "f")
+                    if "." in value:
+                        value = value.rstrip("0").rstrip(".")
                 resolved[field] = IntakeFact(field=field, record_id="self", value=value,
-                    status="planned" if field == "project.expected_output" else "stated",
+                    status=status,
                     evidence=[Evidence(turn_id=part.turn, quote=part.text.strip())])
             continue
         if field == "project.expected_output":
@@ -415,8 +518,9 @@ def source_reconciliation(parts, source, identities, plans):
                 resolved[field] = None
                 continue
             value = format(latest,"f") if isinstance(latest, Decimal) else latest
+            _, status = preferred.get((field, latest), (p, "approximate" if APPROX.search(p.text) else "stated"))
             resolved[field] = IntakeFact(field=field,record_id="self",value=value,
-                status="approximate" if APPROX.search(p.text) else "stated", evidence=[{"turn_id":p.turn,"quote":quote}])
+                status=status, evidence=[{"turn_id":p.turn,"quote":quote}])
             continue
         if periods:
             resolved[field] = None
@@ -524,8 +628,8 @@ def parse_proposal(raw, source, parts, identities, plans, reconciled):
 def inspect_candidate(raw, turns, original_turns=None):
     source = {t["turn_id"]:t["content"] for t in turns if t["role"]=="user"}
     parts = clauses(turns)
-    identities, plans = source_declarations(turns if original_turns is None else original_turns, parts)
-    reconciled = source_reconciliation(parts, source, identities, plans)
+    identities, plans, direct = source_declarations(turns if original_turns is None else original_turns, parts)
+    reconciled = source_reconciliation(parts, source, identities, direct)
     try:
         parsed, invalid_fields, events = parse_proposal(raw, source, parts, identities, plans, reconciled)
     except (ValueError, TypeError, RecursionError):

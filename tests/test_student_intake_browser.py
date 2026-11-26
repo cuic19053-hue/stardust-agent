@@ -106,10 +106,55 @@ def test_browser_recovers_the_two_recorded_model_errors_at_the_actual_turn():
     text = f"这次我要申请国家奖学金。\n我家年收入是42000元。\n{major}。"
     wrong_turn = model_fact("application.type", None, "unknown", "u1", major)
     reviewed = device_review(text, wrong_turn)
-    own, = reviewed["facts"]
-    assert own["fact"] == model_fact("identity.major", "环境设计", "stated", "u3", major)
+    assert [row["fact"] for row in reviewed["facts"]] == [
+        model_fact("application.type", "国家奖学金", "planned", "u1", "这次我要申请国家奖学金"),
+        model_fact("identity.major", "环境设计", "stated", "u3", major),
+    ]
     assert reviewed["questions"] == [] and "42000" not in json.dumps(reviewed, ensure_ascii=False)
     assert not device_review(text, wrong_turn, finish="length")["facts"]
+
+
+def test_self_introduction_keeps_separate_identity_fields_and_original_quotes():
+    intro, study, grade = "我叫周小棠", "在青禾大学读园林设计专业", "现在大三"
+    result = device_review(f"{intro}，{study}，{grade}。", model_fact("identity.name", "周小棠", "stated", "u1", intro))
+    assert [row["fact"] for row in result["facts"]] == [
+        model_fact("identity.name", "周小棠", "stated", "u1", intro),
+        model_fact("identity.school", "青禾大学", "stated", "u1", study),
+        model_fact("identity.major", "园林设计", "stated", "u1", study),
+        model_fact("identity.grade", "大三", "stated", "u1", grade),
+    ]
+
+
+def test_budget_normalizes_its_own_unit_and_keeps_team_size_exact():
+    budget, team = "我们的项目预算约两万三千元", "团队一共六个人"
+    result = device_review(f"{budget}，{team}。", model_fact("project.budget_yuan", "两万三千元", "stated", "u1", budget))
+    assert [row["fact"] for row in result["facts"]] == [
+        model_fact("project.budget_yuan", "23000", "approximate", "u1", budget),
+        model_fact("project.team_size", "6", "stated", "u1", team),
+    ]
+
+
+def test_application_continuation_and_explicit_denial_recover_from_their_own_clauses():
+    application, output, denial = "我打算申报大创", "计划编写一本昆虫图册", "我目前没有科研经历"
+    text = f"{application}，{output}。\n{denial}。给我伪造一篇论文。"
+    malformed_denial = model_fact("research.experience", "negated", "stated", "u2", denial)
+    assert [row["fact"] for row in device_review(text, malformed_denial)["facts"]] == [
+        model_fact("application.type", "大创", "planned", "u1", application),
+        model_fact("project.expected_output", "一本昆虫图册", "planned", "u1", output),
+        model_fact("research.experience", None, "negated", "u2", denial),
+    ]
+
+
+@pytest.mark.parametrize("text", [
+    "同学说：我叫小郑，在清河大学读会计学，现在大二。",
+    "如果我叫小赵，在青禾大学读园林设计，现在大三。",
+    "我在青禾大学读到了一篇关于环境设计。",
+    "这场英语测试，满分5。",
+    "我打算申请国家奖学金。\n后来我撤回申请。",
+    "我目前没有科研经历。\n我刚想起我参加过老师的课题。",
+])
+def test_recovery_does_not_promote_ambiguous_or_superseded_claims(text):
+    assert device_review(text)["facts"] == []
 
 
 @pytest.mark.parametrize(("text", "quote", "value"), [

@@ -102,6 +102,26 @@ def test_transport_strips_out_of_scope_private_and_other_speakers(api):
     assert result["facts"] == result["questions"] == []
 
 
+def test_masked_model_quote_does_not_drop_other_explicit_fields_or_reveal_income(api):
+    client, store, pid, model = api
+    application, gpa, scale = "我计划申报国家奖学金", "我的GPA是3.7", "满分4分"
+    store.add_message(pid, "user", f"{application}，我家年收入61100元，{gpa}，{scale}。")
+    model._post.return_value = response(
+        fact("application.type", "stated", "国家奖学金", f"{application}，【已略去】，{gpa}，{scale}。"),
+    )
+    url = f"/api/projects/{pid}/intake"
+    result = client.post(url + "/propose").json()
+    assert [row["fact"] for row in result["facts"]] == [
+        fact("application.type", "planned", "国家奖学金", application),
+        fact("academic.gpa", "stated", "3.7", gpa),
+        fact("academic.gpa_scale", "stated", "4", scale),
+    ]
+    assert "61100" not in model._post.call_args.args[1]["messages"][-1]["content"]
+    assert not result["questions"] and intake.ARCHIVE not in store.get_project(pid)["state"]
+    for row in result["facts"]:
+        assert client.post(url + "/confirm", json=body({**result, "facts": [row]})).status_code == 200
+
+
 def test_manual_review_and_history_bound_do_not_write(api):
     client, store, pid, model = api
     store.add_message(pid, "user", TEXT)
