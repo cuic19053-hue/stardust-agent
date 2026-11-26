@@ -58,12 +58,23 @@ IDENTITY_EVIDENCE = {"identity.school": re.compile(r"学校|就读于|校名"),
                      "identity.grade": re.compile(r"年级|[大研博][一二三四五六]|\d{4}\s*级")}
 IDENTITY_CLAIM = re.compile(r"我(?:本人|自己)?(?:目前|现在)?(?:的|所在的|所学的)(学校|学院|专业|姓名|年级)"
                             r"\s*(?:是|为|叫|[：:])\s*([\u3400-\u9fffA-Za-z][\u3400-\u9fffA-Za-z0-9· -]*)")
+MAJOR_STUDY = re.compile(r"我(?:本人|自己)?(?:目前|现在)?(?:主修(?:的专业是|的是)?|学的专业是)\s*"
+                         r"([\u3400-\u9fffA-Za-z][\u3400-\u9fffA-Za-z0-9· -]{0,39})")
+NON_ASSERTION = re.compile(r"如果|假如|假设|要是|倘若|的话|是否|要不要|[?？]|范文|样表|举例|照着念")
+QUALIFIED_PREFIX = re.compile(r"(?:过去|曾经|当时|原本|原来|小时候|上学期|之前|以前|也许|可能|"
+                              r"不确定|记不清|不一定|说不准|好像|假定)[，,]\s*$")
+FINANCIAL_CONTEXT = re.compile(r"收入|工资|薪水|家庭经济|经济(?:情况|状况|困难)|困难认定|家庭人数|家里几口")
+QUALIFIED_TAIL = re.compile(r"[，,]\s*(?:但|不过)?(?:我)?(?:也|还)?(?:不确定|记不清|说不准|不一定|只是举例)")
+NON_VALUE = re.compile(r"还是|或者|或是|也许|可能|好像|大概|要不要|不再|并非|不叫|不是|没想好|"
+                       r"尚未|还没|的话|但|其实|我|吗|也说不准|并且|而且|并在|同时|已经")
 NO_ADVISOR = re.compile(r"我(?:本人|自己)?(?:目前|现在)?(?:还没有|没有|尚无)(?:指导老师|导师)")
 PLANNED_ARTIFACT = re.compile(
-    r"(?:我(?:们)?(?:这次)?)?(?:准备|打算|计划|预计|想|拟)(?:要)?(?:制作|做出|做|绘制|编写|开发|交付)"
-    r"(一[件套份本张幅部款个面册][\u3400-\u9fffA-Za-z0-9·-]{0,36}(?:教具|卡片|地图|手册|小册子|图册|"
-    r"原型|样机|模型|工具|装置|软件|程序|标本|报告))")
-WITHDRAWAL = re.compile(r"取消|作废|撤回|放弃|不再|不做了|改做|没决定要不要|不打算|与(?:本|这次)?项目无关")
+    r"(?:我(?:们)?(?:这次)?)?(?:(?:准备|打算|计划|预计|想|拟)(?:要)?"
+    r"(?:制作|做出|做|绘制|编写|开发|交付|设计|编制|撰写|完成|整理出)|(?:的)?预期成果(?:是|为))"
+    r"([\u3400-\u9fffA-Za-z0-9·-]{0,40}(?:教具|卡片?|地图|导览图|手册|小册子|图册|"
+    r"原型|样机|模型|工具包?|装置|软件|程序|标本|报告|记录表|清单|数据[库集]|作品集|短片|问卷))")
+COMPLETED_PLAN = re.compile(r"(?:后来|现在|现已|已经|其实已)(?:全部|提前)?(?:完成|做完|制成|做好|交付)")
+WITHDRAWAL = re.compile(r"取消|作废|撤回|放弃|不再|不做了|决定不做|改做|没决定要不要|不打算|与(?:本|这次)?项目无关")
 NAME_CUE = re.compile(r"项目名|名称|题名|题目|命名|取名|叫作|名叫|叫做")
 OTHER_PROJECT = re.compile(r"另(?:一[个项]|外的?)(?:项目|课题|团队)|子项目")
 PROJECT_LABEL = re.compile(r"([甲乙丙丁AB])项目|项目([甲乙丙丁AB])|第([一二三四\d]+)个项目")
@@ -81,22 +92,34 @@ class Clause:
 
 def clauses(turns):
     parts = []
+    closing_quote = None
+    example_continues = False
     for turn in turns:
         if turn["role"] != "user":
+            closing_quote = None
+            example_continues = False
             continue
         external = False
-        in_external_quote = False
         for m in re.finditer(r"[^，,。；;！？!?\n]+", turn["content"]):
             s = m.group()
-            if in_external_quote or EXTERNAL.search(s) or FAB.search(s):
+            if example_continues and re.match(r"(?:回到|再说)?我(?:自己|本人)", s.strip()):
+                example_continues = False
+            if closing_quote or example_continues or EXTERNAL.search(s) or FAB.search(s):
                 external = True
             elif OWN.search(s) or (s.startswith(("我", "我们")) and "“" not in s and "”" not in s):
                 external = False
             parts.append(Clause(turn["turn_id"],s,m.start(),m.end(),external))
-            if external and "“" in s:
-                in_external_quote = True
-            if "”" in s:
-                in_external_quote = False
+            if closing_quote:
+                if closing_quote in s:
+                    closing_quote = None
+            elif external:
+                for opener, closer in (("“", "”"), ("「", "」"), ('"', '"')):
+                    if opener in s and closer not in s.split(opener, 1)[1]:
+                        closing_quote = closer
+                        break
+        # A template introduced on its own line can also be dictated without quotes.
+        if external and turn["content"].rstrip().endswith(("：", ":")) and not closing_quote:
+            example_continues = True
     return parts
 
 
@@ -163,7 +186,7 @@ def source_parts(e, turns, parts):
             and any(p.start < i+len(e.quote) and i < p.end for i in hits)]
 
 
-def review_field(f, turns, parts, allowed, refused, identities):
+def review_field(f, turns, parts, allowed, refused, identities, plans):
     quotes = " ".join(e.quote for e in f.evidence)
     contexts = [source_parts(e,turns,parts) for e in f.evidence]
     if not all(contexts) or any(p.external for ps in contexts for p in ps):
@@ -175,10 +198,22 @@ def review_field(f, turns, parts, allowed, refused, identities):
         return None, "refused_information_in_other_quote"
     if f.field in refused and f.status != "withheld":
         return None, "refused_field"
+    plan_parts = [p for ps in contexts for p in ps if (p.turn, p.start) in plans]
+    if (f.field in {"project.name", "project.stage"} and f.value is not None
+            and any(f.value in p.text for p in plan_parts)
+            and not any(f.value in p.text for ps in contexts for p in ps if p not in plan_parts)):
+        return None, "deliverable_is_not_a_name_or_stage"
+    if f.field == "project.expected_output" and f.value is not None:
+        if (any(plans[p.turn, p.start] is None for p in plan_parts)
+                or any(turns[p.turn][p.end:p.end+1] in ("?", "？") for ps in contexts for p in ps)):
+            return None, "inactive_or_conditional_plan"
     if f.field in IDENTITY_EVIDENCE and f.value is not None:
         for context in contexts:
             for p in context:
                 label = IDENTITY_CLAIM.fullmatch(p.text.strip())
+                if f.field == "identity.major" and (label or MAJOR_STUDY.fullmatch(p.text.strip())) and (
+                        p.turn, p.start) not in identities:
+                    return None, "qualified_major"
                 if label and f.value in p.text:
                     declared = identities.get((p.turn, p.start))
                     if (IDENTITY_LABELS[label[1]] != f.field or (declared and declared[1] != f.value)
@@ -231,26 +266,96 @@ def review_field(f, turns, parts, allowed, refused, identities):
     return f.model_copy(update={"status":status, "record_id":rec}), None
 
 
-def explicit_identity(part, source):
-    """A current, self-labelled identity statement that occupies a whole sentence."""
-    match = IDENTITY_CLAIM.fullmatch(part.text.strip())
-    if part.external or not match or len(part.text) > MAX_QUOTE_CHARS:
-        return None
+def assertion_context(part, source):
+    """Inspect the original sentence, including qualifiers before a masked comma."""
     text = source[part.turn]
-    prefix = SENTENCE_BREAK.split(text[:part.start])[-1].strip(" ，,")
-    if prefix and not re.fullmatch(r"(?:我)?(?:更正一下|更正|说错了|纠正一下)", prefix):
+    before = SENTENCE_BREAK.split(text[:part.start])[-1]
+    end = SENTENCE_BREAK.search(text, part.end)
+    after = text[part.end:end.end() if end else len(text)]
+    sentence = before + part.text + after
+    if NON_ASSERTION.search(sentence) or FAB.search(sentence):
+        return False
+    previous = re.split("[，,]", before.rstrip(" ，,"))[-1]
+    following = re.split("[，,]", after.lstrip(" ，,"))[0]
+    return (not QUALIFIED_PREFIX.search(before) or bool(FINANCIAL_CONTEXT.search(previous))) and (
+        not QUALIFIED_TAIL.match(after) or bool(FINANCIAL_CONTEXT.search(following)))
+
+
+def explicit_identity(part, source):
+    """Recover a current self-labelled identity with its own contiguous source."""
+    if part.external or len(part.text) > MAX_QUOTE_CHARS:
         return None
-    if text[part.end:part.end+1] not in ("", "。", "！", "!", "；", ";", "\n"):
+    claim = IDENTITY_CLAIM.fullmatch(part.text.strip())
+    study = MAJOR_STUDY.fullmatch(part.text.strip()) if not claim else None
+    if not (claim or study):
         return None
-    value = match[2].strip()
+    if claim:
+        field, value = IDENTITY_LABELS[claim[1]], claim[2].strip()
+    else:
+        field, value = "identity.major", study[1].strip()
     if (UNKNOWN.search(value) or REFUSE.search(value) or PLAN.search(value)
             or re.search(r"还是|或者|可能|好像|也许|不再|并非|以前|不叫|不是|吗|的话", value)):
         return None
-    return IDENTITY_LABELS[match[1]], value
+    if field == "identity.major":
+        if len(value) > 40 or NON_VALUE.search(value) or not assertion_context(part, source):
+            return None
+    else:
+        text = source[part.turn]
+        prefix = SENTENCE_BREAK.split(text[:part.start])[-1].strip(" ，,")
+        if prefix and not re.fullmatch(r"(?:我)?(?:更正一下|更正|说错了|纠正一下)", prefix):
+            return None
+        if text[part.end:part.end+1] not in ("", "。", "！", "!", "；", ";", "\n"):
+            return None
+    return field, value
 
 
-def source_reconciliation(parts, source, identities):
-    """Reconcile competing claims about the same singleton using student turns."""
+def source_declarations(original, visible_parts):
+    """Map explicit declarations back to the visible clauses without guessing a turn ID."""
+    source = {t["turn_id"]: t["content"] for t in original if t["role"] == "user"}
+    # Evidence has a turn and a quote, but no offset. Repeated text in that turn
+    # is usable only if every occurrence supports the same interpretation.
+    identity_readings = defaultdict(set)
+    plan_readings = defaultdict(set)
+    for part in clauses(original):
+        key = (part.turn, part.text)
+        identity_readings[key].add(explicit_identity(part, source))
+        artifact = PLANNED_ARTIFACT.fullmatch(part.text.strip())
+        if artifact:
+            value = artifact[1]
+            active = (not part.external and assertion_context(part, source)
+                      and not (NON_VALUE.search(value) or NEG.search(value) or REFUSE.search(value)))
+            plan_readings[key].add(value if active else None)
+    # A later cancellation or completion can supersede a plan. An earlier one
+    # cannot cancel a new plan that the student goes on to declare.
+    plan_superseded = False
+    major_retracted = False
+    identities, plans = {}, {}
+    for visible in reversed(visible_parts):
+        if not visible.external and not FINANCIAL_CONTEXT.search(visible.text):
+            if WITHDRAWAL.search(visible.text) or COMPLETED_PLAN.search(visible.text):
+                plan_superseded = True
+            if IDENTITY_EVIDENCE["identity.major"].search(visible.text) and (
+                    UNKNOWN.search(visible.text) or REFUSE.search(visible.text)
+                    or re.search(r"专业.{0,3}(?:说错|记错|换了|改了)|(?:不是|不再主修)", visible.text)):
+                major_retracted = True
+        if visible.external:
+            continue
+        literal = (visible.turn, visible.text)
+        location = (visible.turn, visible.start)
+        readings = identity_readings.get(literal, ())
+        if len(readings) == 1:
+            identity = next(iter(readings))
+            if identity and not (identity[0] == "identity.major" and major_retracted):
+                identities[location] = identity
+        if literal in plan_readings:
+            # A rejected match also prevents the model from releasing an inactive plan.
+            readings = plan_readings[literal]
+            plans[location] = next(iter(readings)) if len(readings) == 1 and not plan_superseded else None
+    return identities, plans
+
+
+def source_reconciliation(parts, source, identities, plans):
+    """Recover explicit singleton values and reconcile competing claims using student turns."""
     found = defaultdict(list)
     for p in parts:
         if p.external or UNKNOWN.search(p.text) or REFUSE.search(p.text):
@@ -261,6 +366,9 @@ def source_reconciliation(parts, source, identities):
         if (identity := identities.get((p.turn, p.start))) is not None:
             field, value = identity
             found[field].append((p, value))
+        artifact = plans.get((p.turn, p.start))
+        if artifact and p.text.lstrip().startswith("我"):
+            found["project.expected_output"].append((p, artifact))
         for field, pattern in SCALAR.items():
             for m in pattern.finditer(p.text):
                 try:
@@ -268,12 +376,21 @@ def source_reconciliation(parts, source, identities):
                 except (KeyError, ValueError, ArithmeticError):
                     continue
                 found[field].append((p,val))
-    conflicts = {}
+    resolved = {}
     for field, claims in found.items():
-        if len({v for _,v in claims}) <= 1:
+        if len({v for _,v in claims}) == 1:
+            if field in {"identity.major", "project.expected_output"}:
+                part, value = claims[0]
+                resolved[field] = IntakeFact(field=field, record_id="self", value=value,
+                    status="planned" if field == "project.expected_output" else "stated",
+                    evidence=[Evidence(turn_id=part.turn, quote=part.text.strip())])
+            continue
+        if field == "project.expected_output":
+            # Distinct deliverables cannot safely overwrite each other in this singleton.
+            resolved[field] = None
             continue
         if any(len(q.text) > MAX_QUOTE_CHARS for q,_ in claims):
-            conflicts[field] = None
+            resolved[field] = None
             continue
         # Link only an immediate, unambiguous correction cue to this claim.
         p, latest = claims[-1]
@@ -290,29 +407,29 @@ def source_reconciliation(parts, source, identities):
         project_labels = {m.group(m.lastindex) for scope in scopes for m in PROJECT_LABEL.finditer(scope)}
         if len(periods) > 1 or (field.startswith("project.") and
                 (len(project_labels) > 1 or any(OTHER_PROJECT.search(scope) for scope in scopes))):
-            conflicts[field] = None
+            resolved[field] = None
             continue
         if cue:
             quote = source[p.turn][start:p.end]
             if len(quote) > MAX_QUOTE_CHARS:
-                conflicts[field] = None
+                resolved[field] = None
                 continue
             value = format(latest,"f") if isinstance(latest, Decimal) else latest
-            conflicts[field] = IntakeFact(field=field,record_id="self",value=value,
+            resolved[field] = IntakeFact(field=field,record_id="self",value=value,
                 status="approximate" if APPROX.search(p.text) else "stated", evidence=[{"turn_id":p.turn,"quote":quote}])
             continue
         if periods:
-            conflicts[field] = None
+            resolved[field] = None
             continue
         unique = {}
         for q,v in claims:
             unique.setdefault(v,{"turn_id":q.turn,"quote":q.text})
         if 2 <= len(unique) <= 8 and len({(e["turn_id"],e["quote"]) for e in unique.values()}) == len(unique):
-            conflicts[field] = IntakeFact(field=field,record_id="self",value=None,status="conflict",
+            resolved[field] = IntakeFact(field=field,record_id="self",value=None,status="conflict",
                                           evidence=list(unique.values()))
         else:
-            conflicts[field] = None
-    return conflicts
+            resolved[field] = None
+    return resolved
 
 
 def declared_fact(fact, source, parts, identities):
@@ -341,7 +458,7 @@ def declared_fact(fact, source, parts, identities):
                       evidence=[Evidence(turn_id=part.turn, quote=part.text.strip())])
 
 
-def parse_fact(item, source, parts):
+def parse_fact(item, source, parts, plans):
     # Relabel only an explicitly proposed deliverable supported by a literal
     # creation clause. A plan to conduct an activity need not name any artifact.
     if (item["field"] in {"project.name", "project.stage", "project.expected_output"}
@@ -349,15 +466,14 @@ def parse_fact(item, source, parts):
             and isinstance(item.get("evidence"), list) and len(item["evidence"]) == 1):
         evidence = Evidence.model_validate(item["evidence"][0])
         contexts = source_parts(evidence, source, parts)
-        matches = [(p, m[1]) for p in contexts if (m := PLANNED_ARTIFACT.fullmatch(p.text.strip()))
-                   and p.text.strip() in evidence.quote and source[p.turn][p.end:p.end+1] not in ("?", "？")]
-        if (len(matches) == 1 and not any(p.external for p in contexts)
-                and not any(WITHDRAWAL.search(p.text) for p in parts if not p.external)):
+        matches = [(p, value) for p in contexts if (value := plans.get((p.turn, p.start)))
+                   and p.text.strip() in evidence.quote]
+        if len(matches) == 1 and not any(p.external for p in contexts):
             part, value = matches[0]
             proposed = item.get("value")
             missing_plan = proposed is None and item.get("status") == "planned"
             quoted_value = isinstance(proposed, str) and proposed.strip() and proposed in value
-            if (missing_plan or quoted_value) and not re.search(r"还是|或者|也许|要不要|或是", value):
+            if missing_plan or quoted_value:
                 if item["field"] == "project.expected_output" and item["status"] == "planned" and proposed == value:
                     return IntakeFact.model_validate(item)
                 item = {**item, "field": "project.expected_output", "status": "planned", "value": value,
@@ -365,7 +481,7 @@ def parse_fact(item, source, parts):
     return IntakeFact.model_validate(item)
 
 
-def parse_proposal(raw, source, parts, identities, reconciled):
+def parse_proposal(raw, source, parts, identities, plans, reconciled):
     data = json.loads(raw)
     if not isinstance(data, dict) or not isinstance(data.get("facts"), list) or len(data["facts"]) > MAX_FACTS:
         raise ValueError("invalid candidate envelope")
@@ -377,7 +493,7 @@ def parse_proposal(raw, source, parts, identities, reconciled):
         if not isinstance(item, dict) or not isinstance(item.get("field"), str) or item["field"] not in FIELDS:
             raise ValueError("cannot identify the affected field")
         try:
-            fact = parse_fact(item, source, parts)
+            fact = parse_fact(item, source, parts, plans)
         except ValidationError:
             # An invalid claim can contradict a valid-looking sibling. Withhold
             # the entire field, retaining only independently checked other fields.
@@ -405,13 +521,13 @@ def parse_proposal(raw, source, parts, identities, reconciled):
     return envelope.model_copy(update={"facts": facts}), blocked, events
 
 
-def inspect_candidate(raw, turns):
+def inspect_candidate(raw, turns, original_turns=None):
     source = {t["turn_id"]:t["content"] for t in turns if t["role"]=="user"}
     parts = clauses(turns)
-    identities = {(p.turn, p.start): identity for p in parts if (identity := explicit_identity(p, source))}
-    reconciled = source_reconciliation(parts, source, identities)
+    identities, plans = source_declarations(turns if original_turns is None else original_turns, parts)
+    reconciled = source_reconciliation(parts, source, identities, plans)
     try:
-        parsed, invalid_fields, events = parse_proposal(raw, source, parts, identities, reconciled)
+        parsed, invalid_fields, events = parse_proposal(raw, source, parts, identities, plans, reconciled)
     except (ValueError, TypeError, RecursionError):
         return {"decision":"needs_manual_review","candidate":None,"events":["invalid_response"]}
     allowed = financial_scope(parts)
@@ -434,7 +550,7 @@ def inspect_candidate(raw, turns):
     accepted = {}
     collisions = set()
     for fact in parsed.facts:
-        f, why = review_field(fact,source,parts,allowed,refused,identities)
+        f, why = review_field(fact,source,parts,allowed,refused,identities,plans)
         if why:
             events.append(f"{fact.field}/{why}")
             continue

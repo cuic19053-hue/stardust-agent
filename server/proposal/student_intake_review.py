@@ -42,7 +42,7 @@ def model_turns(turns):
 
 
 def verified_review(raw, visible, original):
-    review = inspect_candidate(raw, visible)
+    review = inspect_candidate(raw, visible, original)
     if review["candidate"] is None:
         return None, "needs_manual_review"
     result = IntakeCandidate.model_validate(review["candidate"])
