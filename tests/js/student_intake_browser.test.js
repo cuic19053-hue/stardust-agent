@@ -25,11 +25,11 @@ test("MLX affine groups are repacked with the reference fp16 rounding and indepe
   assert.deepEqual([...new Uint16Array(output, 32, 2)], [13605, 12727]);
 });
 
-function rangeLoader(fetch) {
+function rangeLoader(fetch, caches) {
   const fs = require("node:fs"), vm = require("node:vm");
   const worker = fs.readFileSync(require.resolve("../../server/static/student-intake-worker.js"), "utf8");
   const context = vm.createContext({
-    self: { fetch, postMessage() {} }, URL, Response, Request,
+    self: { fetch, caches, postMessage() {} }, crypto: require("node:crypto").webcrypto, URL, Response, Request,
     location: { href: "https://example.test/static/worker.js" }, setTimeout: callback => callback(),
   });
   vm.runInContext(worker, context);
@@ -61,4 +61,100 @@ test("device download accepts a complete first response and rejects ranges from 
     "Content-Range":"bytes 4-7/10",
   }}));
   await assert.rejects(invalid({bytes:src.length}, url, 4), /Unexpected base model range/);
+});
+
+const crypto = require("node:crypto");
+const baseUrl = new URL("https://example.test/immutable-model");
+
+function rangeManifest(bytes) {
+  const hash = data => crypto.createHash("sha256").update(data).digest("hex");
+  const chunkBytes = 4, chunkSha256 = [];
+  for (let start = 0; start < bytes.length; start += chunkBytes) {
+    chunkSha256.push(hash(bytes.subarray(start, start + chunkBytes)));
+  }
+  return {bytes: bytes.length, sha256: hash(bytes), chunkBytes, chunkSha256};
+}
+
+function cacheStorage() {
+  const stores = new Map();
+  return {
+    stores,
+    async open(name) {
+      if (!stores.has(name)) stores.set(name, new Map());
+      const entries = stores.get(name);
+      return {
+        async match(key) { return entries.has(key) ? new Response(entries.get(key)) : undefined; },
+        async put(key, response) { entries.set(key, Buffer.from(await response.arrayBuffer())); },
+        async delete(key) { return entries.delete(key); },
+      };
+    },
+    async delete(name) { return stores.delete(name); },
+  };
+}
+
+function serveRanges(bytes, calls, responseFor) {
+  return async (_url, {headers}) => {
+    const [,start,end] = /^bytes=(\d+)-(\d+)$/.exec(headers.Range).map(Number);
+    calls.push(start);
+    const data = bytes.subarray(start, end + 1);
+    return responseFor?.(start, data) ?? new Response(data, {status: 206, headers: {
+      "Content-Range": "bytes " + start + "-" + end + "/" + bytes.length,
+    }});
+  };
+}
+
+test("a new worker reads committed parts and fetches only the range interrupted previously", async () => {
+  const bytes = Buffer.from("0123456789"), file = rangeManifest(bytes), caches = cacheStorage();
+  const interrupted = serveRanges(bytes, [], (start, data) =>
+    start === 8 ? new Response(data.subarray(0, 1), {status: 206}) : undefined);
+  await assert.rejects(rangeLoader(interrupted, caches)(file, baseUrl), /Incomplete/);
+  const entries = [...caches.stores.values()][0];
+  assert.deepEqual([...entries.values()].map(b => b.toString()).sort(), ["0123", "4567"]);
+
+  const calls = [];
+  const resumed = await rangeLoader(serveRanges(bytes, calls), caches)(file, baseUrl);
+  assert.deepEqual(Buffer.from(resumed), bytes);
+  assert.deepEqual(calls, [8]);
+  const allLocal = rangeLoader(() => assert.fail("all three parts were saved"), caches);
+  assert.deepEqual(Buffer.from(await allLocal(file, baseUrl)), bytes);
+});
+
+test("recovery repairs only a corrupt cached part and retries a wrong network payload of equal length", async () => {
+  const bytes = Buffer.from("0123456789"), file = rangeManifest(bytes), caches = cacheStorage();
+  await rangeLoader(serveRanges(bytes, []), caches)(file, baseUrl);
+  const entries = [...caches.stores.values()][0];
+  const middle = [...entries.keys()].find(key => key.endsWith("/1"));
+  entries.set(middle, Buffer.from("xxxx"));
+  const calls = [];
+  const serve = serveRanges(bytes, calls, () => calls.length === 1 ? new Response("yyyy", {status: 206}) : undefined);
+  assert.deepEqual(Buffer.from(await rangeLoader(serve, caches)(file, baseUrl)), bytes);
+  assert.deepEqual(calls, [4, 4]);
+
+  const other = Buffer.from("abcdefghij"), changed = [];
+  await rangeLoader(serveRanges(other, changed), caches)(rangeManifest(other), baseUrl);
+  assert.deepEqual(changed.sort((a,b) => a-b), [0,4,8]);
+});
+
+test("a host ignoring a resumed Range can supply one whole response starting at byte zero", async () => {
+  const bytes = Buffer.from("0123456789"), file = rangeManifest(bytes), caches = cacheStorage();
+  await rangeLoader(serveRanges(bytes, []), caches)(file, baseUrl);
+  const entries = [...caches.stores.values()][0];
+  for (const key of entries.keys()) if (!key.endsWith("/0")) entries.delete(key);
+  const calls = [];
+  const serve = serveRanges(bytes, calls, () => new Response(bytes));
+  assert.deepEqual(Buffer.from(await rangeLoader(serve, caches)(file, baseUrl)), bytes);
+  assert.deepEqual(calls, [4]);
+});
+
+test("unavailable or full temporary storage still permits this page to download the base", async () => {
+  const bytes = Buffer.from("0123456789"), file = rangeManifest(bytes);
+  const denied = {open() { throw new Error("disabled"); }};
+  let dropped = false;
+  const full = {async open() { return {
+    async match() {}, async put() { throw new DOMException("full", "QuotaExceededError"); },
+  }; }, async delete() { dropped = true; }};
+  for (const caches of [denied, full]) {
+    assert.deepEqual(Buffer.from(await rangeLoader(serveRanges(bytes, []), caches)(file, baseUrl)), bytes);
+  }
+  assert.equal(dropped, true);
 });

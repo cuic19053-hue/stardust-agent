@@ -15,6 +15,7 @@ ADAPTER_SHA = "f0c50e648d8b57fdc0c9118e52e92b4ee8e7e024190a277a68850486b58f6fa7"
 RUNTIME = "https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.89/lib/index.js"
 WASM = ("https://cdn.jsdelivr.net/gh/mlc-ai/binary-mlc-llm-libs@5b7251f3bdce957be2a7bf73a6f6c560d9874df4/"
         "web-llm-models/v0_2_87/base/Qwen2-0.5B-Instruct-q4f16_1_cs1k-webgpu.wasm")
+BASE_CHUNK_BYTES = 16 * 1024 * 1024
 SHIFTS = np.arange(8, dtype=np.uint32) * 4
 
 
@@ -24,6 +25,15 @@ def sha(data):
 
 def describe(data, url):
     return {"url": url, "bytes": len(data), "sha256": sha(data)}
+
+
+def describe_base(data):
+    source = describe(data, BASE + "model.safetensors")
+    view = memoryview(data)
+    source["chunkBytes"] = BASE_CHUNK_BYTES
+    source["chunkSha256"] = [sha(view[start:start + BASE_CHUNK_BYTES])
+                             for start in range(0, len(view), BASE_CHUNK_BYTES)]
+    return source
 
 
 def dump(path, value):
@@ -49,7 +59,7 @@ def components(prefix):
 def export(assets, pilot, output):
     weight_path = pilot / "base/model.safetensors"
     checkpoint = pilot / "fit/epoch-3/adapters.safetensors"
-    source = describe(weight_path.read_bytes(), BASE + "model.safetensors")
+    source = describe_base(weight_path.read_bytes())
     if source["sha256"] != BASE_SHA or sha(checkpoint.read_bytes()) != ADAPTER_SHA:
         raise ValueError("unexpected base or adapter")
     config = json.loads((pilot / "fit/epoch-3/adapter_config.json").read_text())
