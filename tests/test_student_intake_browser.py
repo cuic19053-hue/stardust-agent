@@ -73,6 +73,18 @@ def test_public_device_entry_ships_only_static_rules_and_pinned_tuned_assets(mon
             assert len(data) == asset["bytes"] and hashlib.sha256(data).hexdigest() == asset["sha256"]
 
 
+def test_public_replay_and_linked_model_card_name_the_test_device(monkeypatch):
+    monkeypatch.setattr(server_app, "CLOUD_MODE", True)
+    client = TestClient(server_app.app)
+    extractor = client.get("/student-intake/local")
+    extractor.raise_for_status()
+    card_url, = re.findall(r'href="(/static/[^"]+/MODEL\.md(?:\?[^"]*)?)"', extractor.text)
+    for response in (client.get("/student-intake"), client.get(card_url)):
+        response.raise_for_status()
+        assert "MacBook Pro" in response.text
+        assert not re.search(r"m\s*1[\s_\u2010-\u2015-]*pro", response.text, re.IGNORECASE)
+
+
 def device_review(text, *facts, finish="stop"):
     proposal = {"schema_version": "student-intake-v1", "facts": list(facts), "follow_up_fields": []}
     return json.loads(browser.review(browser.prepare(text), json.dumps(proposal, ensure_ascii=False), finish))
