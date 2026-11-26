@@ -167,3 +167,13 @@ def test_later_doubt_about_major_prevents_restoring_earlier_certainty():
     assert not device_review(text, earlier)["facts"]
     row, = device_review(text, unsure)["facts"]
     assert row["fact"] == unsure and not row["can_confirm"]
+
+
+@pytest.mark.parametrize(("key", "limit"), [("turn_id", 64), ("record_id", 80), ("value", 1500), ("quote", 1500)])
+def test_device_review_rejects_strings_over_the_limit_deferred_by_sampling(key, limit):
+    quote = "我任学习委员"
+    item = model_fact("service.role", "学习委员", "stated", "u1", quote)
+    target = item["evidence"][0] if key in {"turn_id", "quote"} else item
+    target[key] = "甲" * (limit + 1)
+    result = device_review(quote + "。", item)
+    assert result["decision"] == "needs_manual_review" and result["facts"] == []

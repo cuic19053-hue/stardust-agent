@@ -158,3 +158,19 @@ test("unavailable or full temporary storage still permits this page to download 
   }
   assert.equal(dropped, true);
 });
+
+test("sampling defers only string upper bounds to the full intake validator", () => {
+  const fs = require("node:fs"), vm = require("node:vm");
+  const source = fs.readFileSync(require.resolve("../../server/static/student-intake-worker.js"), "utf8");
+  const context = vm.createContext({self: {fetch() {}}});
+  vm.runInContext(source, context);
+  const full = require("../../server/static/intake-0p5b-v1/model.json").schema;
+  const expected = structuredClone(full);
+  delete expected.$defs.Evidence.properties.turn_id.maxLength;
+  delete expected.$defs.Evidence.properties.quote.maxLength;
+  delete expected.$defs.IntakeFact.properties.record_id.maxLength;
+  delete expected.$defs.IntakeFact.properties.value.anyOf.find(v => v.type === "string").maxLength;
+  const sampling = JSON.parse(vm.runInContext("samplingSchema", context)(full));
+  assert.deepEqual(sampling, expected);
+  assert.equal(full.$defs.Evidence.properties.quote.maxLength, 1500);
+});
