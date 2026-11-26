@@ -61,6 +61,8 @@ python -m server.evals.student_intake_pilot.public_demo \
   --out /tmp/student-intake-demo-replay.json
 ```
 
-实时提取入口位于项目的「事实矩阵 → 学生口述档案」。平台默认模型为 DeepSeek V4 Flash，使用工作台现有计费。候选按本人原话和状态逐项确认，拒答、未知及未解决的冲突仅在核对时显示。已核对的计划保留计划状态。
+学生可以在支持 WebGPU 半精度运算的浏览器里运行微调后的 Qwen2.5-0.5B，输入自己的口述，核对并复制带原话的条目。该入口支持下载中断后按分片续传，模型就绪后可断网提取。[在自己的设备上提取](https://agent.stardust.website/student-intake/local) · [浏览器版实测](../../../docs/reports/STUDENT_INTAKE_BROWSER_LATENCY_2026-11-26.md)
+
+要保存到项目档案，使用工作台的「事实矩阵 → 学生口述档案 → 提取本项目口述」。平台默认模型为 DeepSeek V4 Flash，使用工作台现有计费。候选按本人原话和状态逐项确认，拒答、未知及未解决的冲突仅在核对时显示。已核对的计划保留计划状态。
 
 公开回放保留 2026 年 11 月 24 日的模型原答和当时的来源校验结果。复现报告数值或回放中的历史校验结果，请使用[发布该实验的代码版本](https://github.com/cuic19053-hue/stardust-agent/tree/33962c1c569e3bee25e8f30a01ba03124dd46cb3)。新版本工作台会按当前规则重新核对用户提交的口述。

@@ -4,7 +4,7 @@
 
 **Stardust Agent** is an open source AI agent workbench for student research proposals, applications, business plans, social practice reports and personal statements. Students organize calls for applications and research notes in a project, ask the agent to find evidence, edit sections and export a Word draft. The Python and FastAPI backend supports local Ollama models and APIs compatible with OpenAI Chat Completions.
 
-[Open the workbench](https://agent.stardust.website) · [Explore the Qwen fine-tuning demo](https://agent.stardust.website/student-intake) · [Download a sample Word proposal](./examples/demos/demo_innovation_research.docx) · [Agent design notes (Chinese)](./docs/design/AGENT_REFACTOR.md) · [简体中文](./README.md)
+[Open the workbench](https://agent.stardust.website) · [Try the fine-tuned model on your own transcript](https://agent.stardust.website/student-intake/local) · [Watch the 7B fine-tuning replay](https://agent.stardust.website/student-intake) · [Download a sample Word proposal](./examples/demos/demo_innovation_research.docx) · [Agent design notes (Chinese)](./docs/design/AGENT_REFACTOR.md) · [简体中文](./README.md)
 
 [Download the desktop client](https://github.com/cuic19053-hue/stardust-agent/releases/latest) · [Desktop guide](./desktop/README.md)
 
@@ -16,11 +16,25 @@ User confirmation records information the student has supplied or accepted; it i
 
 ## Turn a student's account into a structured record
 
-Describe your grades, experience or plans in the project chat, then choose **事实矩阵 → 学生口述档案 → 提取本项目口述** to review what the workbench found. Live extraction defaults to DeepSeek V4 Flash and uses workbench credits. The extractor supports 41 fields and shows your exact words and the chat turn for each suggestion. You can confirm individual self-reports, estimates, plans and explicit negative statements. The saved record preserves that status. Unknowns, refusals and unresolved conflicts stay in review.
+### Extract your own transcript in the browser
+
+The fine-tuned **Qwen2.5-0.5B** runs on your device and accepts Chinese text. Open the extractor in a browser that supports half-precision WebGPU, such as a compatible desktop version of Chrome or Edge. You can use it without signing in or spending workbench credits. [Open the on-device extractor](https://agent.stardust.website/student-intake/local)
+
+1. Select **加载端侧模型** (Load model). The first download is about 320 MB. If it stops or you refresh the page, open it again in the same browser on the same device and select Load model. The page shows how many base-model chunks it recovered and fetches any missing or damaged chunks.
+2. Once the model is ready, type or paste a transcript of up to 600 characters and 12 lines, then select **提取口述** (Extract). You can disconnect at this point. Inference and quote checks run on your device.
+3. Check each suggested field and status against the quoted words. Select the entries you have verified, then choose **复制已核对的条目** (Copy reviewed entries). The copied JSON includes the source turn and quote for each entry. Refreshing or closing the page clears the transcript and suggestions.
+
+For example, “我准备做一套校园树皮标本卡，还没开始制作。” (“I plan to make a set of campus tree-bark specimen cards. I haven't started yet.”) returns the cards as a **planned deliverable**, with the student's words as evidence. For National Scholarship applications, the reviewer filters out household income and checks the student's stated major separately.
+
+On a **MacBook Pro** running desktop Chrome, the median time from clicking Extract to seeing the first short result after the model was ready fell from **24.67 to 2.05 seconds**. Both versions produced identical fields, statuses, quotes and follow-up questions on 44 synthetic regression transcripts. Both missed a plan at the end of a 600-character transcript. [Latency and quality measurements](./docs/reports/STUDENT_INTAKE_BROWSER_LATENCY_2026-11-26.md) · [Model files and requirements](./server/static/intake-0p5b-v1/MODEL.md)
+
+### Save confirmed entries in a workbench project
+
+Describe your grades, experience or plans in the project chat, then choose **事实矩阵 → 学生口述档案 → 提取本项目口述**. This uses the workbench's currently selected model. The hosted default is DeepSeek V4 Flash and uses workbench credits. The extractor supports 41 fields and shows your exact words and the chat turn for each suggestion. For a self-report, estimate, plan or explicit negative statement, select **我已核对，按此状态入档** to save the entry with its original status. Unknowns, refusals and unresolved conflicts stay in review.
 
 For example, if you say “我的专业是文物保护” (“My major is cultural heritage conservation”), the workbench checks both the field and the value against that sentence. When it can trace two conflicting budgets for one project, it shows both quotes and asks which amount applies. If part of a response needs manual review, you can still confirm the other entries that passed the checks.
 
-**Run the fine-tuned 0.5B model on your device.** Open the browser extractor and choose “加载端侧模型” to download roughly 320 MB on first use. After a refresh, click the same button in the same browser to reuse verified base-model chunks and download any missing or damaged ones. It requires WebGPU with half-precision support. Once the model was ready, a short first transcript produced reviewable results in about two seconds on an M1 Pro in desktop Chrome. Your transcript, inference and quote checks stay on the device, and the tool uses no workbench credits. The reviewer can recover an explicitly stated major or planned deliverable from the speaker’s own words. It omits household income for National Scholarship applications. Check each suggestion before copying its status and source. [Open on-device extraction](https://agent.stardust.website/student-intake/local) · [Model files and limitations](./server/static/intake-0p5b-v1/MODEL.md) · [Latency and quality measurements](./docs/reports/STUDENT_INTAKE_BROWSER_LATENCY_2026-11-26.md)
+### Replay the 7B experiments
 
 The free public demo replays Qwen2.5 7B's actual answers to five synthetic conversations before and after fine-tuning. No sign-in is required. In the “两份预算” (two budgets) example, the tuned model extracted only 8,400 yuan. The source check recovered the 4,800 yuan figure from another turn, kept both quotes and flagged the budget for clarification. [Explore the replay and results (Chinese)](https://agent.stardust.website/student-intake)
 
