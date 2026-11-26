@@ -4,7 +4,7 @@ import re
 from .source_contacts import redact_source_contacts
 from .student_intake import FIELDS, IntakeCandidate, evidence_errors
 from .student_intake_guard import (
-    ECON, PRIVACY_FIELDS, REFUSE, clauses, contains_disclosed_number, financial_scope, inspect_candidate,
+    ECON, MASK, PRIVACY_FIELDS, REFUSE, clauses, contains_disclosed_number, financial_scope, inspect_candidate,
 )
 
 ARCHIVABLE = {"stated", "approximate", "planned", "negated"}
@@ -12,7 +12,6 @@ STATUS_LABELS = {"stated": "自述", "approximate": "模糊", "planned": "计划
                  "unknown": "未知", "withheld": "拒答", "conflict": "冲突"}
 PRIVATE = re.compile(r"身份证|学号|银行卡|住址|家庭地址|家庭住址|手机号|电话号码|详细地址|(?<!\d)\d{13,19}(?!\d)")
 ECONOMIC = re.compile(r"年挣|年赚|家庭.{0,4}(?:工资|薪水|几口|低保)|(?:我家|家里).{0,5}(?:挣|赚|低保|几口)")
-MASK = "【已略去】"
 
 
 def model_turns(turns):
