@@ -79,6 +79,13 @@ LETTER_SKILLS = frozenset({
 
 
 def export_input_fingerprint(store: Store, project: dict[str, Any]) -> str:
+    project_id = project["id"]
+    return export_snapshot_fingerprint(project, store.list_documents(project_id), store.messages(project_id, limit=200))
+
+
+def export_snapshot_fingerprint(
+    project: dict[str, Any], documents: list[dict[str, Any]], messages: list[dict[str, str]],
+) -> str:
     """Bind a download to its source content, excluding export bookkeeping.
 
     Chat can change template facts and privacy preferences without changing a
@@ -97,10 +104,10 @@ def export_input_fingerprint(store: Store, project: dict[str, Any]) -> str:
             "id", "original_name", "kind", "storage_path", "extracted_text", "confirmed",
             "confirmation_origin", "extraction_status", "low_confidence_count",
         )}
-        for document in sorted(store.list_documents(project["id"]), key=lambda item: item["id"])
+        for document in sorted(documents, key=lambda item: item["id"])
     ]
     source["instructions"] = [message.get("content", "")
-                              for message in store.messages(project["id"], limit=200)
+                              for message in messages
                               if message.get("role") == "user"]
     encoded = json.dumps(source, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()

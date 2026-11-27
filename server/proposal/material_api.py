@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Path as PathParam
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
@@ -306,6 +306,14 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
             raise HTTPException(413, "本次上下文过大，请拆分项目资料后再提交；尚未调用模型")
         return queue.submit(project_id, payload.kind, payload.target, job_payload, payload.idempotency_key)
 
+    @router.get("/exports/by-request/{request_id}")
+    def export_by_request(project_id: str, request_id: str = PathParam(pattern=r"^[a-f0-9]{32}$")):
+        store, _ = project_for(project_id)
+        job = MaterialJobs(store).find(project_id, request_id)
+        if not job or job["kind"] != "export":
+            raise HTTPException(404, "未找到这次后台导出。可查看任务区或重新导出。")
+        return job
+
     @router.get("/jobs/{identifier}")
     def status(project_id: str, identifier: str):
         store, _ = project_for(project_id)
@@ -381,8 +389,8 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
         return save(store, project, payload.revision, diagrams=diagrams)
 
     @router.get("/jobs/{identifier}/files/{name}")
-    def download(project_id: str, identifier: str, name: str):
-        store, project = project_for(project_id)
+    def download(project_id: str, identifier: str, name: str, current: bool = False):
+        store, _ = project_for(project_id)
         owner = store._identity()["user_id"] if hasattr(store, "_identity") else "local_user"
         obs.bind(owner_id=owner, project_id=project_id, job_id=identifier,
                  trace_id=obs.correlated("job", owner, identifier))
@@ -400,13 +408,31 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
         path = artifact_folder(store, project_id, raw) / name
         if not path.is_file():
             raise HTTPException(404, "文件不存在")
+        # HTML/SVG source is download-only to prevent active content in origin.
+        headers = {"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
+        media_type = None
+        if name == "proposal.docx":
+            from .export_api import WORD_CONTENT_TYPE, word_digest
+
+            media_type = WORD_CONTENT_TYPE
+            with path.open("rb") as word:
+                headers["Repr-Digest"] = word_digest(hashlib.file_digest(word, "sha256").digest())
         if raw.get("kind") == "export":
             from .chat_context import scholarship_student_facts
-            from .exporter import _grant_income_omitted, ensure_grant_income_artifact_safe
-            if _grant_income_omitted(store, project, store.list_documents(project_id)):
+            from .exporter import _grant_income_omitted, ensure_grant_income_artifact_safe, export_snapshot_fingerprint
+
+            snapshot = raw["payload"]
+            # Storage fetch can finish after another tab saves a new project version.
+            _, project = project_for(project_id)
+            documents = store.list_documents(project_id)
+            if current and name == "proposal.docx":
+                submitted = export_snapshot_fingerprint(snapshot["project"], snapshot["documents"], snapshot["messages"])
+                live = export_snapshot_fingerprint(project, documents, store.messages(project_id, limit=200))
+                if submitted != live:
+                    raise HTTPException(409, "后台导出使用的项目内容已更新，请重新导出 Word 草稿。")
+            if _grant_income_omitted(store, project, documents):
                 if name not in {"proposal.docx", "proposal.pdf"} and not re.fullmatch(r"page-\d{3}\.png", name):
                     raise HTTPException(409, "当前收入使用偏好下，请查看 Word 草稿或页面预览。")
-                snapshot = raw.get("payload") or {}
                 facts, _ = scholarship_student_facts(snapshot.get("messages") or [], "",
                                                       snapshot.get("documents") or [], include_family_income=True,
                                                       project_id=project_id)
@@ -419,15 +445,6 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
                     ensure_grant_income_artifact_safe(store, project, word)
                 except ValueError as exc:
                     raise HTTPException(409, f"{exc} 请按当前要求重新导出。") from None
-        # HTML/SVG source is download-only to prevent active content in origin.
-        headers = {"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
-        media_type = None
-        if name == "proposal.docx":
-            from .export_api import WORD_CONTENT_TYPE, word_digest
-
-            media_type = WORD_CONTENT_TYPE
-            with path.open("rb") as word:
-                headers["Repr-Digest"] = word_digest(hashlib.file_digest(word, "sha256").digest())
         return FileResponse(path, filename=name, media_type=media_type, headers=headers)
 
     app.include_router(router)

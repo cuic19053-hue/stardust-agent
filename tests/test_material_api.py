@@ -76,6 +76,48 @@ def test_non_innovation_export_job_runs_end_to_end(api, monkeypatch):
     assert download.headers["Content-Type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
+def test_worker_export_recovers_exact_request_and_checks_the_current_snapshot(api):
+    import material_worker
+    from docx import Document
+    from io import BytesIO
+
+    client, store, project = api
+    pid = project["id"]
+    base = f"/api/projects/{pid}/material"
+    key = "a" * 32
+    lookup = f"{base}/exports/by-request/{key}"
+    body = {"revision": project["material_revision"], "kind": "export", "idempotency_key": key}
+    assert client.get(lookup).status_code == 404
+    receipt = client.post(f"{base}/jobs", json=body)
+    assert receipt.status_code == 202, receipt.text
+    pending = client.get(lookup)
+    assert pending.headers["Cache-Control"] == "private, no-store"
+    assert pending.json()["id"] == receipt.json()["id"]
+    assert pending.json()["status"] == "pending"
+    assert client.post(f"{base}/jobs", json=body).json()["id"] == pending.json()["id"]
+    assert len(MaterialJobs(store).call("list", project_id=pid)) == 1
+
+    other = store.create_project(title="另一个项目")
+    store.update_project(other["id"], state={"skill_id": "innovation-research"})
+    assert client.get(lookup.replace(pid, other["id"])).status_code == 404
+    assert client.get(lookup.replace(key, "b" * 32)).status_code == 404
+    assert material_worker.run_one(local_store=store)
+    completed = client.get(lookup).json()
+    assert completed["status"] == "completed"
+    assert completed["id"] == pending.json()["id"]
+    artifact = f"{base}/jobs/{completed['id']}/files/proposal.docx"
+    latest = client.get(artifact + "?current=true")
+    latest.raise_for_status()
+    assert any("原文" in paragraph.text for paragraph in Document(BytesIO(latest.content)).paragraphs)
+
+    store.add_message(pid, "assistant", "普通助手回复。")
+    assert client.get(artifact + "?current=true").status_code == 200
+    store.add_message(pid, "user", "这次请用新的申报范围。")
+    stale = client.get(artifact + "?current=true")
+    assert stale.status_code == 409 and "重新导出" in stale.json()["detail"]
+    assert client.get(artifact).content == latest.content
+
+
 def test_export_snapshot_preserves_income_optout_after_30_messages(api):
     import material_worker
     client, store, project = api

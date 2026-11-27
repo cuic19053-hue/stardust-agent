@@ -4,7 +4,7 @@ const { resolve } = require("node:path");
 const { test } = require("node:test");
 const vm = require("node:vm");
 
-function harness(statuses, switchProject = false, onFetch = () => {}, { stallPoll = false } = {}) {
+function harness(statuses, switchProject = false, onFetch = () => {}, { stallPoll = false, jobs = [] } = {}) {
   const calls = [], downloads = [], fetches = [], notices = [], revoked = [];
   let pollPending = false, draftAreas = [];
   const state = { project: { id: "a".repeat(32) }, authSession: { access_token: "fake-user-jwt" } };
@@ -32,12 +32,13 @@ function harness(statuses, switchProject = false, onFetch = () => {}, { stallPol
   const source = readFileSync(resolve(__dirname, "../../server/static/material.js"), "utf8")
     .replace("window.MaterialPilot =", `
       globalThis.init = config => { host = config; projectId = config.state.project.id;
-        data = { context: { revision: 4 } }; refresh = async () => {}; };
+        data = { context: { revision: 4 }, jobs: config.jobs }; refresh = async () => {}; };
       window.MaterialPilot =`);
   vm.runInContext(readFileSync(resolve(__dirname, "../../server/static/word-export.js"), "utf8"), context);
   vm.runInContext(source, context);
+  host.jobs = jobs;
   context.init(host);
-  return { export: isCurrent => context.window.MaterialPilot.exportDocument({}, isCurrent),
+  return { export: (isCurrent, onTrack) => context.window.MaterialPilot.exportDocument({}, isCurrent, undefined, onTrack),
     outline: () => context.window.MaterialPilot.outline(),
     flushEdits: () => context.window.MaterialPilot.flushEdits(),
     setDraftAreas: areas => { draftAreas = areas; }, host,
@@ -62,6 +63,17 @@ test("material export waits for its one durable job then downloads with JWT", as
   assert.equal(h.downloads[0].href, "blob:private-word");
   assert.equal(h.fetches[0].options.headers.Authorization, "Bearer fake-user-jwt");
   assert.match(h.notices.at(-1), /已生成并下载/);
+});
+
+test("the export toolbar attaches to an existing background job", async () => {
+  const id = "9".repeat(32);
+  const tracked = [];
+  const jobs = [{ kind: "export", status: "running", id }];
+  const h = harness([{ status: "completed" }], false, () => {}, { jobs });
+  await h.export(() => true, attempt => tracked.push([attempt.kind, attempt.id]));
+  assert.deepEqual(tracked, [["worker-job", id]]);
+  assert.equal(h.calls.filter(c => c.options.method === "POST").length, 0);
+  assert.match(h.fetches[0].url, new RegExp(id + "/files/proposal[.]docx[?]current=true$"));
 });
 
 test("failed material export never downloads or resubmits", async () => {

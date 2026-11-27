@@ -759,6 +759,53 @@ test("an uncertain Word export remains scoped and a new edit invalidates it", as
   assert.ok(![...h.session.keys()].some(key => key.startsWith("stardust-word-export-v1:")));
 });
 
+test("a missing background export receipt can be recovered after refresh", async () => {
+  const first = harness(); exportingProject(first);
+  first.ui.state.authSession.user = { id: "student-one" };
+  const project = first.ui.state.project;
+  const base = `/api/projects/${project.id}`;
+  let submissions = 0, key;
+  first.ui.setApi(async url => {
+    assert.equal(url, base + "/chat-drafts");
+    return { items: [] };
+  });
+  first.context.window.MaterialPilot = { active: () => true, exportDocument: async (options, _active, _ready, track) => {
+    submissions++;
+    key = options.idempotency_key;
+    track({ kind: "worker-request", id: key });
+    throw new Error("连接中断");
+  } };
+  await first.ui.exportDoc();
+  assert.match(key, /^[a-f0-9]{32}$/);
+  assert.equal(first.element("#headingExportBtn").textContent, "检查 Word 导出结果");
+
+  const refreshed = harness(first.session);
+  refreshed.ui.state.authSession = { user: { id: "student-one" }, access_token: "new-jwt" };
+  const job = { kind: "export", project_id: project.id, id: "c".repeat(32), status: "pending" };
+  const checks = [];
+  refreshed.ui.setApi(async url => {
+    if (url === base) return project;
+    if (url === "/api/user/balance") return { balance: 0 };
+    checks.push(url);
+    if (url === `${base}/material/exports/by-request/${key}`) return job;
+    if (url === `${base}/material/jobs/${job.id}`) return { ...job, status: "completed" };
+    throw Error(`unexpected ${url}`);
+  });
+  refreshed.context.fetch = async (url, options) => {
+    assert.equal(url, `${base}/material/jobs/${job.id}/files/proposal.docx?current=true`);
+    assert.equal(options.headers.Authorization, "Bearer new-jwt");
+    return wordResponse();
+  };
+  await refreshed.ui.loadProject(project.id, { refreshList: false });
+  await refreshed.ui.exportDoc();
+  assert.equal(refreshed.element("#headingExportBtn").textContent, "检查 Word 导出结果");
+  await refreshed.ui.exportDoc();
+  assert.equal(submissions, 1);
+  assert.equal(checks.length, 2);
+  assert.equal(refreshed.created.length, 1);
+  assert.equal(refreshed.element("#headingExportBtn").textContent, "📥 导出 Word");
+});
+
 test("a stalled Word download times out and releases the toolbar for retry", async () => {
   const h = harness(); exportingProject(h);
   h.ui.setApi(async url => url.endsWith("/chat-drafts") ? { items: [] }

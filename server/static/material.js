@@ -71,7 +71,7 @@
     const requestProject = host.state.project?.id;
     const token = host.state.authSession?.access_token;
     let blob;
-    if (url.endsWith("/files/proposal.docx")) {
+    if (url.split("?")[0].endsWith("/files/proposal.docx")) {
       blob = await window.WordExport.fetchWordFile(url, { token });
     } else {
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
@@ -207,7 +207,7 @@
           for (const check of report.checks || []) row.append(el("p", `${check.rule}：${({
             passed: "通过", failed: "失败", not_checked: "未检查", needs_review: "需人工核对",
           })[check.status] || "未完成"} · ${check.detail}`));
-          action("下载可编辑 Word 草稿", async () => {
+          action("下载此任务的 Word 草稿", async () => {
             const link = el("a"); link.href = await blobUrl(path(`/jobs/${job.id}/files/proposal.docx`));
             link.download = "申报材料草稿.docx"; link.click();
           }, row);
@@ -327,7 +327,7 @@
     }, box);
     parent.append(box);
   }
-  async function submit(kind, target, paid, extra = {}) {
+  async function submit(kind, target, paid, extra = {}, onAccepted) {
     if (paid && !confirm((kind === "section" ? "本章沿用现有撰写与评审流程，最多六次模型请求。" :
         kind === "figure" ? "本次生成一张图片。" : "本次调用一次文字模型拟定候选方案。") +
         "平台模型按现有积分规则结算，自定义模型由服务商收费；不自动付费重绘。是否确认？")) return null;
@@ -336,6 +336,7 @@
       llm_config: paid ? { ...host.state.llmConfig } : null, confirm_paid: Boolean(paid),
       ...extra,
     }), 30000, JOB_SUBMIT_NOTICE);
+    onAccepted?.(job);
     try {
       await waitFor(refresh(), 15000, "任务已提交，但暂时无法刷新任务列表；请稍后查看，不要重复提交。");
     } catch {
@@ -437,12 +438,20 @@
     if (data && configured()) draw();
   }
 
-  async function exportDocument(options = {}, isCurrent = () => true, onWordReady) {
+  async function exportDocument(options = {}, isCurrent = () => true, onWordReady, onTrack) {
     await waitFor(flushEdits(), 15000, "正文保存结果暂未确认，请先检查项目中的正文再导出。");
     if (!isCurrent()) return;
     await waitFor(refresh(), 15000, "材料状态暂时无法读取，请检查网络后再导出。");
     if (!isCurrent()) return;
-    const job = await submit("export", "", false, options);
+    let job = data.jobs?.find(item => item.kind === "export" && ["pending", "running"].includes(item.status));
+    if (job) {
+      onTrack?.({ kind: "worker-job", id: job.id });
+    } else {
+      onTrack?.({ kind: "worker-request", id: options.idempotency_key });
+      job = await submit("export", "", false, options, accepted => {
+        if (isCurrent()) onTrack?.({ kind: "worker-job", id: accepted.id });
+      });
+    }
     if (!isCurrent()) return;
     const id = projectId;
     let lastStep;
@@ -461,8 +470,8 @@
         await waitFor(refresh(), 15000, "Word 已生成，但暂时无法刷新任务区，请稍后查看任务并下载。");
         if (host.state.project?.id !== id || !isCurrent()) return;
         const filePath = path(`/jobs/${job.id}/files/proposal.docx`);
-        if (onWordReady) return onWordReady(filePath);
-        const url = await blobUrl(filePath);
+        if (onWordReady) return onWordReady(filePath, current.result?.report?.warnings);
+        const url = await blobUrl(filePath + "?current=true");
         if (host.state.project?.id !== id || !isCurrent()) {
           URL.revokeObjectURL(url);
           urls = urls.filter(item => item !== url);

@@ -62,17 +62,20 @@
       return [$("#exportBtn"), $("#quickExportTopBtn"), $("#headingExportBtn")];
     }
 
-    function requestIdFor(projectId) {
+    function attemptFor(projectId) {
       if (!projectId) return null;
       const saved = attempts.get(projectId);
-      const id = saved?.owner === recoveryOwner() ? saved?.id : recovery.read(projectId);
-      return typeof id === "string" && /^[a-f0-9]{32}$/.test(id) ? id : null;
+      const stored = saved?.owner === recoveryOwner() ? saved?.entry : recovery.read(projectId);
+      const entry = typeof stored === "string" ? { kind: "classic", id: stored } : stored;
+      if (typeof entry?.id !== "string" || !/^[a-f0-9]{32}$/.test(entry.id)
+          || !["classic", "worker-request", "worker-job"].includes(entry.kind)) return null;
+      return entry;
     }
 
-    function rememberRequest(projectId, id) {
-      if (id) attempts.set(projectId, { id, owner: recoveryOwner() });
+    function rememberAttempt(projectId, entry) {
+      if (entry) attempts.set(projectId, { entry, owner: recoveryOwner() });
       else attempts.delete(projectId);
-      recovery.write(projectId, id);
+      recovery.write(projectId, entry);
     }
 
     function clearRecovery(projectId) {
@@ -85,7 +88,7 @@
       if (exportInProgress) return;
       const projectId = state.project?.id;
       const retry = pendingDownload && pendingDownload.projectId === projectId;
-      const label = retry ? "重试下载 Word" : requestIdFor(projectId) ? "检查 Word 导出结果" : "";
+      const label = retry ? "重试下载 Word" : attemptFor(projectId) ? "检查 Word 导出结果" : "";
       const [btn, topBtn, headingBtn] = exportButtons();
       for (const button of [btn, topBtn, headingBtn]) {
         if (!button) continue;
@@ -102,8 +105,8 @@
     function invalidate({ preserveRecovery = false } = {}) {
       exportArtifactRevision++;
       const projectId = state.project?.id;
-      const hadAttempt = requestIdFor(projectId);
-      if (hadAttempt && !preserveRecovery) rememberRequest(projectId, null);
+      const hadAttempt = attemptFor(projectId);
+      if (hadAttempt && !preserveRecovery) rememberAttempt(projectId, null);
       const hadDownload = pendingDownload;
       pendingDownload = null;
       if (hadAttempt || hadDownload) syncButtons();
@@ -120,7 +123,7 @@
     }
 
     async function downloadCurrent(isCurrent) {
-      const { url, projectId, worker, digest, warnings, requestId } = pendingDownload;
+      const { url, projectId, worker, digest, warnings } = pendingDownload;
       downloadController = new AbortController();
       const options = { expectedDigest: digest, controller: downloadController };
       const blob = worker
@@ -128,7 +131,7 @@
         : await fetchExportBlob(url, projectId, options);
       if (!isCurrent()) return;
       pendingDownload = null;
-      if (requestId) rememberRequest(projectId, null);
+      rememberAttempt(projectId, null);
       if (exportDownloadUrl) URL.revokeObjectURL(exportDownloadUrl);
       exportDownloadUrl = URL.createObjectURL(blob);
 
@@ -164,7 +167,7 @@
       }
     }
 
-    async function acceptResult(result, projectId, requestId, isCurrent) {
+    async function acceptResult(result, projectId, isCurrent) {
       if (!isCurrent()) return;
       const notices = {
         processing: "Word 草稿仍在生成，请稍后再检查。",
@@ -174,7 +177,7 @@
         missing: "这次导出暂未找到，可以重新生成。",
       };
       if (Object.hasOwn(notices, result?.status)) {
-        if (result.status !== "processing") rememberRequest(projectId, null);
+        if (result.status !== "processing") rememberAttempt(projectId, null);
         toast(notices[result.status], result.status !== "processing");
         return;
       }
@@ -182,9 +185,41 @@
         throw new Error("下载地址不属于当前项目");
       if (result.status === "completed" && !/^sha-256=:[A-Za-z0-9+/]{43}=:$/.test(result.download_digest))
         throw new Error("云端暂未返回可核对的 Word 文件版本。");
-      pendingDownload = { projectId, requestId, url: result.download_url,
+      pendingDownload = { projectId, url: result.download_url,
         digest: result.download_digest, warnings: result.warnings };
       await downloadCurrent(isCurrent);
+    }
+
+    async function downloadWorkerResult(url, warnings, projectId, isCurrent) {
+      if (!isCurrent()) return;
+      const prefix = `/api/projects/${encodeURIComponent(projectId)}/material/jobs/`;
+      if (!url.startsWith(prefix) || !/^[a-f0-9]{32}\/files\/proposal\.docx$/.test(url.slice(prefix.length)))
+        throw new Error("下载地址不属于当前项目");
+      pendingDownload = { projectId, url: url + "?current=true", worker: true, warnings };
+      await downloadCurrent(isCurrent);
+    }
+
+    async function checkWorkerExport(attempt, projectId, isCurrent) {
+      const base = `/api/projects/${encodeURIComponent(projectId)}/material`;
+      const path = attempt.kind === "worker-job" ? "/jobs/" : "/exports/by-request/";
+      const job = await requestExport(base + path + attempt.id, {}, 15000);
+      if (!isCurrent()) return;
+      if (job?.kind !== "export" || job.project_id !== projectId || !/^[a-f0-9]{32}$/.test(job.id)
+          || (attempt.kind === "worker-job" && job.id !== attempt.id))
+        throw new Error("暂时无法确认这次后台导出的任务。");
+      if (["pending", "running"].includes(job.status)) {
+        rememberAttempt(projectId, { kind: "worker-job", id: job.id });
+        toast("Word 草稿仍在后台生成，请稍后再检查。");
+      } else if (job.status === "completed") {
+        rememberAttempt(projectId, { kind: "worker-job", id: job.id });
+        await downloadWorkerResult(`${base}/jobs/${job.id}/files/proposal.docx`, job.result?.report?.warnings,
+          projectId, isCurrent);
+      } else if (["failed", "cancelled", "needs_review"].includes(job.status)) {
+        rememberAttempt(projectId, null);
+        toast(job.error || "这次后台导出未完成，可以重新生成。", true);
+      } else {
+        throw new Error("暂时无法确认后台导出的状态。");
+      }
     }
 
     async function exportDoc(options = {}) {
@@ -194,13 +229,13 @@
       const artifactRevision = exportArtifactRevision;
       const isCurrentExport = () => chatProjectIsActive(projectId) && artifactRevision === exportArtifactRevision;
       const retry = pendingDownload?.projectId === projectId;
-      let requestId = requestIdFor(projectId);
+      const attempt = attemptFor(projectId);
       const endpoint = `/api/projects/${encodeURIComponent(projectId)}/export`;
       if (!retry) pendingDownload = null;
       for (const button of exportButtons()) {
         if (!button) continue;
         button.disabled = true;
-        button.textContent = retry ? "正在下载…" : requestId ? "正在检查…" : "正在生成…";
+        button.textContent = retry ? "正在下载…" : attempt ? "正在检查…" : "正在生成…";
       }
       try {
         if (retry) {
@@ -209,9 +244,13 @@
         }
         await flushDraftEdits();
         if (!isCurrentExport()) return;
-        if (requestId) {
-          const result = await requestExport(`${endpoint}/status/${requestId}`, {}, 15000);
-          await acceptResult(result, projectId, requestId, isCurrentExport);
+        if (attempt?.kind === "classic") {
+          const result = await requestExport(`${endpoint}/status/${attempt.id}`, {}, 15000);
+          await acceptResult(result, projectId, isCurrentExport);
+          return;
+        }
+        if (attempt) {
+          await checkWorkerExport(attempt, projectId, isCurrentExport);
           return;
         }
         if (!options.skipChatDrafts) {
@@ -229,32 +268,28 @@
           allowEmpty = confirm("尚无已保存的正文。是否仅导出空白/待补充草稿？这不会包含聊天里未保存的内容。");
           if (!allowEmpty) return;
         }
+        const requestId = Array.from(crypto.getRandomValues(new Uint8Array(16)),
+          byte => byte.toString(16).padStart(2, "0")).join("");
         if (window.MaterialPilot?.active()) {
-          await window.MaterialPilot.exportDocument({ allow_empty_draft: allowEmpty }, isCurrentExport, async url => {
-            if (!isCurrentExport()) return;
-            const workerPrefix = `/api/projects/${encodeURIComponent(projectId)}/material/jobs/`;
-            if (!url.startsWith(workerPrefix) || !/^[a-f0-9]{32}\/files\/proposal\.docx$/.test(url.slice(workerPrefix.length)))
-              throw new Error("下载地址不属于当前项目");
-            pendingDownload = { projectId, url, worker: true };
-            await downloadCurrent(isCurrentExport);
-          });
+          await window.MaterialPilot.exportDocument({ allow_empty_draft: allowEmpty, idempotency_key: requestId },
+            isCurrentExport,
+            (url, warnings) => downloadWorkerResult(url, warnings, projectId, isCurrentExport),
+            entry => { if (isCurrentExport()) rememberAttempt(projectId, entry); });
           return;
         }
-        requestId = Array.from(crypto.getRandomValues(new Uint8Array(16)),
-          byte => byte.toString(16).padStart(2, "0")).join("");
-        rememberRequest(projectId, requestId);
+        rememberAttempt(projectId, { kind: "classic", id: requestId });
         const result = await requestExport(endpoint, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ allow_empty_draft: allowEmpty, request_id: requestId }),
         }, 65000);
-        await acceptResult(result, projectId, requestId, isCurrentExport);
+        await acceptResult(result, projectId, isCurrentExport);
       } catch (error) {
         if (!isCurrentExport()) return;
         if ([400, 404, 409, 422].includes(error.status)) {
-          if (requestId) rememberRequest(projectId, null);
+          rememberAttempt(projectId, null);
           pendingDownload = null;
         }
-        const action = pendingDownload ? "重试下载 Word" : requestIdFor(projectId) ? "检查 Word 导出结果" : "";
+        const action = pendingDownload ? "重试下载 Word" : attemptFor(projectId) ? "检查 Word 导出结果" : "";
         toast(action ? `${error.message} 可点击「${action}」。` : error.message, true);
         if (!pendingDownload && ((error.message || "").includes("积分不足") || (error.message || "").includes("402"))) {
           openRechargeDialog();
