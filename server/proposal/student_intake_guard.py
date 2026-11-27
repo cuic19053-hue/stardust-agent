@@ -27,7 +27,7 @@ APPROX = re.compile(r"大约|大概|大致|粗算|估计|差不多|左右|约")
 CORRECT = re.compile(r"更正|说错|改口|纠正|以.{1,10}为准|应改为|打错")
 PERIOD = re.compile(r"(?:上|下|本|这|上一|下一)学期|(?:今年|去年|明年)|大[一二三四](?:全年|上|下)")
 AID = {"助学金", "国家助学金", "国家励志奖学金", "励志奖学金"}
-TARGET = re.compile(r"国家励志奖学金|励志奖学金|(?:国家)?助学金|国家奖学金|国奖|[校院]级奖学金|大创|科研立项|奖学金")
+TARGET = re.compile(r"国家励志奖学金|励志奖学金|(?:国家)?助学金|国家奖学金|国奖|[校院]级奖学金|大创|(?:[校院省]级)?科研立项|奖学金")
 APPLICATION = re.compile(r"申请|申报|办理|在办|要办|办的是|报的是|想报|要报|改报|递交|报名")
 CANCEL = re.compile(r"取消|放弃|撤回|不再|不(?:申|办|打算申)|原先|原来|以为|条件|流程|资格|如何|能否|能不能")
 PRIVACY_FIELDS = {"financial.annual_income_yuan":re.compile("收入|年入"),
@@ -74,9 +74,23 @@ FINANCIAL_CONTEXT = re.compile(r"收入|工资|薪水|家庭经济|经济(?:情�
 QUALIFIED_TAIL = re.compile(r"[，,]\s*(?:但|不过)?(?:我)?(?:也|还)?(?:不确定|记不清|说不准|不一定|只是举例)")
 NON_VALUE = re.compile(r"还是|或者|或是|也许|可能|好像|大概|要不要|不再|并非|不叫|不是|没想好|"
                        r"尚未|还没|的话|但|其实|我|吗|也说不准|并且|而且|并在|同时|已经")
-NO_ADVISOR = re.compile(r"我(?:本人|自己)?(?:目前|现在)?(?:还没有|没有|尚无)(?:指导老师|导师)")
+ADVISOR = r"(?:指导老师|指导教师|导师)"
+ADVISOR_NEGATION = r"(?:还没有|没有|尚无|还没找到|没找到|尚未找到|未找到)" + ADVISOR
+NO_ADVISOR = re.compile(r"我(?:本人|自己)?(?:目前|现在)?" + ADVISOR_NEGATION)
+NO_ADVISOR_CONTINUATION = re.compile(r"(?:也)?" + ADVISOR_NEGATION)
 NO_RESEARCH = re.compile(r"我(?:本人|自己)?(?:目前|现在)?(?:还没有|没有|尚无|从未有过)科研(?:项目)?经历")
 RESEARCH_HISTORY = re.compile(r"科研(?:项目)?经历|(?:参加|参与|做过|加入)(?:了|过)?[^，。]{0,12}(?:课题|科研项目)")
+TEAM_UNSET = re.compile(r"(?:我(?:们)?(?:的)?)?(?:目前|最终)?团队(?:总)?人数(?:尚未确定|未定|还没定|还没确定|不确定|待定)")
+HOUSEHOLD_COUNT = re.compile(r"(?:我家(?:里)?|我们家|家里|家中|我的家庭)(?:一共|共有|有)?\s*(?P<count>"
+                             + MONEY_OR_NUMBER + r")\s*(?:口(?:人)?|人)")
+DEADLINE = re.compile(r"(?:申报|申请|提交)?截止(?:日期|时间)?(?:是|为|到|[：:])?\s*"
+                      r"(?P<date>(?:(?:本|这|下下|下)(?:周|星期)[一二三四五六日天]|"
+                      r"(?:下个月|本月|这个月|下月)[\d一二三四五六七八九十]{1,3}[日号]|"
+                      r"(?:\d{4}年)?\d{1,2}月\d{1,2}[日号]))")
+GPA_LABEL = re.compile(r"我(?:本人|自己)?(?:的)?(?:绩点|GPA)", re.I)
+UNCLEAR_TRANSCRIPT = re.compile(r"(?:(?:语音|录音)(?:里|中)?)?(?:是)?" + MONEY_OR_NUMBER + r"(?:还是|或是|或者)"
+                                + MONEY_OR_NUMBER + r"(?:没听清|听不清|不确定|说不准)(?:了)?")
+UNCLEAR_VALUE = re.compile(r"我(?:现在|目前|也)?(?:还)?(?:不知道|不清楚|不确定)(?:准确值|具体数值|具体多少|是哪个)")
 SELF_INTRO = re.compile(r"(?:我叫|我的(?:姓名|名字)是)[\u3400-\u9fff·]{2,16}")
 STUDY_INTRO = re.compile(r"(?:我(?:目前|现在)?)?在(?P<school>[\u3400-\u9fff]{2,30}(?:大学|学院|学校))"
                          r"(?:就读|攻读|读|主修)(?!到|完|过|了|着|一篇|一本)(?P<major>[\u3400-\u9fff]{2,24}?)(?:专业)?")
@@ -97,6 +111,22 @@ NAME_CUE = re.compile(r"项目名|名称|题名|题目|命名|取名|叫作|名�
 OTHER_PROJECT = re.compile(r"另(?:一[个项]|外的?)(?:项目|课题|团队)|子项目")
 PROJECT_LABEL = re.compile(r"([甲乙丙丁AB])项目|项目([甲乙丙丁AB])|第([一二三四\d]+)个项目")
 SENTENCE_BREAK = re.compile(r"[。！？!?；;\n]")
+RANK_TIME = r"(?:上|下|本|这|上一|下一)学期|大[一二三四](?:全年|上|下)|今年|去年|明年"
+RANK_PERIOD_ALIASES = {"本学期": "这学期", "上一学期": "上学期", "下一学期": "下学期"}
+RANK_CLAIM = re.compile(
+    r"(?P<period>" + RANK_TIME + r")?我(?:本人|自己)?(?:的)?(?P<scope>专业|班级|年级|学院|综测)?"
+    r"(?:的)?(?:排名|名次)(?:是|为|[：:])?\s*(?P<approx>大约|大概|大致|约|差不多)?\s*(?:是|为)?\s*"
+    r"(?:前(?:百分之(?P<spoken_percent>" + MONEY_OR_NUMBER + r")|(?P<percent>\d+(?:\.\d+)?)\s*[%％])|"
+    r"(?:第)?(?P<rank>\d+)\s*(?:名)?\s*[/／]\s*(?:共)?(?P<total>\d+)\s*(?:人)?)\s*(?P<tail>左右|上下)?"
+)
+AWARD_CLAIM = re.compile(
+    r"(?P<owner>我(?:本人|自己)?)?(?P<time>今年|去年|前年|[上本这]学期|\d{4}年(?:\d{1,2}月)?)?"
+    r"(?:在(?P<name>[\u3400-\u9fffA-Za-z0-9·（）()《》 -]{2,45}?)(?:中|里)?)?"
+    r"(?:获得了?|获评|拿到|拿了|荣获)(?P<level>国家级|省级|市级|校级|院级|区级)?"
+    r"(?P<prize>[一二三四]等奖|特等奖|优秀奖|优胜奖|金奖|银奖|铜奖)"
+)
+AWARD_NAME_UNKNOWN = re.compile(r"(?:这场|那个)?(?:比赛|竞赛|赛事|奖项)(?:的)?(?:名字|名称)(?:我)?"
+                                r"(?:记不清了?|忘了|不记得|不确定|不知道)")
 
 
 @dataclass
@@ -204,13 +234,22 @@ def source_parts(e, turns, parts):
             and any(p.start < i+len(e.quote) and i < p.end for i in hits)]
 
 
-def review_field(f, turns, parts, allowed, refused, identities, plans):
+def review_field(f, turns, parts, allowed, refused, identities, plans, record_anchors, record_ids):
     quotes = " ".join(e.quote for e in f.evidence)
     if MASK in quotes:
         return None, "quote_crosses_masked_source"
     contexts = [source_parts(e,turns,parts) for e in f.evidence]
     if not all(contexts) or any(p.external for ps in contexts for p in ps):
         return None, "unverified_source_or_owner"
+    families = {record_anchors.get((p.turn, p.start)) for ps in contexts for p in ps}
+    if f.field.startswith(("award.", "academic.rank")):
+        family = "award" if f.field.startswith("award.") else "rank"
+        if family in families or (family, f.record_id) in record_ids:
+            return None, "covered_by_source_record"
+    if (f.field == "application.type" and "award" in families
+            and not any(APPLICATION.search(p.text) and (f.value is None or f.value in p.text)
+                        for ps in contexts for p in ps)):
+        return None, "award_is_not_an_application"
     if (not allowed and (f.field.startswith("financial.") or ECON.search(quotes))):
         return None, "economic_scope_or_quote"
     if any(field != f.field and field in PRIVACY_FIELDS and PRIVACY_FIELDS[field].search(quotes)
@@ -366,8 +405,20 @@ def explicit_fields(part, before, preceding, source):
         return (("identity.grade", grade["grade"], "stated"),)
     if application := ACTIVE_APPLICATION.fullmatch(text):
         return (("application.type", application["target"], "planned"),)
+    if ACTIVE_APPLICATION.fullmatch(previous) and (deadline := DEADLINE.fullmatch(text)):
+        return (("application.deadline", deadline["date"], "stated"),)
     if NO_RESEARCH.fullmatch(text):
         return (("research.experience", None, "negated"),)
+    if NO_ADVISOR.fullmatch(text) or (NO_RESEARCH.fullmatch(previous) and NO_ADVISOR_CONTINUATION.fullmatch(text)):
+        return (("project.advisor", None, "negated"),)
+    if TEAM_UNSET.fullmatch(text):
+        return (("project.team_size", None, "unknown"),)
+    if household := HOUSEHOLD_COUNT.fullmatch(text):
+        try:
+            count = number(household["count"])
+        except (ValueError, KeyError, ArithmeticError):
+            return ()
+        return (("financial.household_size", count, "stated"),) if count > 0 and count == count.to_integral_value() else ()
     scale = GPA_SCALE.fullmatch(text)
     if scale and (scale["label"] != "满分" or current_scalar(previous, "academic.gpa") is not None):
         try:
@@ -387,7 +438,58 @@ def explicit_fields(part, before, preceding, source):
     return ()
 
 
-def source_declarations(original, visible_parts):
+def unclear_gpa_quote(part, following, clarification, source):
+    """Bind explicit transcription doubt to the named field and keep the literal alternatives."""
+    if (part.external or not GPA_LABEL.fullmatch(part.text.strip()) or not adjacent(following, part, source)
+            or following.external or not UNCLEAR_TRANSCRIPT.fullmatch(following.text.strip())
+            or not assertion_context(part, source)):
+        return None
+    end = following.end
+    if (clarification and not clarification.external and adjacent(clarification, following, source)
+            and UNCLEAR_VALUE.fullmatch(clarification.text.strip())):
+        end = clarification.end
+    quote = source[part.turn][part.start:end].strip()
+    return quote if len(quote) <= MAX_QUOTE_CHARS else None
+
+
+def explicit_record(part, previous, previous_record, source):
+    """Read a whole rank or award claim, keeping its related fields together."""
+    if part.external or len(part.text) > MAX_QUOTE_CHARS:
+        return None
+    text = part.text.strip()
+    rank = RANK_CLAIM.fullmatch(text)
+    award = AWARD_CLAIM.fullmatch(text)
+    unknown_name = AWARD_NAME_UNKNOWN.fullmatch(text)
+    if not (rank or award or unknown_name) or not assertion_context(part, source):
+        return None
+    if rank:
+        rough = "approximate" if rank["approx"] or rank["tail"] else "stated"
+        if rank["rank"]:
+            place, total = int(rank["rank"]), int(rank["total"])
+            if not 0 < place <= total:
+                return "rank", ()
+            fields = [("academic.rank", str(place), rough), ("academic.rank_total", str(total), "stated")]
+        else:
+            try:
+                percent = number(rank["spoken_percent"] or rank["percent"])
+            except (ValueError, KeyError, ArithmeticError):
+                return "rank", ()
+            if not 0 < percent <= 100:
+                return "rank", ()
+            fields = [("academic.rank_percent", decimal_text(percent), rough)]
+        fields.extend((f"academic.rank_{key}", rank[key], "stated") for key in ("scope", "period") if rank[key])
+        return "rank", tuple(fields)
+    award_continues = previous_record and previous_record[0] == "award" and adjacent(part, previous, source)
+    if award and (award["owner"] or award_continues):
+        return "award", tuple((f"award.{key}", award[key].strip(), "stated")
+                              for key in ("name", "level", "prize", "time") if award[key])
+    if award_continues and unknown_name and not any(
+            field == "award.name" for field, *_ in previous_record[1]):
+        return "award_name", (("award.name", None, "unknown"),)
+    return None
+
+
+def source_declarations(original, visible_parts, visible_source):
     """Map explicit declarations back to the visible clauses without guessing a turn ID."""
     source = {t["turn_id"]: t["content"] for t in original if t["role"] == "user"}
     # Evidence has a turn and a quote, but no offset. Repeated text in that turn
@@ -395,13 +497,22 @@ def source_declarations(original, visible_parts):
     identity_readings = defaultdict(set)
     plan_readings = defaultdict(set)
     field_readings = defaultdict(set)
+    record_readings = defaultdict(set)
     original_parts = clauses(original)
+    previous_record = None
     for i, part in enumerate(original_parts):
         key = (part.turn, part.text)
         identity_readings[key].add(explicit_identity(part, source))
         previous = original_parts[i - 1] if i else None
         preceding = original_parts[i - 2] if i >= 2 else None
-        field_readings[key].add(explicit_fields(part, previous, preceding, source))
+        fields = tuple((*field, part.text.strip()) for field in explicit_fields(part, previous, preceding, source))
+        following = original_parts[i + 1] if i + 1 < len(original_parts) else None
+        clarification = original_parts[i + 2] if i + 2 < len(original_parts) else None
+        if following and (quote := unclear_gpa_quote(part, following, clarification, source)):
+            fields += (("academic.gpa", None, "unknown", quote),)
+        field_readings[key].add(fields)
+        previous_record = explicit_record(part, previous, previous_record, source)
+        record_readings[key].add(previous_record)
         artifact = PLANNED_ARTIFACT.fullmatch(part.text.strip())
         if artifact:
             value = artifact[1]
@@ -436,15 +547,67 @@ def source_declarations(original, visible_parts):
                 identities[location] = identity
         readings = field_readings.get(literal, ())
         if len(readings) == 1:
-            direct[location] = tuple(x for x in next(iter(readings)) if x[0] not in retracted)
+            direct[location] = tuple(x for x in next(iter(readings)) if x[0] not in retracted
+                                     and x[3] in visible_source[visible.turn])
         if literal in plan_readings:
             # A rejected match also prevents the model from releasing an inactive plan.
             readings = plan_readings[literal]
             plan = next(iter(readings)) if len(readings) == 1 and not plan_superseded else None
             plans[location] = plan[0] if plan else None
             if plan and plan[1]:
-                direct[location] = (*direct.get(location, ()), ("project.expected_output", plan[0], "planned"))
-    return identities, plans, direct
+                direct[location] = (*direct.get(location, ()),
+                                    ("project.expected_output", plan[0], "planned", visible.text.strip()))
+    return identities, plans, direct, record_readings
+
+
+def source_records(parts, source, readings):
+    """Number linked claims in source order and withhold conflicting versions of the same record."""
+    groups = defaultdict(list)
+    anchored = {}
+    previous_award = None
+    for part in parts:
+        found = readings.get((part.turn, part.text), ())
+        if part.external or len(found) != 1 or len(part.text) > MAX_QUOTE_CHARS:
+            continue
+        declaration = next(iter(found))
+        if declaration is None:
+            continue
+        family, fields = declaration
+        location = (part.turn, part.start)
+        anchored[location] = "award" if family == "award_name" else family
+        if family == "award_name":
+            if previous_award and adjacent(part, previous_award[0], source):
+                previous_award[1].extend((*field, part) for field in fields)
+            continue
+        if not fields:
+            continue
+        values = {field: value for field, value, _ in fields}
+        if family == "rank":
+            period = values.get("academic.rank_period")
+            identity = (RANK_PERIOD_ALIASES.get(period, period), values.get("academic.rank_scope"))
+        else:
+            name = values.get("award.name")
+            identity = (values.get("award.time"), name) if name else location
+        group = [(*field, part) for field in fields]
+        groups[family, identity].append(group)
+        if family == "award":
+            previous_award = (part, group)
+
+    records, count = [], defaultdict(int)
+    for (family, _), versions in groups.items():
+        if len({tuple(v[:3] for v in fields) for fields in versions}) != 1:
+            continue
+        count[family] += 1
+        record_id = f"{family}_{count[family]}"
+        records.extend(IntakeFact(field=field, value=value, status=status, record_id=record_id,
+                                  evidence=[Evidence(turn_id=part.turn, quote=part.text.strip())])
+                       for field, value, status, part in versions[0])
+    return records, anchored
+
+
+def decimal_text(value):
+    text = format(value, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
 
 
 def source_reconciliation(parts, source, identities, direct):
@@ -452,9 +615,12 @@ def source_reconciliation(parts, source, identities, direct):
     found = defaultdict(list)
     preferred = {}
     for p in parts:
-        for field, value, status in direct.get((p.turn, p.start), ()):
+        for field, value, status, quote in direct.get((p.turn, p.start), ()):
             found[field].append((p, value))
-            preferred.setdefault((field, value), (p, status))
+            if status == "unknown":
+                preferred[field, value] = (p, status, quote)
+            else:
+                preferred.setdefault((field, value), (p, status, quote))
         if p.external or UNKNOWN.search(p.text) or REFUSE.search(p.text):
             continue
         if (source[p.turn][p.end:p.end+1] in ("？", "?") or NEG.search(p.text)
@@ -472,21 +638,29 @@ def source_reconciliation(parts, source, identities, direct):
                 found[field].append((p,val))
     resolved = {}
     for field, claims in found.items():
+        if (claims[-1][1] is None and (unsure := preferred.get((field, None)))
+                and unsure[1] == "unknown"):
+            p, status, quote = unsure
+            resolved[field] = IntakeFact(field=field, record_id="self", value=None, status=status,
+                                         evidence=[Evidence(turn_id=p.turn, quote=quote)])
+            continue
         if len({v for _,v in claims}) == 1:
             part, value = claims[0]
             match = preferred.get((field, value))
             if field == "research.experience" and any(not p.external and RESEARCH_HISTORY.search(p.text)
                     and not NO_RESEARCH.fullmatch(p.text.strip()) for p in parts):
                 continue
+            if field == "project.advisor" and any(not p.external and re.search(ADVISOR, p.text)
+                    and not (NO_ADVISOR.fullmatch(p.text.strip()) or NO_ADVISOR_CONTINUATION.fullmatch(p.text.strip()))
+                    for p in parts):
+                continue
             if match or field == "identity.major":
-                part, status = match or (part, "stated")
+                part, status, quote = match or (part, "stated", part.text.strip())
                 if isinstance(value, Decimal):
-                    value = format(value, "f")
-                    if "." in value:
-                        value = value.rstrip("0").rstrip(".")
+                    value = decimal_text(value)
                 resolved[field] = IntakeFact(field=field, record_id="self", value=value,
                     status=status,
-                    evidence=[Evidence(turn_id=part.turn, quote=part.text.strip())])
+                    evidence=[Evidence(turn_id=part.turn, quote=quote)])
             continue
         if field == "project.expected_output":
             # Distinct deliverables cannot safely overwrite each other in this singleton.
@@ -518,7 +692,7 @@ def source_reconciliation(parts, source, identities, direct):
                 resolved[field] = None
                 continue
             value = format(latest,"f") if isinstance(latest, Decimal) else latest
-            _, status = preferred.get((field, latest), (p, "approximate" if APPROX.search(p.text) else "stated"))
+            _, status, _ = preferred.get((field, latest), (p, "approximate" if APPROX.search(p.text) else "stated", quote))
             resolved[field] = IntakeFact(field=field,record_id="self",value=value,
                 status=status, evidence=[{"turn_id":p.turn,"quote":quote}])
             continue
@@ -628,8 +802,11 @@ def parse_proposal(raw, source, parts, identities, plans, reconciled):
 def inspect_candidate(raw, turns, original_turns=None):
     source = {t["turn_id"]:t["content"] for t in turns if t["role"]=="user"}
     parts = clauses(turns)
-    identities, plans, direct = source_declarations(turns if original_turns is None else original_turns, parts)
+    identities, plans, direct, record_readings = source_declarations(
+        turns if original_turns is None else original_turns, parts, source)
     reconciled = source_reconciliation(parts, source, identities, direct)
+    records, record_anchors = source_records(parts, source, record_readings)
+    record_ids = {(fact.record_id.split("_", 1)[0], fact.record_id) for fact in records}
     try:
         parsed, invalid_fields, events = parse_proposal(raw, source, parts, identities, plans, reconciled)
     except (ValueError, TypeError, RecursionError):
@@ -654,7 +831,7 @@ def inspect_candidate(raw, turns, original_turns=None):
     accepted = {}
     collisions = set()
     for fact in parsed.facts:
-        f, why = review_field(fact,source,parts,allowed,refused,identities,plans)
+        f, why = review_field(fact,source,parts,allowed,refused,identities,plans,record_anchors,record_ids)
         if why:
             events.append(f"{fact.field}/{why}")
             continue
@@ -679,12 +856,17 @@ def inspect_candidate(raw, turns, original_turns=None):
         if field in invalid_fields and (conflict is None or conflict.status != "conflict"):
             continue
         accepted.pop((field,"self"),None)
-        if conflict is not None and (allowed or not any(ECON.search(e.quote) for e in conflict.evidence)):
+        if conflict is not None and (allowed or (not field.startswith("financial.")
+                and not any(ECON.search(e.quote) for e in conflict.evidence))):
             accepted[field,"self"] = conflict
             invalid_fields.discard(field)
             events.append(f"{field}/source_{conflict.status}")
         else:
             events.append(f"{field}/ambiguous_period_or_scope")
+    for fact in records:
+        if (fact.field not in refused and fact.field not in invalid_fields
+                and (allowed or not any(ECON.search(e.quote) for e in fact.evidence))):
+            accepted[fact.field, fact.record_id] = fact
     for field, refusal in refusals.items():
         if (field, "self") not in accepted:
             events.append(f"{field}/source_withheld")

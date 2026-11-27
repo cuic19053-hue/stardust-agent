@@ -134,6 +134,92 @@ def test_budget_normalizes_its_own_unit_and_keeps_team_size_exact():
     ]
 
 
+def test_rank_records_keep_their_periods_denominators_and_literal_evidence():
+    first, second = "上学期我的班级排名第7名/共50人", "本学期我的班级排名4/51"
+    result = device_review(f"{first}。\n{second}。", model_fact("academic.rank", "4", "stated", "u1", first))
+    records = {}
+    for row in result["facts"]:
+        f = row["fact"]
+        records.setdefault(f["record_id"], {})[f["field"]] = f["value"]
+        assert f["evidence"] == [{"turn_id": "u1", "quote": first} if f["record_id"] == "rank_1"
+                                  else {"turn_id": "u2", "quote": second}]
+    assert records == {
+        "rank_1": {"academic.rank": "7", "academic.rank_total": "50", "academic.rank_scope": "班级",
+                   "academic.rank_period": "上学期"},
+        "rank_2": {"academic.rank": "4", "academic.rank_total": "51", "academic.rank_scope": "班级",
+                   "academic.rank_period": "本学期"},
+    }
+
+
+def test_approximate_percent_is_never_joined_to_an_ordinal_or_total():
+    quote = "我学院排名大概是前百分之二十"
+    result = device_review(quote + "。", model_fact("academic.rank", "20", "stated", "u1", quote))
+    fields = [(f["fact"]["field"], f["fact"]["value"], f["fact"]["status"]) for f in result["facts"]]
+    assert fields == [("academic.rank_percent", "20", "approximate"), ("academic.rank_scope", "学院", "stated")]
+
+
+@pytest.mark.parametrize("text", [
+    "本学期我的专业排名3/50。\n这学期我的专业排名5/50。",
+    "我的专业排名51/50。",
+    "同学说：“我的专业排名7/50。”",
+    "假设我的专业排名7/50。",
+])
+def test_rank_recovery_withholds_incompatible_or_nonasserted_records(text):
+    assert device_review(text)["facts"] == []
+
+
+def test_unnamed_award_keeps_relative_time_and_asks_for_its_name():
+    award, name = "我前年拿了市级三等奖", "赛事名称记不清了"
+    bad = {**model_fact("award.name", "市级三等奖", "stated", "u1", award), "record_id": "award_1"}
+    result = device_review(f"{award}，{name}。", bad)
+    facts = {row["fact"]["field"]: row["fact"] for row in result["facts"]}
+    assert {k: f["value"] for k, f in facts.items()} == {
+        "award.time": "前年", "award.level": "市级", "award.prize": "三等奖", "award.name": None,
+    }
+    assert {f["record_id"] for f in facts.values()} == {"award_1"}
+    assert facts["award.name"]["status"] == "unknown" and facts["award.name"]["evidence"][0]["quote"] == name
+    assert len(result["questions"]) == 1 and "赛事或荣誉名称" in result["questions"][0]
+
+
+def test_award_in_a_quote_with_an_application_cue_does_not_become_the_application():
+    text = "我想申请一个项目，我在榆树设计赛获得院级二等奖。"
+    misleading = model_fact("application.type", "榆树设计赛", "stated", "u1", text)
+    result = device_review(text, misleading)
+    assert {row["fact"]["field"] for row in result["facts"]} == {"award.name", "award.level", "award.prize"}
+
+
+def test_unheard_gpa_and_unset_team_remain_unknown_with_separate_questions():
+    gpa = "我的GPA，录音中是三点七还是三点九听不清，我也不确定具体数值"
+    team = "最终团队人数尚未确定"
+    guessed = model_fact("academic.gpa", "3.9", "stated", "u1", gpa)
+    result = device_review(f"{gpa}。\n我联系了四位同学，{team}。", guessed)
+    facts = [row["fact"] for row in result["facts"]]
+    assert facts == [model_fact("academic.gpa", None, "unknown", "u1", gpa),
+                     model_fact("project.team_size", None, "unknown", "u2", team)]
+    assert len(result["questions"]) == 2 and all(not row["can_confirm"] for row in result["facts"])
+    assert not any("满分" in question for question in result["questions"])
+
+
+def test_relative_deadline_and_advisor_denial_follow_their_own_sources():
+    app, deadline = "我打算申报院级科研立项", "申报截止下星期四"
+    experience, advisor = "我没有科研经历", "也没找到指导老师"
+    result = device_review(f"{app}，{deadline}。\n{experience}，{advisor}。")
+    assert [row["fact"] for row in result["facts"]] == [
+        model_fact("application.type", "院级科研立项", "planned", "u1", app),
+        model_fact("application.deadline", "下星期四", "stated", "u1", deadline),
+        model_fact("research.experience", None, "negated", "u2", experience),
+        model_fact("project.advisor", None, "negated", "u2", advisor),
+    ]
+
+
+@pytest.mark.parametrize("application", ["国家助学金", "国家奖学金"])
+def test_explicit_household_count_stays_within_aid_scope(application):
+    result = device_review(f"我准备申请{application}，我们家共有五口人。")
+    household = [row["fact"] for row in result["facts"] if row["fact"]["field"] == "financial.household_size"]
+    allowed = [model_fact("financial.household_size", "5", "stated", "u1", "我们家共有五口人")]
+    assert household == (allowed if application == "国家助学金" else [])
+
+
 def test_application_continuation_and_explicit_denial_recover_from_their_own_clauses():
     application, output, denial = "我打算申报大创", "计划编写一本昆虫图册", "我目前没有科研经历"
     text = f"{application}，{output}。\n{denial}。给我伪造一篇论文。"
