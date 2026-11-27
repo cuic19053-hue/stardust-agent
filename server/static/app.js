@@ -107,6 +107,7 @@
 
   // Project requests may finish out of order when the student switches chats.
   let projectLoadRevision = 0;
+  let projectListRevision = 0;
   let loadingProjectId = null;
   // A sent message can finish after a disconnect. Keep it only in the current
   // tab, under its account and project, and never submit it automatically.
@@ -208,6 +209,11 @@
 
   function clearInterruptedChatMessages() {
     chatRecoveryEpoch++;
+    projectListRevision++;
+    state.projectsList = [];
+    const search = $("#projectSearchInput");
+    if (search) search.value = "";
+    renderProjectList([]);
     clearProjectResults();
     interruptedChatMessages.clear();
     pendingChatRequests.clear();
@@ -982,20 +988,31 @@
     $("#authGate").classList.add("hidden");
     $("#appShell").classList.remove("hidden");
     $("#signOutBtn").classList.toggle("hidden", !state.cloudMode);
+    const accountEpoch = chatRecoveryEpoch;
+    const initialNavigation = projectLoadRevision;
+    const activeSession = () => state.appStarted && chatRecoveryEpoch === accountEpoch
+      && session?.user?.id === state.authSession?.user?.id;
     await loadCloudModelConfig();
-    if (session?.user?.id !== state.authSession?.user?.id) return;
+    if (!activeSession()) return;
     await loadUserBalance();
-    await Promise.all([checkHealth(), refreshProjects()]);
-    const projects = await api("/api/projects");
-    if (projects.projects?.length) {
-      const lastId = localStorage.getItem(activeProjectKey);
-      const target = projects.projects.find((project) => project.id === lastId) || projects.projects[0];
-      await loadProject(target.id);
-    } else {
-      $("#workspace").classList.add("hidden");
-      $("#welcome").classList.remove("hidden");
+    if (!activeSession()) return;
+    let [, projects] = await Promise.all([checkHealth(), refreshProjects()]);
+    if (projects === null && activeSession() && projectLoadRevision === initialNavigation) {
+      projects = await refreshProjects();
+      if (projects === null && activeSession()) toast("项目列表暂时无法加载，请刷新后重试。", true);
     }
-    checkInitialOnboarding();
+    if (!activeSession()) return;
+    if (projects && projectLoadRevision === initialNavigation) {
+      if (projects.length) {
+        let lastId;
+        try { lastId = localStorage.getItem(activeProjectKey); } catch {}
+        const target = projects.find(project => project.id === lastId) || projects[0];
+        await loadProject(target.id, { refreshList: false });
+      } else {
+        showWelcomeView();
+      }
+    }
+    if (activeSession()) checkInitialOnboarding();
   }
 
   async function initializeCloudAuth(config) {
@@ -1084,7 +1101,11 @@
       state.authSession = session;
       if (session && !state.appStarted) {
         // 不在 Auth 回调锁内调用 SDK，避免 setSession/getSession 死锁。
-        setTimeout(() => { void startApplication(session); }, 0);
+        const epoch = chatRecoveryEpoch;
+        setTimeout(() => {
+          if (epoch === chatRecoveryEpoch && state.authSession?.user?.id === session.user.id)
+            void startApplication(state.authSession);
+        }, 0);
       } else if (!session && event === "SIGNED_OUT") {
         invalidateProjectLoad();
         clearInterruptedChatMessages();
@@ -1262,7 +1283,7 @@
         try {
           await api(`/api/projects/${project.id}`, { method: "DELETE" });
           closeDeletedProject(project.id);
-          await refreshProjects($("#projectSearchInput")?.value || "");
+          await refreshProjects();
           toast("项目已删除。");
         } catch (err) {
           toast(err.message, true);
@@ -1281,13 +1302,18 @@
     }
   }
 
-  async function refreshProjects(filterKeyword = "") {
+  async function refreshProjects() {
+    const revision = ++projectListRevision;
     try {
       const response = await api("/api/projects");
+      if (revision !== projectListRevision) return;
       state.projectsList = response.projects || [];
-      renderProjectList(state.projectsList, filterKeyword);
+      renderProjectList(state.projectsList, $("#projectSearchInput")?.value || "");
+      return state.projectsList;
     } catch (e) {
+      if (revision !== projectListRevision) return;
       console.warn("刷新项目列表失败", e);
+      return null;
     }
   }
   async function checkHealth() {
@@ -1338,6 +1364,8 @@
     for (const key of interruptedMessagesRendered) {
       if (key.startsWith(`${projectId}\0`)) interruptedMessagesRendered.delete(key);
     }
+    // Even an unopened project can be deleted from the sidebar during its first load.
+    if (loadingProjectId === projectId || (!loadingProjectId && state.project?.id === projectId)) invalidateProjectLoad();
     if (state.project?.id !== projectId) return;
     clearProjectResults();
     const input = $("#chatInput");
@@ -1345,14 +1373,12 @@
       input.value = "";
       if (input.style) input.style.height = "auto";
     }
-    // Keep a different project's in-flight load; do not revive the deleted one.
-    if (!loadingProjectId || loadingProjectId === projectId) invalidateProjectLoad();
     clearExportArtifacts();
     state.project = null;
     showWelcomeView();
   }
 
-  async function loadProject(projectId) {
+  async function loadProject(projectId, { refreshList = true } = {}) {
     const revision = ++projectLoadRevision;
     loadingProjectId = projectId;
     try {
@@ -1415,7 +1441,7 @@
       renderMessages();
       restoreInterruptedChatMessage(projectId);
       updateTemplateQuickActions(project);
-      void refreshProjects();
+      if (refreshList) void refreshProjects();
       if (state.llmConfig.provider === "preset") void loadUserBalance();
     } catch (error) {
       if (revision === projectLoadRevision) toast(error.message, true);
@@ -1599,7 +1625,7 @@
       state.project = updated;
       $("#projectHeading").textContent = updated.title;
       $("#crumbProject").textContent = updated.title;
-      await refreshProjects($("#projectSearchInput")?.value || "");
+      await refreshProjects();
       toast("课题名称已更新。");
     } catch (err) {
       toast(err.message, true);

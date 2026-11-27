@@ -106,7 +106,7 @@ function harness(sharedSession = new Map()) {
       renderPrivacyNotice, showModelStatus, updateTemplateQuickActions,
       syncAuthControls, initializeCloudAuth, submitAuthForm,
       readPublicCache, writePublicCache, sameOriginAuthFetch, storeLlmConfig, loadCloudModelConfig, saveSelectedLlmConfig,
-      sendChat, syncChatControls, loadProject, deleteCurrentProject, startGeneralChat, selectConversationSkill, configureSkillWorkspace, renderFacts, saveFacts, renderSections, recommendOutline, saveOutline, validate, restoreInterruptedChatMessage, updateRecoveredChatInput, startBatchGeneration, cancelBatchGeneration,
+      sendChat, syncChatControls, loadProject, refreshProjects, closeDeletedProject, startApplication, deleteCurrentProject, startGeneralChat, selectConversationSkill, configureSkillWorkspace, renderFacts, saveFacts, renderSections, recommendOutline, saveOutline, validate, restoreInterruptedChatMessage, updateRecoveredChatInput, startBatchGeneration, cancelBatchGeneration,
       exportDoc, fetchExportBlob, flushDraftEdits, showChatDrafts, clearExportArtifacts, focusDraftSection,
       setApi(fn) { api = fn; },
       setLoadProject(fn) { loadProject = fn; },
@@ -1703,5 +1703,79 @@ for (const sameFile of [true, false]) {
     const result = await h.ui.uploadFilesToCloud([file], "source");
     assert.equal(calls.length, sameFile ? 2 : 0);
     assert.equal(Boolean(result.documents[0].error), !sameFile);
+  });
+}
+
+test("deleting the project being opened cancels its in-flight detail response", async () => {
+  const h = harness();
+  h.ui.state.project = { id: "old" };
+  let finish;
+  h.ui.setApi(() => new Promise(resolve => { finish = resolve; }));
+  const loading = h.ui.loadProject("deleted");
+  h.ui.closeDeletedProject("deleted");
+  finish({ id: "deleted", title: "已删除", state: {} });
+  await loading;
+  assert.equal(h.ui.state.project.id, "old");
+});
+
+test("late list results cannot restore a deleted sidebar entry or discard a typed filter", async () => {
+  const h = harness();
+  const finish = [];
+  h.ui.setApi(() => new Promise(resolve => finish.push(resolve)));
+  const first = h.ui.refreshProjects();
+  const second = h.ui.refreshProjects();
+  h.element("#projectSearchInput").value = "甲";
+  const visible = { id: "a", title: "甲项目" };
+  const filtered = { id: "b", title: "乙项目" };
+  finish[1]({ projects: [visible, filtered] });
+  await second;
+  finish[0]({ projects: [{ id: "gone", title: "已删除" }] });
+  await first;
+  assert.deepEqual(Array.from(h.ui.state.projectsList, p => p.id), ["a", "b"]);
+  assert.deepEqual(h.element("#projectList").children.map(el => el.dataset.id), ["a"]);
+});
+
+test("the initial project list is fetched once and manual navigation takes precedence", async () => {
+  const h = harness();
+  h.context.localStorage.setItem("stardust_onboarding_dismissed", "1");
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  const calls = [];
+  let listRequests = 0;
+  h.ui.setApi(async url => {
+    calls.push(url);
+    if (url === "/api/projects") {
+      listRequests++;
+      if (listRequests === 1) await held;
+      return { projects: [{ id: "automatic", title: "自动恢复项目" }] };
+    }
+    if (url === "/api/projects/manual") return { id: "manual", title: "手动选择的项目", state: {} };
+    return {};
+  });
+  const starting = h.ui.startApplication();
+  await new Promise(resolve => setImmediate(resolve));
+  await h.ui.loadProject("manual");
+  release();
+  await starting;
+  assert.equal(calls.includes("/api/projects/automatic"), false);
+  assert.equal(h.ui.state.project?.id, "manual");
+});
+
+for (const transientFailure of [false, true]) {
+  test(`startup restores the selected project and retries the list only on failure (failure=${transientFailure})`, async () => {
+    const h = harness();
+    h.context.localStorage.setItem("stardust_onboarding_dismissed", "1");
+    h.context.localStorage.setItem("stardust-agent-active-project-id", "saved");
+    let lists = 0;
+    const opened = [];
+    h.ui.setApi(async url => {
+      if (url !== "/api/projects") return {};
+      if (++lists === 1 && transientFailure) throw new Error("短暂断网");
+      return { projects: [{ id: "first", title: "首个" }, { id: "saved", title: "上次的项目" }] };
+    });
+    h.ui.setLoadProject(async (id, options) => opened.push([id, options?.refreshList]));
+    await h.ui.startApplication();
+    assert.deepEqual(opened, [["saved", false]]);
+    assert.equal(lists, transientFailure ? 2 : 1);
   });
 }
