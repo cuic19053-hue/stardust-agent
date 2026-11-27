@@ -346,6 +346,68 @@ def test_figure_plan_and_explicit_confirmation(api):
     assert client.get(f"/api/projects/{other['id']}/material/jobs/{first.json()['id']}").status_code == 404
 
 
+def test_figure_review_binds_current_job_and_image_and_is_idempotent(api, tmp_path):
+    from PIL import Image
+    from proposal.material_export import export_material
+
+    client, store, project = api
+    pid = project["id"]
+    root = f"/api/projects/{pid}/material"
+    queue = MaterialJobs(store)
+    scene = ["测试标签"]
+
+    def complete_and_apply(color, number):
+        current = store.get_project(pid)
+        job_id = str(number) * 32
+        queue.submit(pid, "figure", "flow", {
+            "job_id": job_id, "base_revision": current["material_revision"], "input_snapshot": "snapshot",
+        }, f"figure-{number}")
+        job = queue.claim_local()
+        image = store.files_dir / pid / "_material" / job_id / "figure.png"
+        image.parent.mkdir(parents=True)
+        Image.new("RGB", (80, 40), color).save(image)
+        queue.worker_local(job, "finish", status="completed", result={"asset": {
+            "id": "flow", "title": "技术路线", "section_id": "method", "renderer": "svg",
+            "scene_text": scene, "text_confirmed": True,
+        }})
+        client.post(f"{root}/jobs/{job_id}/apply").raise_for_status()
+        return job_id, image
+
+    def review_body(job, image):
+        downloaded = client.get(f"{root}/jobs/{job}/files/figure.png")
+        downloaded.raise_for_status()
+        digest = hashlib.sha256(image.read_bytes()).hexdigest()
+        assert downloaded.headers["X-Figure-SHA256"] == digest
+        return {"job_id": job, "image_sha256": digest, "revision": store.get_project(pid)["material_revision"]}
+
+    first, old_image = complete_and_apply("blue", 1)
+    old_receipt = review_body(first, old_image)
+    second, current_image = complete_and_apply("green", 2)
+    current = store.get_project(pid)
+    confirm = f"{root}/figures/flow/confirm-text"
+    assert not current["diagrams"][0]["text_confirmed"]
+    assert client.post(confirm, json={"revision": current["material_revision"], "snapshot": "old", "nodes": []}).status_code == 422
+    assert client.post(confirm, json={**old_receipt, "revision": current["material_revision"]}).status_code == 409
+    assert not store.get_project(pid)["diagrams"][0]["text_confirmed"]
+
+    receipt = review_body(second, current_image)
+    response = client.post(confirm, json=receipt)
+    response.raise_for_status()
+    approved = store.get_project(pid)
+    assert approved["diagrams"][0]["text_confirmation"] == {
+        "job_id": second, "sha256": receipt["image_sha256"], "scene_text": scene,
+    }
+    assert client.post(confirm, json=receipt).status_code == 200
+    assert store.get_project(pid)["material_revision"] == approved["material_revision"]
+    good = export_material(store, pid, tmp_path / "verified")
+    assert all("场景文字尚未人工核对" not in warning for warning in good["warnings"])
+
+    Image.new("RGB", (80, 40), "red").save(current_image)
+    assert client.post(confirm, json=receipt).status_code == 409
+    changed = export_material(store, pid, tmp_path / "changed")
+    assert any("场景文字尚未人工核对" in warning for warning in changed["warnings"])
+
+
 def test_text_calls_require_confirmation_and_credentials_not_echoed(api):
     client,store,p = api
     root = f"/api/projects/{p['id']}/material"

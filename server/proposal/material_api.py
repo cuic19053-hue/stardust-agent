@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Path as PathParam
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from .material_figures import FigureSpec
+from .material_figures import FigureSpec, figure_sha256
 from .material_jobs import MaterialJobs, MaterialSecurityUnavailable, checked_bundle, job_id
 from .material_release_gate import platform_material_jobs_ready
 from .materials import (
@@ -35,6 +35,12 @@ class AcknowledgeInput(BaseModel):
     revision: int
     snapshot: str
     nodes: list[str] = Field(max_length=100)
+
+
+class FigureTextConfirmation(BaseModel):
+    revision: int = Field(ge=0)
+    job_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    image_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
 class PlansInput(BaseModel):
@@ -388,7 +394,9 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
             ] + [plan]}
         elif raw["kind"] == "figure":
             folder = artifact_folder(store, project_id, raw)
-            asset = {**result["asset"], "preview": str(folder / "figure.png"), "material_job_id": identifier}
+            asset = {**result["asset"], "preview": str(folder / "figure.png"),
+                     "material_job_id": identifier, "text_confirmed": False}
+            asset.pop("text_confirmation", None)
             fields["diagrams"] = [d for d in project["diagrams"] if d["id"] != asset["id"]] + [asset]
         fields = prepare_update(project, fields) if fields else {}
         applied = queue.apply(raw, fields)
@@ -399,15 +407,33 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
         return applied
 
     @router.post("/figures/{figure_id}/confirm-text")
-    def confirm_text(project_id: str, figure_id: str, payload: AcknowledgeInput):
+    def confirm_text(project_id: str, figure_id: str, payload: FigureTextConfirmation):
         store, project = project_for(project_id)
-        if payload.snapshot != material_view(project)["snapshot"]:
-            raise HTTPException(409, "图片已变化，请重新核对")
         diagrams = copy.deepcopy(project["diagrams"])
         asset = next((d for d in diagrams if d["id"] == figure_id), None)
         if not asset or not asset.get("material_job_id"):
-            raise HTTPException(404, "图片不存在")
+            raise HTTPException(404, "请先将图表保存到项目。")
+        if asset["material_job_id"] != payload.job_id:
+            raise HTTPException(409, "项目中已换用另一张图，请打开当前图片重新核对。")
+        if not asset.get("scene_text"):
+            raise HTTPException(422, "此图表没有待核对的场景文字。")
+        raw = MaterialJobs(store).call("raw", project_id=project_id, id=payload.job_id)
+        if not raw or raw["kind"] != "figure" or raw["target"] != figure_id or raw["status"] != "completed":
+            raise HTTPException(409, "无法确认当前图表的生成任务，请刷新后核对。")
+        if raw["result"].get("asset", {}).get("scene_text") != asset["scene_text"]:
+            raise HTTPException(409, "场景文字已变化，请确认当前任务的图片。")
+        image = artifact_folder(store, project_id, raw) / "figure.png"
+        try:
+            current_sha256 = figure_sha256(image)
+        except FileNotFoundError:
+            raise HTTPException(404, "找不到待核对的图片。") from None
+        if current_sha256 != payload.image_sha256:
+            raise HTTPException(409, "图片内容已变化，请重新打开并核对。")
+        receipt = {"job_id": payload.job_id, "sha256": current_sha256, "scene_text": asset["scene_text"]}
+        if asset.get("text_confirmed") and asset.get("text_confirmation") == receipt:
+            return material_view(project)
         asset["text_confirmed"] = True
+        asset["text_confirmation"] = receipt
         return save(store, project, payload.revision, diagrams=diagrams)
 
     @router.get("/jobs/{identifier}/files/{name}")
@@ -439,6 +465,8 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
             media_type = WORD_CONTENT_TYPE
             with path.open("rb") as word:
                 headers["Repr-Digest"] = word_digest(hashlib.file_digest(word, "sha256").digest())
+        if name == "figure.png" and raw["kind"] == "figure":
+            headers["X-Figure-SHA256"] = figure_sha256(path)
         if raw.get("kind") == "export":
             from .chat_context import scholarship_student_facts
             from .exporter import _grant_income_omitted, ensure_grant_income_artifact_safe, export_snapshot_fingerprint

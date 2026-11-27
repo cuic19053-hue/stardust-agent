@@ -16,6 +16,7 @@ from docx.shared import Cm, Pt, RGBColor
 from utils.docx_common import harden_table
 
 from .markdown_tables import is_header_separator, pipe_cells
+from .material_figures import has_current_text_confirmation
 from .materials import material_view
 from .sections import visible_section_text
 
@@ -339,8 +340,8 @@ def export_material(store, project_id: str, folder: Path) -> dict[str, Any]:
         caption.paragraph_format.first_line_indent = Pt(0)
         source = figure.get("source") or ("AI 生成概念示意，不代表实物或实测结果" if figure.get("renderer") == "gpt" else "项目资料，待核对")
         _text(container, f"来源：{source}")
-        if figure.get("scene_text") and not figure.get("text_confirmed"):
-            warnings.append(f"图 {number} 场景文字尚未人工核对")
+        if figure.get("scene_text") and not has_current_text_confirmation(figure, path):
+            warnings.append(f"图 {number} 场景文字尚未人工核对。如图片已更换，请核对当前版本。")
 
     for index, section in enumerate(project["outline"], 1):
         sid = section["id"]

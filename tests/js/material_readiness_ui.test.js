@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { createHash, webcrypto } = require("node:crypto");
 const { readFileSync } = require("node:fs");
 const { resolve } = require("node:path");
 const { test } = require("node:test");
@@ -33,6 +34,7 @@ function workspace(shared = new Map(), owner = "local") {
     set value(value) { this.valueSet = value; }
     get options() { return this.tag === "select" ? this.children : undefined; }
     addEventListener(event, listener) { this.listeners[event] = listener; }
+    async decode() {}
     append(...children) { this.children.push(...children); }
     replaceChildren(...children) { this.children = children; }
   }
@@ -42,8 +44,9 @@ function workspace(shared = new Map(), owner = "local") {
   const context = vm.createContext({
     window: {}, document: {
       querySelector: () => panel, createElement: tag => new Element(tag),
-    }, URL: { revokeObjectURL() {} }, setTimeout, clearTimeout, confirm: () => true,
-    crypto: { randomUUID: () => "abcdef00-abcd-abcd-abcd-abcdef000000" },
+    }, URL: { createObjectURL: () => "blob:figure", revokeObjectURL() {} },
+    AbortController, Blob, setTimeout, clearTimeout, confirm: () => true,
+    crypto: { randomUUID: () => "abcdef00-abcd-abcd-abcd-abcdef000000", subtle: webcrypto.subtle },
     sessionStorage: {
       getItem: key => shared.get(key) ?? null, setItem: (key, value) => shared.set(key, value),
       removeItem: key => shared.delete(key), get length() { return shared.size; },
@@ -77,7 +80,7 @@ function workspace(shared = new Map(), owner = "local") {
     }
   }
   const field = label => find(label, undefined, true).children[0];
-  return { pilot, config, state, requests, mount, reply, find, field, toasts };
+  return { pilot, config, state, requests, mount, reply, find, field, toasts, context };
 }
 
 test("an older task refresh at the same version cannot rewind the panel or advance the editor version", async () => {
@@ -291,4 +294,65 @@ test("editing a plan retains its original version until a concurrent change is e
   h.reply(h.requests[3], 6, "任务", [], true, { plans: body.items });
   await saving;
   assert.equal(h.field("图题").value, "");
+});
+
+
+test("figure text review requires opening the current image and uses its task and verified digest", async () => {
+  const h = workspace();
+  const currentJobId = "b".repeat(32);
+  const oldJobId = "a".repeat(32);
+  const scene = ["场景文字样例"];
+  const figure = { id: "target", title: "当前图表", material_job_id: currentJobId, scene_text: scene };
+  const job = id => ({ id, kind: "figure", target: figure.id, status: "completed",
+    result: { applied: true, asset: { title: "图表", scene_text: scene } } });
+  const context = { revision: 5, requirements: { priority: [] }, diagrams: [figure] };
+  const mount = h.mount("p", 5, true);
+  h.reply(h.requests[0], 5, "", [job(oldJobId), job(currentJobId)], true, { context });
+  await mount;
+  const oldRow = h.find("核对记录适用于项目当前采用的图片。");
+  assert.ok(oldRow);
+  const currentRow = h.find("打开这张图后即可核对文字。");
+  assert.ok(currentRow);
+  const confirmation = h.find("已逐字核对并确认");
+  assert.equal(confirmation.disabled, true);
+  await confirmation.onclick();
+  assert.equal(h.requests.length, 1);
+
+  const bytes = Buffer.from("figure bytes");
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  let displayedHash = "0".repeat(64);
+  const urls = [];
+  h.context.fetch = async url => {
+    urls.push(url);
+    return { ok: true, status: 200, headers: new Headers({ "X-Figure-SHA256": displayedHash }),
+      blob: async () => new Blob([bytes], { type: "image/png" }) };
+  };
+  // The first job has a historical preview, while only the second has a confirmation control.
+  const task = h.find("打开这张图后即可核对文字。");
+  const findParent = (target, node) => {
+    if (node.children.includes(target)) return node;
+    for (const child of node.children) {
+      const parent = findParent(target, child);
+      if (parent) return parent;
+    }
+  };
+  const preview = findParent(task, h.context.document.querySelector()).children.find(el => el.textContent === "查看生成图片");
+  await preview.onclick();
+  assert.equal(confirmation.disabled, true);
+  assert.match(h.toasts.at(-1), /图片校验失败/);
+  displayedHash = sha256;
+  await preview.onclick();
+  assert.equal(confirmation.disabled, false);
+  assert.ok(urls.every(url => url.endsWith(`/jobs/${currentJobId}/files/figure.png`)));
+
+  const submitting = confirmation.onclick();
+  assert.deepEqual(JSON.parse(h.requests[1].options.body), { revision: 5, job_id: currentJobId, image_sha256: sha256 });
+  h.requests[1].resolve({});
+  await eventLoop();
+  h.reply(h.requests[2], 6, "", [job(currentJobId)], true, { context: { ...context, revision: 6, diagrams: [{
+    ...figure, text_confirmed: true, text_confirmation: { job_id: currentJobId, sha256, scene_text: scene },
+  }] } });
+  await submitting;
+  assert.equal(h.find("已逐字核对并确认").disabled, true);
+  assert.ok(h.find("已保存此版本的文字核对记录"));
 });

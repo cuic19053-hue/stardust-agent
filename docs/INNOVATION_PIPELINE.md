@@ -83,7 +83,7 @@ BYOK 配置加密后保存至任务。生产 Worker 不持有 `USER_CONFIG_ENCRY
 | GET `/jobs/{id}` | 状态与产物元数据，不返回凭据和内部输入 |
 | POST `/jobs/{id}/cancel` | 取消后续执行，不承诺退还已发生费用 |
 | POST `/jobs/{id}/apply` | 原子提交结果；输入变化则保留备选 |
-| POST `/figures/{id}/confirm-text` | 人工核对当前图片场景文字 |
+| POST `/figures/{id}/confirm-text` | `revision, job_id, image_sha256`，核对当前图片场景文字。校验值来自图片响应的 `X-Figure-SHA256` |
 | GET `/jobs/{id}/files/{name}` | 用户授权后下载白名单产物 |
 
 图表类型：`svg`（程序布局）、`python`（结构化数据）、`gpt`（概念场景）、

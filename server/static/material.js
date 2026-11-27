@@ -111,17 +111,18 @@
     return workerStatus();
   }
 
-  function action(text, fn, parent) {
+  function action(text, fn, parent, enabled = () => true) {
     const button = el("button", text, "button button-small button-secondary");
     button.type = "button";
+    button.disabled = !enabled();
     const scope = captureWorkspace();
     const rendered = data;
     button.onclick = async () => {
-      if (!scope.current() || rendered !== data) return;
+      if (!scope.current() || rendered !== data || !enabled()) return;
       button.disabled = true;
       try { await fn(scope); }
       catch (e) { if (scope.current()) host.toast(e.message, true); }
-      finally { button.disabled = false; }
+      finally { button.disabled = !enabled(); }
     };
     parent.append(button);
     return button;
@@ -283,25 +284,121 @@
     assembling_document: "组装 Word", rendering_pages: "渲染页面供检查",
     saving_artifacts: "保存下载文件",
   };
-  async function blobUrl(url) {
+  async function verifiedFigure(response, blob) {
+    const sha256 = response.headers.get("X-Figure-SHA256");
+    if (response.status !== 200 || blob.type !== "image/png" || !/^[a-f0-9]{64}$/.test(sha256))
+      throw new Error("暂时无法核对这张图片，请重新打开预览。");
+    if (globalThis.crypto?.subtle) {
+      const bytes = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+      const actual = Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, "0")).join("");
+      if (actual !== sha256) throw new Error("图片校验失败，请重新打开预览。");
+    }
+    return sha256;
+  }
+
+  async function loadArtifact(url, { checkFigure = false, signal } = {}) {
     const epoch = artifactEpoch;
     const scope = captureWorkspace();
     const token = host.state.authSession?.access_token;
-    let blob;
+    let blob, sha256;
     if (url.split("?")[0].endsWith("/files/proposal.docx")) {
       blob = await window.WordExport.fetchWordFile(url, { token });
     } else {
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
-      const response = await fetch(url, { headers });
-      if (!response.ok) throw new Error("私有产物读取失败，请检查登录状态");
+      const response = await fetch(url, { headers, signal, cache: "no-store", redirect: "error" });
+      if (!response.ok) throw new Error("暂时无法读取文件，请检查连接或登录状态。");
       blob = await response.blob();
+      if (checkFigure) sha256 = await verifiedFigure(response, blob);
     }
+    if (signal?.aborted) throw new Error("图片预览加载超时，请重试。");
     if (epoch !== artifactEpoch || !scope.current())
       throw new Error("项目内容已更新，请重新打开文件。");
     const objectUrl = URL.createObjectURL(blob);
     urls.push(objectUrl);
-    return objectUrl;
+    return { url: objectUrl, sha256 };
   }
+
+  async function blobUrl(url) {
+    return (await loadArtifact(url)).url;
+  }
+
+  function showFigureTask(row, job) {
+    const applied = (data.context.diagrams || []).find(asset => asset.id === job.target && asset.material_job_id === job.id);
+    const scene = applied?.scene_text || job.result?.asset?.scene_text;
+    const saved = applied?.text_confirmed && applied.text_confirmation?.job_id === job.id
+      && sameValue(applied.text_confirmation.scene_text, scene) ? applied.text_confirmation.sha256 : null;
+    let viewImage, viewedSha256, confirmButton, note;
+    const canConfirm = () => Boolean(viewedSha256 && viewedSha256 !== saved);
+
+    function updateReview() {
+      if (!confirmButton) return;
+      confirmButton.disabled = !canConfirm();
+      note.textContent = saved && (!viewedSha256 || viewedSha256 === saved) ? "已保存此版本的文字核对记录。"
+        : saved ? "这张图片的内容与上次核对时不同，请重新核对。"
+        : viewedSha256 ? "请逐字核对图片中的场景文字。" : "打开这张图后即可核对文字。";
+    }
+
+    action("查看生成图片", async scope => {
+      viewedSha256 = null;
+      updateReview();
+      const epoch = artifactEpoch;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 20000);
+      try {
+        const { url, sha256 } = await loadArtifact(path(`/jobs/${job.id}/files/figure.png`),
+          { checkFigure: Boolean(confirmButton), signal: controller.signal });
+        const image = el("img");
+        image.alt = applied?.title || job.result?.asset?.title || "生成的图表";
+        image.src = url;
+        try {
+          await waitFor(image.decode(), 10000, "图片解码超时。");
+          if (controller.signal.aborted) throw new Error("图片预览加载超时。");
+        } catch {
+          discardArtifact(url);
+          throw new Error("图片无法显示，请重新打开预览。");
+        }
+        if (!scope.current() || epoch !== artifactEpoch) {
+          discardArtifact(url);
+          return;
+        }
+        if (viewImage) {
+          discardArtifact(viewImage.src);
+          viewImage.remove();
+        }
+        row.append(image);
+        viewImage = image;
+        viewedSha256 = sha256;
+      } catch (error) {
+        if (controller.signal.aborted) throw new Error("图片预览加载超时，请重试。");
+        throw error;
+      } finally {
+        clearTimeout(timer);
+        updateReview();
+      }
+    }, row);
+    if (!scene?.length) return;
+    row.append(el("p", `场景文字：${scene.join("；")}`));
+    if (!applied) {
+      row.append(el("p", "核对记录适用于项目当前采用的图片。"));
+      return;
+    }
+    note = el("p", "", "inline-hint");
+    row.append(note);
+    confirmButton = action("已逐字核对并确认", async scope => {
+      if (!confirm("确认已经逐字核对这张图片的场景文字？")) return;
+      try {
+        await request(`/figures/${encodeURIComponent(job.target)}/confirm-text`, "POST", {
+          revision: data.context.revision, job_id: job.id, image_sha256: viewedSha256,
+        });
+      } finally {
+        viewedSha256 = null;
+        updateReview();
+        if (scope.current()) await refresh().catch(() => {});
+      }
+    }, row, canConfirm);
+    updateReview();
+  }
+
   async function refresh() {
     if (!configured()) return;
     const scope = captureWorkspace();
@@ -327,6 +424,11 @@
       return;
     }
     throw new Error("材料版本正在同步，请稍后刷新任务。");
+  }
+
+  function discardArtifact(url) {
+    URL.revokeObjectURL(url);
+    urls = urls.filter(item => item !== url);
   }
 
   function revokeArtifacts() {
@@ -448,21 +550,7 @@
               host.previewOutline?.(job.result);
           }, row);
         }
-        if (job.kind === "figure") {
-          action("查看生成图片", async () => {
-            const image = el("img"); image.alt = job.target;
-            image.src = await blobUrl(path(`/jobs/${job.id}/files/figure.png`)); row.append(image);
-          }, row);
-          if (job.result?.asset?.scene_text?.length) {
-            row.append(el("p", `请逐字核对场景文字：${job.result.asset.scene_text.join("；")}`));
-            action("已逐字核对并确认", async () => {
-              if (!confirm("请先查看大图，并确认场景内所有关键文字准确。")) return;
-              await request(`/figures/${job.target}/confirm-text`, "POST", {
-                revision: data.context.revision, snapshot: data.context.snapshot, nodes: [],
-              }); await refresh();
-            }, row);
-          }
-        }
+        if (job.kind === "figure") showFigureTask(row, job);
         if (job.kind === "export") {
           const report = job.result.report || {};
           const quality = { failed: "检查发现问题", not_checked: "尚未完成页面检查", needs_review: "需人工核对" };
@@ -909,8 +997,7 @@
         if (onWordReady) return onWordReady(filePath, current.result?.report?.warnings);
         const url = await blobUrl(filePath + "?current=true");
         if (host.state.project?.id !== id || !isCurrent()) {
-          URL.revokeObjectURL(url);
-          urls = urls.filter(item => item !== url);
+          discardArtifact(url);
           return;
         }
         const link = el("a");
