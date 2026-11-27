@@ -473,8 +473,10 @@ def test_cloud_registration_does_not_download_or_parse_and_processing_can_retry(
         if download:
             downloads.append(_id)
         return dict(document)
-    def update(_id, text, status, warning, low, confirmed):
+    def update(_id, text, status, warning, low, confirmed, *, only_unprocessed):
+        assert only_unprocessed
         document.update(extracted_text=text, extraction_status=status, extraction_warning=warning, confirmed=confirmed)
+        return True
     fake_store = SimpleNamespace(
         register_document=register_document, get_document=get_document,
         get_project=lambda _: {"id": project_id, "state": {}}, update_document_extraction=update,
@@ -1209,3 +1211,103 @@ def test_fact_form_updates_metadata_and_facts_in_one_revision(client):
     current = client.get(root).json()
     assert current["school"] == "甲大学" and current["state"]["confirmed_facts"]["college"] == "甲学院"
     assert current["material_revision"] == saved["material_revision"]
+
+
+def test_fact_form_clears_existing_fields_and_keeps_untouched_evidence(client):
+    import app as server_app
+    project = client.post("/api/projects", json={"title": "已重命名的项目"}).json()
+    root = f"/api/projects/{project['id']}"
+    original = {"budget": "三千元", "custom_field_1": "旧记录", "project_name": "最初的名称", "college": "甲学院"}
+    state = {**project["state"], **original, "confirmed_facts": original,
+             "fact_sources": {key: "学生口述原话" for key in original}}
+    server_app.store.update_project(project["id"], state=state)
+    current = client.get(root).json()
+    form = {"expected_revision": current["material_revision"], "project": {},
+            "facts": {**original, "budget": "", "custom_field_1": "  "}}
+    assert client.put(root + "/facts/form", json=form).status_code == 200
+    saved = client.get(root).json()
+    assert saved["title"] == "已重命名的项目"
+    for field in ("budget", "custom_field_1"):
+        assert all(field not in group for group in (saved["state"], saved["state"]["confirmed_facts"], saved["state"]["fact_sources"]))
+    assert saved["state"]["fact_sources"]["college"] == "学生口述原话"
+    form["expected_revision"] = saved["material_revision"]
+    assert client.put(root + "/facts/form", json=form).status_code == 200
+    assert client.get(root).json()["material_revision"] == saved["material_revision"]
+
+
+def test_oversized_fact_form_keeps_all_original_fields(client):
+    project = client.post("/api/projects", json={"title": "长度验证", "school": "甲校"}).json()
+    root = f"/api/projects/{project['id']}"
+    form = {"expected_revision": project["material_revision"], "project": {"school": "乙校"},
+            "facts": {"method": "字" * 2001}}
+    assert client.put(root + "/facts/form", json=form).status_code == 422
+    assert client.get(root).json()["school"] == "甲校"
+
+
+@pytest.mark.parametrize("late_failure", [False, True])
+def test_ocr_finishing_after_student_confirmation_preserves_review(client, monkeypatch, tmp_path, late_failure):
+    import app as server_app
+    from types import SimpleNamespace
+    path = tmp_path / "note.txt"
+    path.write_text("原材料文字")
+    doc = {"id": "doc", "project_id": "one", "kind": "source", "original_name": "note.txt",
+           "stored_path": str(path), "confirmed": False, "extraction_status": "pending", "extracted_text": ""}
+    downloads = []
+    def get_document(_id, download=True):
+        if download:
+            downloads.append(_id)
+        return dict(doc)
+
+    def update(_id, text, status, warning, low, confirmed, *, only_unprocessed=False):
+        if only_unprocessed and (doc["confirmed"] or doc["extraction_status"] == "ready"):
+            return False
+        doc.update(extracted_text=text, confirmed=confirmed, extraction_status=status)
+        return True
+
+    def extract(*_):
+        doc.update(extracted_text="学生已校对的版本", confirmed=True, extraction_status="ready")
+        if late_failure:
+            raise ValueError("识别失败")
+        return server_app.Extraction(text="第二次机器识别的结果")
+
+    monkeypatch.setattr(server_app, "store", SimpleNamespace(get_document=get_document, update_document_extraction=update))
+    monkeypatch.setattr(server_app, "_extract_uploaded_document", extract)
+    for _ in range(2):
+        result = server_app._process_cloud_document(get_document("doc", download=False))["documents"][0]
+        assert result["document"]["extracted_text"] == "学生已校对的版本"
+        assert result["document"]["confirmed"] and not result["needs_confirmation"] and "error" not in result
+    assert downloads == ["doc"]
+
+
+def test_template_processing_respects_another_choice_and_ready_replays(monkeypatch, tmp_path):
+    import app as server_app
+    from types import SimpleNamespace
+    path = tmp_path / "template.txt"
+    path.write_text("模板")
+    project = {"id": "one", "state": {}, "template_document_id": "first", "material_revision": 1}
+    doc = {"id": "slow", "project_id": "one", "kind": "template", "original_name": path.name,
+           "stored_path": str(path), "extraction_status": "pending", "confirmed": False}
+    parses = []
+
+    def extract(*_):
+        parses.append(True)
+        project.update(template_document_id="another", material_revision=2)
+        return server_app.Extraction(text="模板")
+
+    def update_document(_id, text, status, warning, low, confirmed, **kwargs):
+        doc.update(extraction_status=status, confirmed=confirmed, extracted_text=text)
+        return True
+
+    def update_project(_id, **fields):
+        project.update(fields)
+        return project
+
+    store = SimpleNamespace(get_document=lambda *a, **kw: dict(doc), get_project=lambda _: dict(project),
+                            update_project=update_project, update_document_extraction=update_document)
+    monkeypatch.setattr(server_app, "store", store)
+    monkeypatch.setattr(server_app, "_extract_uploaded_document", extract)
+    for _ in range(2):
+        result = server_app._process_cloud_document(dict(doc))
+        assert result["documents"][0]["document"]["extraction_status"] == "ready"
+        assert project["template_document_id"] == "another"
+    assert len(parses) == 1

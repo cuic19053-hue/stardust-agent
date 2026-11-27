@@ -222,3 +222,15 @@ def test_cloud_chunk_replace_maps_conflict_without_overwrite(monkeypatch, tmp_pa
     monkeypatch.setattr(store, "_rest", conflict)
     with pytest.raises(MaterialConflict):
         store.replace_chunks("doc-1", [{"source_ref":"第 1 段", "content":"内容"}], expected_text="内容")
+
+
+def test_automatic_ocr_only_updates_unconfirmed_unfinished_rows(monkeypatch, tmp_path):
+    store = SupabaseStore("https://example.supabase.co", "test", tmp_path)
+    calls = []
+    def rest(table, method, params, payload):
+        calls.append((table, method, dict(params)))
+        return []
+
+    monkeypatch.setattr(store, "_rest", rest)
+    assert store.update_document_extraction("doc", "", "error", only_unprocessed=True) is False
+    assert calls == [("documents", "PATCH", {"id": "eq.doc", "confirmed": "eq.false", "extraction_status": "neq.ready"})]

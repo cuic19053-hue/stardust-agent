@@ -1848,10 +1848,11 @@
 
   const {
     uploadLimitMB, oversizedUploadError, uploadFilesToCloud, cloudUploadIntent, uploadResumable,
-  } = window.MaterialUpload.create({ state, $, api: (...args) => api(...args) });
+  } = window.MaterialUpload.create({ state, api: (...args) => api(...args) });
 
   async function uploadFiles(fileList, kind = state.uploadKind, fromChat = false) {
-    if (!state.project || !fileList.length) return;
+    const view = currentProjectView();
+    if (!view.active() || !fileList.length) return;
     if (state.uploading) return toast("材料正在上传，请稍候。", true);
     if (fileList.length > 12) return toast("一次最多上传 12 个文件。", true);
     const sizeError = oversizedUploadError(fileList);
@@ -1862,7 +1863,7 @@
       $("#chatFileInput").value = "";
       return toast(sizeError, true);
     }
-    const projectId = state.project.id;
+    const projectId = view.id;
     const form = new FormData();
     for (const file of fileList) form.append("files", file);
     const names = fileList.map((file) => file.name);
@@ -1878,13 +1879,15 @@
     status.classList.remove("hidden", "error");
     try {
       toast(state.cloudMode ? "正在安全上传并识别材料…" : "正在本机识别文件…");
+      const reportProgress = message => { if (view.active()) status.textContent = message; };
       const result = state.cloudMode
-        ? await uploadFilesToCloud(fileList, kind, projectId)
+        ? await uploadFilesToCloud(fileList, kind, projectId, false, reportProgress)
         : await api(`/api/projects/${projectId}/documents?${query}`, { method: "POST", body: form });
       const failed = (result.documents || []).filter((d) => d.error);
       const uploaded = (result.documents || []).filter((d) => !d.error);
-      if (state.project?.id !== projectId) return;
+      if (!view.active()) return;
       await loadProject(projectId);
+      if (!view.active()) return;
       renderUploadResult(result.documents || []);
       toast(failed.length ? "有文件处理失败，请查看上传结果。" : `上传成功：${uploaded.length} 个文件，可预览并核对文字。`, failed.length > 0);
       const firstDocument = (result.documents || []).find((item) => item.document?.id);
@@ -1897,13 +1900,13 @@
           `我刚上传了${labels[kind] || "材料"}：${(successfulNames.length ? successfulNames : names).join("、")}。请告诉我下一步怎么处理。`
         );
       }
-      if (fromChat && failed.length) {
+      if (fromChat && failed.length && view.active()) {
         appendMessage("assistant", `以下文件未能完成处理：\n${failed.map((item) =>
           `${item.document?.original_name || "文件"}：${item.error}`
         ).join("\n")}\n请查看项目材料区的上传结果后重试。`);
       }
     } catch (error) {
-      if (state.project?.id !== projectId) return;
+      if (!view.active()) return;
       renderUploadResult(names.map((name) => ({ document: { original_name: name }, error: error.message })));
       toast(error.message, true);
       if (fromChat) appendMessage("assistant", `上传没有完成：${error.message}`);
@@ -2692,14 +2695,18 @@
     const view = currentProjectView();
     if (!view.active()) return;
     const payload = {};
+    const confirmed = state.project.state?.confirmed_facts || {};
     $$("[data-fact]").forEach((field) => {
       if (field.dataset.fact === "political_stage" && $("#politicalStageField").hidden) return;
-      if (field.value.trim() || ["application_year", "education_level", "college", "political_stage"].includes(field.dataset.fact))
-        payload[field.dataset.fact] = field.value.trim();
+      const value = field.value.trim();
+      const original = String(confirmed[field.dataset.fact] ?? "").replace(/\r\n?/g, "\n").trim();
+      if (value !== original) payload[field.dataset.fact] = value;
     });
     const projectFields = {};
     $$("[data-project]").forEach((field) => {
-      projectFields[field.dataset.project] = field.value.trim();
+      const key = field.dataset.project;
+      const value = field.value.trim();
+      if (value !== String(state.project[key] ?? "")) projectFields[key] = value;
     });
     try {
       await api(`/api/projects/${view.id}/facts/form`, {

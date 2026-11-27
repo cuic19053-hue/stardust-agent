@@ -300,7 +300,7 @@ test("switching from a research project clears hidden editor fields before savin
   await h.ui.saveFacts();
   const { facts: payload } = JSON.parse(requests[0].options.body);
   assert.equal(payload.budget, undefined);
-  assert.equal(payload.college, "新学院");
+  assert.equal(payload.college, undefined, "leave the existing college and its evidence intact");
   h.ui.state.project.state.confirmed_facts.budget = "200 元";
   h.ui.renderFacts();
   assert.equal(budgetParent.classList.contains("hidden"), false, "previously saved data remains editable");
@@ -1591,3 +1591,117 @@ test("removing a material refreshes the project where the card was rendered", as
   await remove.click();
   assert.deepEqual(calls, [["DELETE", `/api/documents/${doc.id}`], ["refresh", "alpha"]]);
 });
+
+test("clearing a confirmed fact sends a deletion while untouched evidence stays out of the form", async () => {
+  const h = harness();
+  h.ui.state.project = { id: "one", material_revision: 1, state: { confirmed_facts: {
+    budget: "三千元", college: "甲学院", method: "  调研\r\n复核  ",
+  } } };
+  h.setFactFields([
+    { dataset: { fact: "budget" }, value: "  " },
+    { dataset: { fact: "college" }, value: "甲学院" },
+    { dataset: { fact: "method" }, value: "  调研\n复核  " },
+  ]);
+  let form;
+  h.ui.setApi(async (_url, options) => { form = JSON.parse(options.body); return {}; });
+  h.ui.setLoadProject(async () => {});
+  await h.ui.saveFacts();
+  assert.deepEqual(form.facts, { budget: "" });
+});
+
+test("a completed upload does not display the old file or send chat after navigating during reload", async () => {
+  const h = harness();
+  h.context.FormData = FormData;
+  h.context.URLSearchParams = URLSearchParams;
+  h.ui.state.project = { id: "one" };
+  const paths = [];
+  h.ui.setApi(async url => { paths.push(url); return { documents: [{ document: doc }] }; });
+  h.ui.setLoadProject(async () => { h.ui.state.project = { id: "two" }; });
+  await h.ui.uploadFiles([new File(["1"], "第一项目.pdf")], "source", true);
+  assert.equal(h.element("#documentPreviewDialog").open, false);
+  assert.equal(h.element("#uploadResult").children.length, 0);
+  assert.equal(paths.length, 1);
+});
+
+test("a project switch suppresses pending cloud upload progress", async () => {
+  const h = cloudHarness();
+  h.context.FormData = FormData;
+  h.context.URLSearchParams = URLSearchParams;
+  const placeholder = "新项目正在打开";
+  h.context.fetch = async () => {
+    h.ui.state.project = { id: "another" };
+    h.element("#uploadResult").textContent = placeholder;
+    return { ok: true, headers: new Headers({ "Content-Type": "application/json" }) };
+  };
+  h.ui.setApi(async () => ({ documents: [{ document: doc }] }));
+  await h.ui.uploadFiles([new File(["abc"], "毕业材料.pdf")]);
+  assert.equal(h.element("#uploadResult").textContent, placeholder);
+});
+
+test("a small direct upload retains its object identity after an unacknowledged registration", async () => {
+  const h = cloudHarness();
+  h.ui.state.authConfig.storage_upload_endpoint = "";
+  const uploads = [];
+  h.ui.state.authClient.storage = { from: () => ({ upload: async path => { uploads.push(path); return {}; } }) };
+  const registrations = [];
+  h.ui.setApi(async (url, options) => {
+    if (url.endsWith("/from-storage")) {
+      const id = JSON.parse(options.body).document_id;
+      registrations.push(id);
+      if (registrations.length === 1) throw new Error("响应超时");
+      return { documents: [{ document: { id } }] };
+    }
+    return { documents: [{ document: { id: registrations.at(-1) } }] };
+  });
+  const file = new File(["附件"], "甲项目.txt", { lastModified: 9 });
+  const first = await h.ui.uploadFilesToCloud([file], "source");
+  assert.match(first.documents[0].error, /响应超时/);
+  const second = await h.ui.uploadFilesToCloud([file], "source");
+  assert.equal(second.documents[0].document.id, registrations[0]);
+  assert.equal(uploads.length, 1);
+  assert.deepEqual(registrations, [registrations[0], registrations[0]]);
+});
+
+test("two attachments with identical metadata and edges but different middle bytes resume independently", async () => {
+  const h = cloudHarness();
+  const edge = new Uint8Array(65536);
+  const file = middle => new File([edge, middle, edge], "附件.pdf", { lastModified: 7 });
+  const intent = value => h.ui.cloudUploadIntent(file(value), "source", h.ui.state.project.id);
+  const first = await intent("A");
+  assert.notEqual((await intent("B")).documentId, first.documentId);
+  assert.equal((await intent("A")).documentId, first.documentId);
+});
+
+test("changing account during the first upload stops registration and later files", async () => {
+  const h = cloudHarness();
+  h.ui.state.authConfig.storage_upload_endpoint = "";
+  let uploads = 0;
+  h.ui.state.authClient.storage = { from: () => ({ upload: async () => {
+    uploads++;
+    h.ui.state.authSession = { user: { id: "another" }, access_token: "another-session" };
+    return {};
+  } }) };
+  const requests = [];
+  h.ui.setApi(async url => { requests.push(url); return { documents: [{ document: doc }] }; });
+  const result = await h.ui.uploadFilesToCloud([new File(["a"], "a.txt"), new File(["b"], "b.txt")], "source");
+  assert.equal(uploads, 1);
+  assert.equal(requests.length, 0);
+  assert.ok(result.documents.every(item => item.error));
+});
+
+for (const sameFile of [true, false]) {
+  test(`direct upload verifies a conflicting object's bytes before registration (match=${sameFile})`, async () => {
+    const h = cloudHarness();
+    h.ui.state.authConfig.storage_upload_endpoint = "";
+    const file = new File(["abc"], "相同文件名.txt");
+    h.ui.state.authClient.storage = { from: () => ({
+      upload: async () => ({ error: Object.assign(new Error("已存在"), { code: "KeyAlreadyExists" }) }),
+      download: async () => ({ data: new Blob([sameFile ? "abc" : "xyz"]) }),
+    }) };
+    const calls = [];
+    h.ui.setApi(async url => { calls.push(url); return { documents: [{ document: doc }] }; });
+    const result = await h.ui.uploadFilesToCloud([file], "source");
+    assert.equal(calls.length, sameFile ? 2 : 0);
+    assert.equal(Boolean(result.documents[0].error), !sameFile);
+  });
+}

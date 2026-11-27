@@ -560,11 +560,16 @@ class SupabaseStore:
         low_confidence_count: int = 0,
         confirmed: bool = False,
         confirmed_by_user: bool = False,
-    ) -> None:
-        self._rest(
+        *,
+        only_unprocessed: bool = False,
+    ) -> bool:
+        params = [("id", f"eq.{document_id}")]
+        if only_unprocessed:
+            params.extend([("confirmed", "eq.false"), ("extraction_status", "neq.ready")])
+        rows = self._rest(
             "documents",
             "PATCH",
-            params=[("id", f"eq.{document_id}")],
+            params=params,
             payload={
                 "extracted_text": text,
                 "extraction_status": status,
@@ -574,11 +579,14 @@ class SupabaseStore:
                 "confirmation_origin": "user" if confirmed and confirmed_by_user else "",
             },
         )
+        if not rows:
+            return False
         from .materials import touch_document
         if os.environ.get("MATERIAL_PIPELINE_ENABLED", "").lower() == "true":
             document = self.get_document(document_id, download=False)
             if document:
                 touch_document(self, document)
+        return True
 
     def set_template_document(self, project_id: str, document_id: str | None) -> None:
         self.update_project(project_id, template_document_id=document_id)

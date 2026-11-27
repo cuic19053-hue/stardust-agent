@@ -1992,60 +1992,69 @@ def register_cloud_upload(project_id: str, payload: StorageDocumentInput) -> dic
         ) from exc
 
 
+def _cloud_processing_result(document: dict[str, Any]) -> dict[str, Any]:
+    item = {"document": _public_document(document), "chunk_count": 0,
+            "needs_confirmation": document["kind"] != "template" and not document.get("confirmed")}
+    if document.get("extraction_status") == "error":
+        item["error"] = document.get("extraction_warning") or "识别失败，请重试。"
+        return {"documents": [item], "note": "原文件已保存，识别失败可单独重试。"}
+    return {"documents": [item], "note": "材料已保存；非模板文字须由你核对确认后才能用于检索。"}
+
+
 def _process_cloud_document(document: dict[str, Any]) -> dict[str, Any]:
     """Processing is separate from upload/registration, and can be retried by ID."""
     document_id = document["id"]
-    owner = request_identity.get() or {}
-    observability.bind(project_id=document["project_id"],
-                       trace_id=observability.correlated("upload", owner.get("user_id", "local"), document_id))
     project_id = document["project_id"]
+    template = document["kind"] == "template"
+    if document.get("confirmed") or document.get("extraction_status") == "ready":
+        return _cloud_processing_result(document)
+    previous_template = _safe_project(project_id).get("template_document_id") if template else None
+
+    owner = request_identity.get() or {}
+    observability.bind(project_id=project_id,
+                       trace_id=observability.correlated("upload", owner.get("user_id", "local"), document_id))
     try:
         loaded = store.get_document(document_id)
+        if not loaded:
+            raise HTTPException(404, "材料不存在")
         path = Path(loaded["stored_path"])
         if path.stat().st_size > MAX_UPLOAD_BYTES:
             raise ValueError("单个文件最大支持 50 MB。")
         file_bytes = path.read_bytes()
         observability.emit("upload.parsing", stage="extract", status="started", metadata={"file_bytes": len(file_bytes)})
         extraction = _extract_uploaded_document(document["original_name"], file_bytes, document["kind"])
-        observability.emit("upload.parsing", stage="extract", status="failed" if extraction.status == "error" else "completed",
-                           code="MATERIAL_PARSE_FAILED" if extraction.status == "error" else None)
-        confirmed = document["kind"] == "template"
-        store.update_document_extraction(
-            document["id"],
-            extraction.text,
-            extraction.status,
-            extraction.warning,
-            extraction.low_confidence_count,
-            confirmed=confirmed,
-        )
-        chunks = 0
-        if document["kind"] == "template":
-            store.set_template_document(project_id, document["id"])
-            current_project = store.get_project(project_id)
-            if current_project:
-                current_state = dict(current_project["state"])
-                current_state["template_preference"] = "has_template"
-                current_state["template_answer"] = f"已上传模板：{document['original_name']}"
-                store.update_project(project_id, state=current_state)
-        updated = store.get_document(document["id"])
-        return {
-            "documents": [
-                {
-                    "document": _public_document(updated or document),
-                    "chunk_count": chunks,
-                    "needs_confirmation": document["kind"] != "template",
-                }
-            ],
-            "note": "材料已保存；非模板文字须由你核对确认后才能用于检索。",
-        }
+    except HTTPException:
+        raise
     except Exception as exc:
         observability.emit("upload.parsing", stage="extract", status="failed", level="error", error=exc)
-        warning = _document_extraction_error(exc)
-        store.update_document_extraction(document_id, "", "error", warning, 0, confirmed=False)
-        return {"documents": [{
-            "document": _public_document(store.get_document(document_id, download=False) or document),
-            "error": warning, "chunk_count": 0,
-        }], "note": "原文件已保存，识别失败可单独重试。"}
+        extraction = Extraction(text="", warning=_document_extraction_error(exc), status="error")
+    else:
+        observability.emit("upload.parsing", stage="extract", status="failed" if extraction.status == "error" else "completed",
+                           code="MATERIAL_PARSE_FAILED" if extraction.status == "error" else None)
+
+    if template and extraction.status != "error":
+        project = _safe_project(project_id)
+        active_template = project.get("template_document_id")
+        if active_template == previous_template and active_template != document_id:
+            # Publish the selection before marking processing complete. A failed
+            # project write leaves the material retryable; a lost success response
+            # can resume with the selection already in place.
+            state = {**project["state"], "template_preference": "has_template",
+                     "template_answer": f"已上传模板：{document['original_name']}"}
+            if not store.update_project(project_id, template_document_id=document_id, state=state,
+                                        expected_revision=project["material_revision"]):
+                raise HTTPException(404, "项目不存在")
+
+    # Both a result and a parsing error can arrive after a student's correction.
+    # The database evaluates these conditions within the write itself.
+    store.update_document_extraction(
+        document_id, extraction.text, extraction.status, extraction.warning, extraction.low_confidence_count,
+        confirmed=template and extraction.status != "error", only_unprocessed=True,
+    )
+    current = store.get_document(document_id, download=False)
+    if not current:
+        raise HTTPException(404, "材料不存在")
+    return _cloud_processing_result(current)
 
 
 @app.post("/api/documents/{document_id}/process")
@@ -2942,29 +2951,39 @@ def _save_project_facts(
     political_stage = str(payload.get("political_stage", "")).strip()
     if "political_stage" in payload and political_stage not in {"", "入党积极分子", "预备党员"}:
         raise HTTPException(status_code=422, detail="党组织考察阶段无效。")
-    facts = {
-        key: str(value).strip()[:2000]
-        for key, value in payload.items()
-        if valid_fact_key(key) and str(value).strip()
-    }
+    form_save = expected_revision is not None
     state = dict(project["state"])
     confirmed = dict(state.get("confirmed_facts", {}))
-    for optional_key in ("application_year", "education_level", "college", "political_stage"):
-        if optional_key in payload and not str(payload[optional_key]).strip():
-            confirmed.pop(optional_key, None)
-            state.pop(optional_key, None)
-            if isinstance(state.get("fact_sources"), dict):
-                state["fact_sources"].pop(optional_key, None)
-    confirmed.update(facts)
-    state["confirmed_facts"] = confirmed
-    state.update(facts)
-    state.setdefault("fact_sources", {})
-    for key in facts:
-        state["fact_sources"][key] = "学生在网页中手动确认"
-    update_fields = {**project_fields, "state": state}
-    if facts.get("project_name"):
-        update_fields["title"] = facts["project_name"]
-    if not store.update_project(project_id, expected_revision=project["material_revision"], **update_fields):
+    sources = dict(state.get("fact_sources", {}))
+    fields = {k: v for k, v in project_fields.items() if v != project.get(k)}
+    changed = False
+    for key, raw in payload.items():
+        if not valid_fact_key(key):
+            continue
+        value = str(raw).strip()
+        if form_save and value == str(confirmed.get(key, "")):
+            continue
+        if value:
+            if form_save and len(value) > 2000:
+                raise HTTPException(422, "单项事实最多可保存 2000 字，请缩短后再保存。")
+            confirmed[key] = state[key] = value[:2000]
+            sources[key] = "学生在网页中手动确认"
+            if key == "project_name":
+                fields["title"] = confirmed[key]
+        elif (form_save and key in confirmed) or key in ("application_year", "education_level", "college", "political_stage"):
+            confirmed.pop(key, None)
+            state.pop(key, None)
+            sources.pop(key, None)
+        else:
+            continue
+        changed = True
+    if changed:
+        state["confirmed_facts"] = confirmed
+        state["fact_sources"] = sources
+        fields["state"] = state
+    if not fields:
+        return {"confirmed_facts": confirmed}
+    if not store.update_project(project_id, expected_revision=project["material_revision"], **fields):
         raise HTTPException(status_code=404, detail="项目不存在")
     return {"confirmed_facts": confirmed}
 
