@@ -120,6 +120,10 @@
   // A completed model call can outlive a failed history write. Keep its
   // returned text only in this page, scoped to the originating project.
   const uncertainSectionDrafts = new Map();
+  const sectionEdits = window.SectionEdits.create({
+    state, api: (...args) => api(...args), currentProjectView, setDraftSaveStatus, updateDraftStats,
+  });
+  const { flushDraftEdits, confirmGeneratedSection, applyGeneratedSection } = sectionEdits;
   const deletedProjectEpochs = new Map();
   let chatRecoveryEpoch = 0;
 
@@ -228,6 +232,7 @@
     loadedRecoveryOwner = null;
     try { sessionStorage.removeItem(chatRecoveryStorageKey); } catch {}
     uncertainSectionDrafts.clear();
+    sectionEdits.clear();
     deletedProjectEpochs.clear();
     const input = $("#chatInput");
     if (input) {
@@ -1358,6 +1363,7 @@
     recoveredChatInputs.delete(projectId);
     persistInterruptedChatMessages();
     deletedProjectEpochs.set(projectId, (deletedProjectEpochs.get(projectId) || 0) + 1);
+    sectionEdits.removeProject(projectId);
     for (const key of uncertainSectionDrafts.keys()) {
       if (key.startsWith(`${projectId}\0`)) uncertainSectionDrafts.delete(key);
     }
@@ -1387,6 +1393,7 @@
       });
       const project = await api(`/api/projects/${projectId}`);
       if (revision !== projectLoadRevision) return;
+      if (state.project?.id === projectId && project.material_revision < state.project.material_revision) return;
       if (state.project?.id !== projectId) {
         clearProjectResults();
         const input = $("#chatInput");
@@ -1425,7 +1432,7 @@
       renderConfirmedSources();
       renderOutline();
       renderSections();
-      if (window.MaterialPilot) await window.MaterialPilot.mount({ api, state, toast, reload: loadProject, isProjectActive: chatProjectIsActive });
+      if (window.MaterialPilot) await window.MaterialPilot.mount({ api, state, toast, reload: loadProject, flushEdits: flushDraftEdits, isProjectActive: chatProjectIsActive });
       if (revision !== projectLoadRevision) return;
       if (window.DraftReview) void window.DraftReview.mount({ api, state, toast,
         focusSection: focusDraftSection,
@@ -1433,10 +1440,7 @@
           handleTabNavigation("panel-materials");
           document.getElementById("panel-materials")?.scrollIntoView({ behavior: "smooth" });
         },
-        flushEdits: async () => {
-          await flushDraftEdits();
-          if (window.MaterialPilot?.active()) await window.MaterialPilot.flushEdits();
-        } });
+        flushEdits: flushDraftEdits });
       renderDiagrams();
       renderMessages();
       restoreInterruptedChatMessage(projectId);
@@ -3068,8 +3072,6 @@
     try {
       await flushDraftEdits();
       if (state.project?.id !== projectId) return;
-      if (window.MaterialPilot?.active()) await window.MaterialPilot.flushEdits();
-      if (state.project?.id !== projectId) return;
       const result = await api(`/api/projects/${projectId}/outline`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -3147,6 +3149,12 @@
     if (btn) btn.textContent = allSectionsFolded ? "展开全部" : "折叠全部";
   }
 
+  function rememberSectionCandidate(key, content) {
+    const drafts = uncertainSectionDrafts.get(key) || [];
+    if (!drafts.includes(content)) drafts.push(content);
+    uncertainSectionDrafts.set(key, drafts);
+  }
+
   async function startBatchGeneration() {
     if (!state.project || !state.outline?.length) {
       toast("请先拟定并确认目录", true);
@@ -3157,12 +3165,13 @@
     state.batchGenerating = true;
     state.batchAbort = false;
     const projectId = state.project.id;
+    const view = currentProjectView();
     const accountId = state.authSession?.user?.id || null;
     const generationEpoch = chatRecoveryEpoch;
     const deletionEpoch = deletedProjectEpochs.get(projectId) || 0;
     const isCurrent = () => chatRecoveryEpoch === generationEpoch &&
       (state.authSession?.user?.id || null) === accountId &&
-      (deletedProjectEpochs.get(projectId) || 0) === deletionEpoch && chatProjectIsActive(projectId);
+      (deletedProjectEpochs.get(projectId) || 0) === deletionEpoch && view.active();
     try {
       if ([...document.querySelectorAll(".draft-section textarea")].some(area => {
         const sid = area.closest(".draft-section")?.id?.slice("draft-sec-".length);
@@ -3175,9 +3184,11 @@
       return;
     }
     if (!isCurrent()) { state.batchGenerating = false; state.batchAbort = false; return; }
+    const chapterId = area => area.closest(".draft-section").id.slice("draft-sec-".length);
     const editorBaselines = new Map([...document.querySelectorAll(".draft-section textarea")]
-      .map(area => [area, area.value]));
-    const editorsChanged = () => [...editorBaselines].some(([area, value]) => area.value !== value);
+      .map(area => [chapterId(area), area.value]));
+    const editorsChanged = () => [...document.querySelectorAll(".draft-section textarea")]
+      .some(area => editorBaselines.get(chapterId(area)) !== area.value);
 
     const wrapper = $("#batchProgressWrapper");
     const fill = $("#batchProgressFill");
@@ -3201,6 +3212,7 @@
         break;
       }
       const section = outline[i];
+      const base = state.project.sections?.[section.id] || "";
       if (fill) fill.style.width = `${Math.round(((i + 0.1) / total) * 100)}%`;
       if (text) text.textContent = `正在生成 [${i + 1}/${total}]：${section.title}…`;
 
@@ -3226,9 +3238,8 @@
           // Generation may already be saved on the server. Keep it as the
           // baseline, but never replace text typed while the request ran.
           if (result.conflict_status !== "user_edit_preserved" && typeof result.content === "string") {
-            state.project.sections ||= {};
-            state.project.sections[section.id] = result.content;
-            if (result.material_revision !== undefined) state.project.material_revision = result.material_revision;
+            if (result.material_applied) applyGeneratedSection(section.id, result.content, result.material_revision);
+            else rememberSectionCandidate(`${projectId}\0${section.id}`, result.content);
           }
           stopped = "生成期间的手写编辑已保留，请保存后再继续；已停止后续章节";
           break;
@@ -3242,15 +3253,20 @@
           stopped = (result.notice || "当前章节需要补充信息") + "；已停止后续章节";
           break;
         }
-        if (result.material_revision !== undefined) state.project.material_revision = result.material_revision;
-        state.project.sections = state.project.sections || {};
-        state.project.sections[section.id] = result.content;
-
-        if (!result.material_applied) await api(`/api/projects/${projectId}/sections/${section.id}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: result.content }),
-        });
+        let revision;
+        try {
+          revision = await confirmGeneratedSection(view, section.id, base, result);
+        } catch (error) {
+          if (isCurrent()) rememberSectionCandidate(`${projectId}\0${section.id}`, result.content);
+          throw error;
+        }
+        if (!isCurrent()) break;
+        const changed = editorsChanged();
+        if (!applyGeneratedSection(section.id, result.content, revision) || changed) {
+          stopped = "章节在生成期间发生变化，请核对正文后继续";
+          break;
+        }
+        if (editorBaselines.has(section.id)) editorBaselines.set(section.id, result.content);
         completedCount++;
       } catch (err) {
         console.warn(`生成章节 ${section.title} 失败:`, err);
@@ -3326,6 +3342,7 @@
 
   function renderSections() {
     const root = $("#draftSections");
+    sectionEdits.detachEditors();
     root.replaceChildren();
     if (mobileLayout?.matches) {
       allSectionsFolded = false;
@@ -3359,7 +3376,9 @@
       const title = document.createElement("strong");
       title.textContent = section.title;
 
-      const initialContent = state.project.sections?.[section.id] || "";
+      const remoteContent = state.project.sections?.[section.id] || "";
+      const draft = sectionEdits.open(uncertainKey, remoteContent);
+      const initialContent = draft.content;
       const wordBadge = document.createElement("span");
       wordBadge.className = "section-word-badge";
       wordBadge.textContent = `${countWords(initialContent)} 字`;
@@ -3426,6 +3445,47 @@
       const uncertainBox = document.createElement("div");
       uncertainBox.className = "section-versions hidden";
 
+      const conflictBox = document.createElement("div");
+      conflictBox.className = "section-versions hidden";
+      function paintDraft() {
+        wordBadge.textContent = `${countWords(draft.content)} 字`;
+        setDraftSaveStatus(statusPill, draft.content === draft.base);
+        conflictBox.replaceChildren();
+        const conflict = draft.base !== draft.remote;
+        conflictBox.classList.toggle("hidden", !conflict);
+        if (!conflict) return;
+        statusPill.className = "section-status-pill unsaved";
+        statusPill.textContent = "● 两处编辑待核对";
+        const label = document.createElement("p");
+        label.textContent = "本章节在其他页面有修改。请对照下方最新正文，选择要保留的内容。";
+        const latest = document.createElement("pre");
+        latest.textContent = draft.remote || "（正文为空）";
+        const keep = button("保留我的编辑", "button button-small button-secondary");
+        const useLatest = button("使用最新正文", "button button-small button-quiet");
+        keep.addEventListener("click", () => resolveConflict(false));
+        useLatest.addEventListener("click", () => resolveConflict(true));
+        conflictBox.append(label, latest, keep, useLatest);
+      }
+      function resolveConflict(useRemote) {
+        if (!currentEditor()) return;
+        draft.base = draft.remote;
+        if (useRemote) editor.value = draft.remote;
+        recordInput();
+      }
+      function currentEditor() {
+        return chatProjectIsActive(boundProjectId) && sectionEdits.isAttached(uncertainKey, editor);
+      }
+      function recordInput() {
+        if (!sectionEdits.isAttached(uncertainKey, editor) || state.project?.id !== boundProjectId) return;
+        clearExportArtifacts();
+        window.MaterialPilot?.invalidateArtifacts?.();
+        draft.content = editor.value;
+        if (draft.content === draft.remote) draft.base = draft.remote;
+        paintDraft();
+      }
+      draft.display = { editor, paint: paintDraft };
+      if (draft.base !== draft.content || draft.base !== draft.remote) paintDraft();
+
       function renderUncertainDrafts() {
         uncertainBox.replaceChildren();
         const drafts = uncertainSectionDrafts.get(uncertainKey) || [];
@@ -3446,12 +3506,7 @@
             if (editor.value !== (state.project?.sections?.[section.id] || "") &&
                 !confirm("当前编辑内容还未保存，确定用这份草稿替换编辑框内容吗？")) return;
             editor.value = content;
-            clearExportArtifacts();
-            window.MaterialPilot?.invalidateArtifacts?.();
-            wordBadge.textContent = `${countWords(content)} 字`;
-            statusPill.className = "section-status-pill unsaved";
-            statusPill.textContent = "● 未保存";
-            updateDraftStats();
+            recordInput();
             toast("已放入编辑器，保存后生效。");
           });
           row.append(note, text, copyDraft, use);
@@ -3483,11 +3538,7 @@
               if (editor.value !== (state.project?.sections?.[section.id] || "") &&
                   !confirm("当前编辑内容还未保存，确定用历史版本替换编辑框内容吗？")) return;
               editor.value = version.content;
-              clearExportArtifacts();
-              window.MaterialPilot?.invalidateArtifacts?.();
-              wordBadge.textContent = `${countWords(editor.value)} 字`;
-              statusPill.className = "section-status-pill unsaved";
-              statusPill.textContent = "● 未保存";
+              recordInput();
               versionsBox.classList.add("hidden");
               updateDraftStats();
               toast("已放入编辑器，保存后生效。");
@@ -3536,15 +3587,7 @@
         editor.dispatchEvent(new Event("input"));
       });
 
-      editor.addEventListener("input", () => {
-        clearExportArtifacts();
-        window.MaterialPilot?.invalidateArtifacts?.();
-        const words = countWords(editor.value);
-        wordBadge.textContent = `${words} 字`;
-        statusPill.className = "section-status-pill unsaved";
-        statusPill.textContent = "● 未保存";
-        updateDraftStats();
-      });
+      editor.addEventListener("input", recordInput);
 
       editor.addEventListener("keydown", (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === "s") {
@@ -3579,9 +3622,10 @@
 
       generate.addEventListener("click", async () => {
         const generationProjectId = state.project?.id;
-        if (!generationProjectId || generationProjectId !== boundProjectId) return;
+        if (!currentEditor()) return;
         clearExportArtifacts();
         window.MaterialPilot?.invalidateArtifacts?.();
+        const view = currentProjectView();
         const generationEpoch = chatRecoveryEpoch;
         const generationUserId = state.authSession?.user?.id || null;
         const deletionEpoch = deletedProjectEpochs.get(generationProjectId) || 0;
@@ -3596,7 +3640,7 @@
         try {
           if (editor.value !== (state.project?.sections?.[section.id] || "")) {
             await flushDraftEdits();
-            if (!mayRetainResult() || !chatProjectIsActive(generationProjectId)) return;
+            if (!mayRetainResult() || !currentEditor()) return;
           }
           const editorAtStart = editor.value;
           let result = window.MaterialPilot?.active()
@@ -3633,12 +3677,9 @@
           }
 
           if (!mayRetainResult()) return;
-          if (result?.result_save_uncertain && typeof result.content === "string" && result.content.trim()) {
-            const drafts = uncertainSectionDrafts.get(uncertainKey) || [];
-            if (!drafts.includes(result.content)) drafts.push(result.content);
-            uncertainSectionDrafts.set(uncertainKey, drafts);
-          }
-          if (!chatProjectIsActive(generationProjectId)) return;
+          if (result?.result_save_uncertain && typeof result.content === "string" && result.content.trim())
+            rememberSectionCandidate(uncertainKey, result.content);
+          if (!view.active()) return;
 
           if (result?.requires_student_input && editor.value.trim()) {
             const changed = editor.value !== (state.project?.sections?.[section.id] || "");
@@ -3648,19 +3689,11 @@
             return;
           }
 
-          if (result?.conflict_status !== "user_edit_preserved" && typeof result?.content === "string"
-              && editor.value !== editorAtStart) {
-            state.project.sections ||= {};
-            state.project.sections[section.id] = result.content;
-            if (result.material_revision !== undefined) state.project.material_revision = result.material_revision;
-            statusPill.className = "section-status-pill unsaved";
-            statusPill.textContent = "● 未保存";
-            toast("生成期间的新编辑已保留，请检查并保存。", true);
-            return;
-          }
-
           if (result.conflict_status === "user_edit_preserved") {
-            if (result.result_save_uncertain) renderUncertainDrafts();
+            if (result.result_save_uncertain) {
+              if (currentEditor()) renderUncertainDrafts();
+              else renderSections();
+            }
             toast(result.notice || "检测到您已编辑该章节，AI最新草稿已安全存入历史版本，未覆盖您的正文。", false);
             statusPill.className = `section-status-pill ${result.result_save_uncertain ? "unsaved" : "saved"}`;
             statusPill.textContent = result.result_save_uncertain ? "● 草稿待保存" : "● 有新备选版本";
@@ -3670,23 +3703,39 @@
           } else if (result.content) {
             clearExportArtifacts();
             window.MaterialPilot?.invalidateArtifacts?.();
-            if (result.material_revision !== undefined) state.project.material_revision = result.material_revision;
-            editor.value = result.content;
-            wordBadge.textContent = `${countWords(result.content)} 字`;
+            if (!result.material_applied && (draft.display?.editor.value ?? draft.content) !== editorAtStart) {
+              rememberSectionCandidate(uncertainKey, result.content);
+              renderSections();
+              toast("生成期间的新编辑已保留，生成结果可在候选草稿中查看。");
+              return;
+            }
+            let revision;
+            try {
+              revision = await confirmGeneratedSection(view, section.id, editorAtStart, result);
+            } catch (error) {
+              if (mayRetainResult()) rememberSectionCandidate(uncertainKey, result.content);
+              if (view.active()) {
+                renderSections();
+                toast(`生成结果已保留。请核对正文后保存：${error.message}`, true);
+              }
+              return;
+            }
+            if (!view.active()) return;
+            if (!applyGeneratedSection(section.id, result.content, revision)) {
+              await loadProject(generationProjectId, { refreshList: false });
+              if (view.active()) toast("已有更新的章节版本，请核对最新正文。");
+              return;
+            }
+            if (!currentEditor()) return;
+            if (editor.value !== result.content) {
+              toast("生成期间的新编辑已保留，请检查并保存。", true);
+              return;
+            }
             const evidence = (result.evidence || []).map((e) => `${e.source_name} · ${e.source_ref}`).join("；");
             const publicRefs = (result.public_knowledge?.results || [])
               .map((e) => `${e.kind === "official" ? "官方摘要" : "非官方指南"}：${e.title} · ${e.source_ref}`).join("；");
             sources.textContent = (evidence ? `项目材料：${evidence}` : "未检索到项目材料；请补充事实或保留“待补充”。")
               + (publicRefs ? ` 公共参考：${publicRefs}。请核对来源和适用范围。` : "");
-            state.project.sections = state.project.sections || {};
-            state.project.sections[section.id] = result.content;
-
-            if (!result.material_applied) await api(`/api/projects/${generationProjectId}/sections/${section.id}`, {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ content: result.content }),
-            });
-
             if (result.review_card) {
               renderReviewCard(wrapper, result.review_card);
             }
@@ -3696,6 +3745,7 @@
             toast(result.notice || "章节草稿已生成并自动保存。");
           }
         } catch (error) {
+          if (!currentEditor()) return;
           statusPill.className = "section-status-pill unsaved";
           statusPill.textContent = ([SECTION_WAIT_NOTICE, SECTION_STATUS_NOTICE].includes(error.message)
             || /可能.*(?:后台|开始)|任务已提交|暂未收到草稿保存结果|草稿已处理/.test(error.message || ""))
@@ -3711,55 +3761,34 @@
         }
       });
       save.addEventListener("click", async () => {
-        const projectId = state.project?.id;
-        if (!projectId) return;
+        if (!currentEditor()) return;
         clearExportArtifacts();
         window.MaterialPilot?.invalidateArtifacts?.();
-        const previousContent = state.project.sections?.[section.id] || "";
         const currentVal = editor.value;
         save.disabled = true;
         save.textContent = "保存中…";
-        statusPill.className = "section-status-pill saved";
-        statusPill.textContent = "✓ 保存中…";
-        updateDraftStats();
         try {
-          const saved = await api(`/api/projects/${projectId}/sections/${section.id}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content: currentVal,
-              ...(state.project?.material?.enabled ? { expected_revision: state.project.material_revision,
-                base_content: previousContent } : {}) }),
-          });
-          if (!chatProjectIsActive(projectId)) return;
-          clearExportArtifacts();
-          window.MaterialPilot?.invalidateArtifacts?.();
-          state.project.sections = state.project.sections || {};
-          state.project.sections[section.id] = currentVal;
+          await flushDraftEdits([{ area: editor, section: wrapper }]);
+          if (!currentEditor()) return;
           const drafts = uncertainSectionDrafts.get(uncertainKey) || [];
           const remaining = drafts.filter(content => content !== currentVal);
           if (remaining.length) uncertainSectionDrafts.set(uncertainKey, remaining);
           else uncertainSectionDrafts.delete(uncertainKey);
           renderUncertainDrafts();
-          if (saved.material_revision !== undefined) state.project.material_revision = saved.material_revision;
-          const changedWhileSaving = editor.value !== currentVal;
-          setDraftSaveStatus(statusPill, !changedWhileSaving);
-          save.textContent = changedWhileSaving ? "保存" : "已保存";
-          setTimeout(() => {
-            save.textContent = "保存";
-            save.disabled = false;
-          }, 800);
+          paintDraft();
           if (state.project?.material?.enabled) void window.MaterialPilot?.refresh();
-          toast(changedWhileSaving ? "已保存提交时的内容，后续修改仍需保存。" : `已保存“${section.title}”。`);
+          toast(`已保存“${section.title}”。`);
         } catch (error) {
+          if (!currentEditor()) return;
+          paintDraft();
+          toast(`保存失败：${error.message}`, true);
+        } finally {
           save.disabled = false;
           save.textContent = "保存";
-          statusPill.className = "section-status-pill unsaved";
-          statusPill.textContent = "● 未保存";
-          toast(`保存失败：${error.message}`, true);
         }
       });
 
-      bodyWrapper.append(toolbar, editor, previewBox, versionsBox, uncertainBox, sources);
+      bodyWrapper.append(toolbar, editor, previewBox, versionsBox, uncertainBox, sources, conflictBox);
       wrapper.append(head, bodyWrapper);
       root.append(wrapper);
     }
@@ -4653,42 +4682,6 @@
     if (save) save.onclick = null;
   }
 
-  async function flushDraftEdits() {
-    const projectId = state.project?.id;
-    if (!projectId) throw new Error("请先打开项目");
-    const edits = [...document.querySelectorAll(".draft-section textarea")].map(area => {
-      const section = area.closest(".draft-section");
-      const sid = section.id.slice("draft-sec-".length);
-      const base = state.project.sections?.[sid] || "";
-      return { area, section, sid, base, content: area.value };
-    }).filter(edit => edit.content !== edit.base);
-    if (!edits.length) return;
-    const latest = await api(`/api/projects/${projectId}`);
-    if (state.project?.id !== projectId) throw new Error("项目已切换，请重新操作");
-    for (const edit of edits) {
-      if (!latest.outline?.some(s => s.id === edit.sid) ||
-          (latest.sections?.[edit.sid] || "") !== edit.base)
-        throw new Error("章节已在其他页面变化，未覆盖您的编辑，请先核对版本");
-    }
-    state.project.material_revision = latest.material_revision;
-    for (const { area, section, sid, base, content } of edits) {
-      const saved = await api(`/api/projects/${projectId}/sections/${sid}`, {
-        method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content, base_content: base,
-          expected_revision: state.project.material_revision }),
-      });
-      if (state.project?.id !== projectId) throw new Error("项目已切换，请在当前项目重新操作");
-      state.project.sections ||= {};
-      state.project.sections[sid] = content;
-      if (saved.material_revision !== undefined) state.project.material_revision = saved.material_revision;
-      const changedWhileSaving = area.value !== content;
-      const statusPill = $(".section-status-pill", section);
-      if (statusPill) setDraftSaveStatus(statusPill, !changedWhileSaving);
-      updateDraftStats();
-      if (changedWhileSaving) throw new Error("保存期间正文又有修改，请保存最新版本后再导出");
-    }
-  }
-
   async function showChatDrafts(preview = null, afterSave = null) {
     const projectId = state.project?.id;
     if (!projectId) return;
@@ -5335,6 +5328,11 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
+    window.addEventListener("beforeunload", event => {
+      if (!sectionEdits.hasUnsaved()) return;
+      event.preventDefault();
+      event.returnValue = "";
+    });
     init().catch((error) => {
       if (state.authStatus !== "ready" && !state.appStarted) {
         state.authStatus = "error";

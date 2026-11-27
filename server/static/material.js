@@ -398,6 +398,7 @@
     throw new Error("任务仍在后台执行，请稍后刷新任务列表，不必重复提交");
   }
   async function flushEdits() {
+    if (host.flushEdits) return host.flushEdits();
     // Save visible edits before freezing an export snapshot; never discard them by reloading.
     const id = host.state.project?.id;
     const userId = host.state.authSession?.user?.id || null;

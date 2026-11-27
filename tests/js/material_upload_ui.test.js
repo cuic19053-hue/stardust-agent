@@ -93,7 +93,7 @@ function harness(sharedSession = new Map()) {
     setInterval(callback) { const id = nextTimer++; timers.set(id, callback); return id; },
     clearInterval(id) { timers.delete(id); },
   });
-  for (const name of ["material-upload.js", "word-export.js"]) {
+  for (const name of ["material-upload.js", "section-edits.js", "word-export.js"]) {
     const moduleFile = resolve(__dirname, "../../server/static", name);
     vm.runInContext(readFileSync(moduleFile, "utf8"), context, { filename: moduleFile });
   }
@@ -657,6 +657,153 @@ test("section history can be reviewed and placed into the editor without saving 
   assert.equal(editor.value, "先前正文");
   assert.equal(h.ui.state.project.sections.purpose, "当前正文");
   assert.equal(calls.length, 1);
+});
+
+function chapterEditor(h) {
+  h.ui.state.outline = h.ui.state.project.outline;
+  h.ui.renderSections();
+  const section = h.element("#draftSections").children[0];
+  const editor = section.children[1].children[1];
+  const status = section.children[0].children[0].children[3];
+  editor.closest = () => section;
+  section.querySelector = () => status;
+  h.setDraftAreas([editor]);
+  return { editor, status, save: section.children[0].children[1].children[2], section,
+    type(value) { editor.value = value; editor.listeners.input(); } };
+}
+
+test("a cleared chapter survives project navigation and detached controls cannot save to another project", async () => {
+  const h = harness(); exportingProject(h);
+  const a = h.ui.state.project;
+  const first = chapterEditor(h);
+  first.type("");
+  h.ui.state.project = { ...a, id: "second", sections: { purpose: "乙的正文" } };
+  assert.equal(chapterEditor(h).editor.value, "乙的正文");
+  let writes = 0;
+  h.ui.setApi(async () => { writes++; return {}; });
+  await first.save.click();
+  assert.equal(writes, 0);
+  h.ui.state.project = { ...a };
+  const restored = chapterEditor(h);
+  assert.equal(restored.editor.value, "");
+  assert.match(restored.status.textContent, /未保存/);
+});
+
+test("a refreshed chapter retains both sides of a conflict until the student chooses", async () => {
+  const h = harness(); exportingProject(h);
+  chapterEditor(h).type("我的修改");
+  h.ui.state.project.sections.purpose = "另一页面的正文";
+  h.ui.state.project.material_revision = 5;
+  const view = chapterEditor(h);
+  assert.equal(view.editor.value, "我的修改");
+  const puts = [];
+  h.ui.setApi(async (url, options = {}) => {
+    if (options.method !== "PUT") return h.ui.state.project;
+    puts.push(JSON.parse(options.body));
+    return { material_revision: 6 };
+  });
+  await assert.rejects(h.ui.flushDraftEdits(), /其他页面/);
+  assert.equal(puts.length, 0);
+  const conflict = view.section.children[1].children.at(-1);
+  assert.equal(conflict.children[1].textContent, "另一页面的正文");
+  conflict.children.find(child => child.textContent === "保留我的编辑").click();
+  await view.save.click();
+  assert.deepEqual(puts, [{ content: "我的修改", base_content: "另一页面的正文", expected_revision: 5 }]);
+  assert.match(view.status.textContent, /已保存/);
+});
+
+test("export recognizes a committed edit after a lost save response without a second write", async () => {
+  const h = harness(); exportingProject(h);
+  const edit = chapterEditor(h);
+  edit.type("已送达的正文");
+  const saved = { ...h.ui.state.project, sections: { ...h.ui.state.project.sections } };
+  let writes = 0;
+  h.ui.setApi(async (url, options = {}) => {
+    if (options.method !== "PUT") return saved;
+    writes++;
+    saved.sections.purpose = JSON.parse(options.body).content;
+    saved.material_revision++;
+    throw new Error("连接中断");
+  });
+  await edit.save.click();
+  assert.match(edit.status.textContent, /未保存/);
+  await h.ui.flushDraftEdits();
+  assert.equal(writes, 1);
+  assert.equal(h.ui.state.project.sections.purpose, "已送达的正文");
+  assert.match(edit.status.textContent, /已保存/);
+});
+
+test("an acknowledged section save preserves further typing in a newly rendered editor", async () => {
+  const h = harness(); exportingProject(h);
+  chapterEditor(h).type("提交的正文");
+  let finish, start;
+  const writing = new Promise(resolve => { start = resolve; });
+  h.ui.setApi(async (url, options = {}) => {
+    if (options.method !== "PUT") return h.ui.state.project;
+    start();
+    return new Promise(resolve => { finish = resolve; });
+  });
+  const saving = h.ui.flushDraftEdits();
+  await writing;
+  const rerendered = chapterEditor(h);
+  rerendered.type("保存期间接着写");
+  finish({ material_revision: 3 });
+  await assert.rejects(saving, /保存期间/);
+  assert.equal(h.ui.state.project.sections.purpose, "提交的正文");
+  const restored = chapterEditor(h);
+  assert.equal(restored.editor.value, "保存期间接着写");
+  assert.match(restored.status.textContent, /未保存/);
+});
+
+test("accepting the latest server chapter updates the local project without writing", async () => {
+  const h = harness(); exportingProject(h);
+  const edit = chapterEditor(h);
+  edit.type("我的修改");
+  h.ui.setApi(async () => ({ ...h.ui.state.project, material_revision: 3, sections: { purpose: "" } }));
+  await assert.rejects(h.ui.flushDraftEdits(), /其他页面/);
+  const conflict = edit.section.children[1].children.at(-1);
+  conflict.children.find(child => child.textContent === "使用最新正文").click();
+  assert.equal(edit.editor.value, "");
+  assert.equal(h.ui.state.project.sections.purpose, "");
+  h.ui.setApi(() => assert.fail("accepting server content needs no write"));
+  await h.ui.flushDraftEdits();
+});
+
+test("generation without a confirmed write leaves the old chapter and a recoverable candidate", async () => {
+  const h = harness(); exportingProject(h);
+  const edit = chapterEditor(h);
+  let writes = 0;
+  h.ui.setApi(async (url, options = {}) => {
+    if (url.endsWith("/generate")) return { content: "模型生成的候选稿" };
+    if (options.method !== "PUT") return h.ui.state.project;
+    assert.deepEqual(JSON.parse(options.body), {
+      content: "模型生成的候选稿", base_content: "已保存正文", expected_revision: 2,
+    });
+    writes++;
+    throw new Error("网络中断");
+  });
+  await edit.section.children[0].children[1].children[1].click();
+  assert.equal(writes, 1);
+  assert.equal(h.ui.state.project.sections.purpose, "已保存正文");
+  const restored = chapterEditor(h);
+  assert.equal(restored.editor.value, "已保存正文");
+  assert.equal(restored.section.children[1].children[4].children[0].children[1].textContent, "模型生成的候选稿");
+});
+
+test("a generated chapter acknowledged by the server becomes the base for later manual edits", async () => {
+  const h = harness(); exportingProject(h);
+  const edit = chapterEditor(h);
+  h.ui.setApi(async () => ({ content: "模型正文", material_applied: true, material_revision: 3 }));
+  await edit.section.children[0].children[1].children[1].click();
+  edit.type("手写定稿");
+  const puts = [];
+  h.ui.setApi(async (url, options = {}) => {
+    if (options.method !== "PUT") return h.ui.state.project;
+    puts.push(JSON.parse(options.body));
+    return { material_revision: 4 };
+  });
+  await edit.save.click();
+  assert.deepEqual(puts, [{ content: "手写定稿", base_content: "模型正文", expected_revision: 3 }]);
 });
 
 test("a failed section save keeps the persisted state and the student's edit", async () => {
