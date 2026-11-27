@@ -208,6 +208,7 @@
 
   function clearInterruptedChatMessages() {
     chatRecoveryEpoch++;
+    clearProjectResults();
     interruptedChatMessages.clear();
     pendingChatRequests.clear();
     try {
@@ -237,6 +238,27 @@
 
   function chatProjectIsActive(projectId) {
     return state.project?.id === projectId && (!loadingProjectId || loadingProjectId === projectId);
+  }
+
+  let projectViewVersion = 0;
+
+  function currentProjectView() {
+    const id = state.project?.id;
+    const version = projectViewVersion;
+    return { id, active: () => Boolean(id) && version === projectViewVersion && chatProjectIsActive(id) };
+  }
+
+  function clearProjectResults() {
+    projectViewVersion++;
+    for (const selector of ["#sourceResults", "#knowledgeResults", "#factCandidates", "#intakeCandidates"]) {
+      $(selector)?.replaceChildren();
+    }
+    for (const selector of ["#knowledgeExternalConsent", "#knowledgeIncludeExamples"]) {
+      const checkbox = $(selector);
+      if (checkbox) checkbox.checked = false;
+    }
+    if ($("#documentPreviewDialog")?.open) $("#documentPreviewDialog").close();
+    clearLeaderPhoto();
   }
 
   function countWords(str) {
@@ -1317,6 +1339,7 @@
       if (key.startsWith(`${projectId}\0`)) interruptedMessagesRendered.delete(key);
     }
     if (state.project?.id !== projectId) return;
+    clearProjectResults();
     const input = $("#chatInput");
     if (input) {
       input.value = "";
@@ -1339,7 +1362,7 @@
       const project = await api(`/api/projects/${projectId}`);
       if (revision !== projectLoadRevision) return;
       if (state.project?.id !== projectId) {
-        $("#intakeCandidates")?.replaceChildren();
+        clearProjectResults();
         const input = $("#chatInput");
         const previousProjectId = state.project?.id;
         if (previousProjectId && input?.value?.trim()) {
@@ -2029,6 +2052,7 @@
   }
 
   function renderDocuments() {
+    const view = currentProjectView();
     const list = $("#documentsList");
     list.replaceChildren();
     if (!state.documents.length) return;
@@ -2067,24 +2091,27 @@
       const actions = document.createElement("div");
       actions.className = "doc-actions";
       const preview = button("预览文件", "button button-small button-secondary");
-      preview.addEventListener("click", () => void previewDocument(doc));
+      preview.addEventListener("click", () => { if (view.active()) void previewDocument(doc); });
       actions.append(preview);
       if (state.cloudMode && !doc.confirmed && doc.extraction_status !== "ready") {
         const retry = button("重试文字识别", "button button-small button-secondary");
         retry.addEventListener("click", async () => {
+          if (!view.active()) return;
           retry.disabled = true;
           try {
             const result = await api(`/api/documents/${doc.id}/process`, { method: "POST" });
+            if (!view.active()) return;
             renderUploadResult(result.documents || []);
-            await loadProject(state.project.id);
+            await loadProject(view.id);
           } catch (error) {
-            toast(`原文件仍保留，识别未完成：${error.message}`, true);
+            if (view.active()) toast(`原文件仍保留，识别未完成：${error.message}`, true);
           } finally { retry.disabled = false; }
         });
         actions.append(retry);
       }
       if (doc.kind !== "template") {
         const confirmText = async () => {
+          if (!view.active()) return;
           if (!text.value.trim()) {
             toast("请先补充或核对识别文字。", true);
             return;
@@ -2095,12 +2122,14 @@
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ confirmed: true, corrected_text: text.value }),
             });
-            await loadProject(state.project.id);
+            if (!view.active()) return;
+            await loadProject(view.id);
+            if (!view.active()) return;
             toast(result.index_mode === "keyword_fallback" && privateRagConsented()
               ? "材料已确认，但云向量未建立；当前仅能关键词检索，请核对服务或缩短材料。"
               : "已确认材料并建立检索索引。", result.index_mode === "keyword_fallback" && privateRagConsented());
           } catch (error) {
-            toast(error.message, true);
+            if (view.active()) toast(error.message, true);
           }
         };
         if (!doc.confirmed) {
@@ -2133,13 +2162,14 @@
       }
       const remove = button("移除", "button button-small button-quiet");
       remove.addEventListener("click", async () => {
-        if (!confirm(`确定从本项目移除“${doc.original_name}”吗？${state.cloudMode ? "历史加密备份可能长期保留已删除的材料。" : ""}`)) return;
+        if (!view.active() || !confirm(`确定从本项目移除“${doc.original_name}”吗？${state.cloudMode ? "历史加密备份可能长期保留已删除的材料。" : ""}`)) return;
         try {
           await api(`/api/documents/${doc.id}`, { method: "DELETE" });
-          await refreshChatAfterError(projectId);
-          toast("材料和对应索引已删除。");
+          if (!view.active()) return;
+          await loadProject(view.id);
+          if (view.active()) toast("材料和对应索引已删除。");
         } catch (error) {
-          toast(error.message, true);
+          if (view.active()) toast(error.message, true);
         }
       });
       actions.append(remove);
@@ -2240,54 +2270,60 @@
   }
 
   let leaderPhotoBlobUrl = "";
+  let leaderPhotoId = null;
+  let leaderPhotoRequest = 0;
+
+  function clearLeaderPhoto() {
+    leaderPhotoRequest++;
+    if (leaderPhotoBlobUrl) URL.revokeObjectURL(leaderPhotoBlobUrl);
+    leaderPhotoBlobUrl = "";
+    leaderPhotoId = null;
+    $("#leaderPhotoPreview")?.replaceChildren();
+    $("#removeLeaderPhotoBtn")?.classList.add("hidden");
+  }
 
   async function renderLeaderPhoto() {
     const preview = $("#leaderPhotoPreview");
-    const removeBtn = $("#removeLeaderPhotoBtn");
-    const chooseBtn = $("#chooseLeaderPhotoBtn");
     if (!preview) return;
+    const view = currentProjectView();
     const photoId = state.project?.state?.leader_photo;
-    if (!photoId) {
-      preview.replaceChildren();
-      const placeholder = document.createElement("span");
-      placeholder.className = "photo-placeholder-text";
-      placeholder.textContent = "暂无照片";
-      preview.append(placeholder);
-      if (removeBtn) removeBtn.classList.add("hidden");
-      if (chooseBtn) chooseBtn.textContent = "上传照片";
-      if (leaderPhotoBlobUrl) {
-        URL.revokeObjectURL(leaderPhotoBlobUrl);
-        leaderPhotoBlobUrl = "";
-      }
-      return;
-    }
-    const doc = (state.documents || []).find((d) => d.id === photoId) || { id: photoId };
+    if (photoId && photoId === leaderPhotoId && leaderPhotoBlobUrl) return;
+    clearLeaderPhoto();
+    const request = leaderPhotoRequest;
+    const choose = $("#chooseLeaderPhotoBtn");
+    if (choose) choose.textContent = photoId ? "更换照片" : "上传照片";
+    const placeholder = document.createElement("span");
+    placeholder.className = "photo-placeholder-text";
+    placeholder.textContent = photoId ? "正在加载照片…" : "暂无照片";
+    preview.append(placeholder);
+    if (!photoId) return;
+    $("#removeLeaderPhotoBtn")?.classList.remove("hidden");
+    const current = () => request === leaderPhotoRequest && view.active() && state.project?.state?.leader_photo === photoId;
+    const doc = (state.documents || []).find(d => d.id === photoId) || { id: photoId };
     try {
       const blob = await fetchDocumentBlob(doc);
-      if (leaderPhotoBlobUrl) URL.revokeObjectURL(leaderPhotoBlobUrl);
+      if (!current()) return;
+      leaderPhotoId = photoId;
       leaderPhotoBlobUrl = URL.createObjectURL(blob);
       const img = document.createElement("img");
       img.src = leaderPhotoBlobUrl;
       img.alt = "负责人照片";
-      preview.replaceChildren(img);
-      if (removeBtn) removeBtn.classList.remove("hidden");
-      if (chooseBtn) chooseBtn.textContent = "更换照片";
-    } catch {
-      preview.replaceChildren();
-      const img = document.createElement("img");
-      img.src = `/api/documents/${encodeURIComponent(photoId)}/file`;
-      img.alt = "负责人照片";
       img.onerror = () => {
-        preview.textContent = "已上传";
+        if (current()) {
+          clearLeaderPhoto();
+          preview.textContent = "照片无法预览";
+          $("#removeLeaderPhotoBtn")?.classList.remove("hidden");
+        }
       };
-      preview.append(img);
-      if (removeBtn) removeBtn.classList.remove("hidden");
-      if (chooseBtn) chooseBtn.textContent = "更换照片";
+      preview.replaceChildren(img);
+    } catch {
+      if (current()) placeholder.textContent = "照片已登记，预览读取失败";
     }
   }
 
   async function handleLeaderPhotoUpload(file) {
-    if (!file || !state.project?.id) return;
+    const view = currentProjectView();
+    if (!file || !view.active()) return;
     const sizeError = oversizedUploadError([file]);
     if (sizeError) return toast(sizeError, true);
     const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
@@ -2299,23 +2335,22 @@
     try {
       toast("正在上传负责人照片…");
       if (state.cloudMode) {
-        const result = await uploadFilesToCloud([file], "photo", state.project.id, true);
+        const result = await uploadFilesToCloud([file], "photo", view.id, true);
         const failed = result.documents.find(item => item.error);
         if (failed) throw new Error(failed.error);
       } else {
         const form = new FormData();
         form.append("file", file);
-        await api(`/api/projects/${state.project.id}/leader-photo`, {
+        await api(`/api/projects/${view.id}/leader-photo`, {
           method: "POST",
           body: form,
         });
       }
-      await loadProject(state.project.id);
-      renderLeaderPhoto();
-      renderFacts();
-      toast("负责人照片上传成功！");
+      if (!view.active()) return;
+      await loadProject(view.id);
+      if (view.active()) toast("负责人照片上传成功！");
     } catch (err) {
-      toast(`上传失败：${err.message}`, true);
+      if (view.active()) toast(`上传失败：${err.message}`, true);
     } finally {
       if (btn) btn.disabled = false;
       const input = $("#leaderPhotoInput");
@@ -2324,18 +2359,18 @@
   }
 
   async function handleLeaderPhotoDelete() {
-    if (!state.project?.id) return;
+    const view = currentProjectView();
+    if (!view.active()) return;
     if (typeof confirm === "function" && !confirm("确定删除已上传的负责人照片吗？")) return;
     const btn = $("#removeLeaderPhotoBtn");
     if (btn) btn.disabled = true;
     try {
-      await api(`/api/projects/${state.project.id}/leader-photo`, { method: "DELETE" });
-      await loadProject(state.project.id);
-      renderLeaderPhoto();
-      renderFacts();
-      toast("已删除负责人照片。");
+      await api(`/api/projects/${view.id}/leader-photo`, { method: "DELETE" });
+      if (!view.active()) return;
+      await loadProject(view.id);
+      if (view.active()) toast("已删除负责人照片。");
     } catch (err) {
-      toast(`删除失败：${err.message}`, true);
+      if (view.active()) toast(`删除失败：${err.message}`, true);
     } finally {
       if (btn) btn.disabled = false;
     }
@@ -2394,7 +2429,7 @@
     }
   }
 
-  function renderSourceCards(items, kind) {
+  function renderSourceCards(items, kind, view) {
     const target = $("#sourceResults");
     target.replaceChildren();
     if (!items?.length) {
@@ -2431,14 +2466,15 @@
         : "搜索摘要不是通知全文；请打开原始页面核对年份和适用对象。";
       card.append(warning);
       const add = button("我已核对，加入来源", "button button-small button-primary");
-      add.addEventListener("click", () => confirmSource(source, kind, add));
+      add.addEventListener("click", () => confirmSource(source, kind, add, view));
       card.append(add);
       target.append(card);
     }
   }
 
   async function searchPublicKnowledge() {
-    if (!state.project?.id) {
+    const view = currentProjectView();
+    if (!view.active()) {
       toast("请先选择项目。", true);
       return;
     }
@@ -2451,7 +2487,7 @@
     const target = $("#knowledgeResults");
     btn.disabled = true;
     try {
-      const result = await api(`/api/projects/${state.project.id}/search/knowledge`, {
+      const result = await api(`/api/projects/${view.id}/search/knowledge`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2460,6 +2496,7 @@
           include_examples: $("#knowledgeIncludeExamples").checked === true,
         }),
       });
+      if (!view.active()) return;
       target.replaceChildren();
       const notice = document.createElement("p");
       notice.className = "source-warning";
@@ -2507,21 +2544,24 @@
         target.append(card);
       }
     } catch (error) {
-      toast(error.message || "赛道知识检索失败。", true);
+      if (view.active()) toast(error.message || "赛道知识检索失败。", true);
     } finally {
-      $("#knowledgeExternalConsent").checked = false;
-      $("#knowledgeIncludeExamples").checked = false;
+      if (view.active()) {
+        $("#knowledgeExternalConsent").checked = false;
+        $("#knowledgeIncludeExamples").checked = false;
+      }
       btn.disabled = false;
     }
   }
 
-  async function confirmSource(source, kind, btn) {
+  async function confirmSource(source, kind, btn, view) {
+    if (!view.active()) return;
     btn.disabled = true;
     try {
       const yearValue = typeof source.year === "number"
         ? source.year
         : (/^\d{4}$/.test(String(source.year || "")) ? Number(source.year) : null);
-      await api(`/api/projects/${state.project.id}/references/confirm`, {
+      await api(`/api/projects/${view.id}/references/confirm`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2536,15 +2576,19 @@
           published_at: source.published_at || "",
         }),
       });
-      await loadProject(state.project.id);
-      toast("来源已加入项目；仍请核对其是否支持正文中的具体论断。");
+      if (!view.active()) return;
+      await loadProject(view.id);
+      if (view.active()) toast("来源已加入项目；仍请核对其是否支持正文中的具体论断。");
     } catch (error) {
+      if (!view.active()) return;
       toast(error.message, true);
       btn.disabled = false;
     }
   }
 
   async function searchSources(kind) {
+    const view = currentProjectView();
+    if (!view.active()) return;
     const input = kind === "paper" ? $("#paperQuery") : $("#officialQuery");
     const query = input.value.trim();
     if (query.length < 2) return toast("请输入至少两个字的关键词。", true);
@@ -2558,14 +2602,16 @@
     $("#sourceResults").append(loading);
     try {
       const endpoint = kind === "paper" ? "papers" : "official";
-      const result = await api(`/api/projects/${state.project.id}/search/${endpoint}`, {
+      const result = await api(`/api/projects/${view.id}/search/${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query }),
       });
-      renderSourceCards(result.results, kind);
+      if (!view.active()) return;
+      renderSourceCards(result.results, kind, view);
       if (result.error) toast(result.error, true);
     } catch (error) {
+      if (!view.active()) return;
       toast(error.message, true);
       $("#sourceResults").replaceChildren();
     } finally {
@@ -2575,17 +2621,20 @@
   }
 
   async function previewOfficialUrl() {
+    const view = currentProjectView();
+    if (!view.active()) return;
     const url = $("#officialUrl").value.trim();
     if (!url) return toast("请先粘贴学校或政府官网的 HTTPS 通知链接。", true);
     const btn = $("#officialUrlBtn");
     btn.disabled = true;
     btn.textContent = "读取中…";
     try {
-      const result = await api(`/api/projects/${state.project.id}/official/preview`, {
+      const result = await api(`/api/projects/${view.id}/official/preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url }),
       });
+      if (!view.active()) return;
       const target = $("#sourceResults");
       target.replaceChildren();
       const card = document.createElement("div");
@@ -2608,16 +2657,19 @@
       warning.textContent = result.warning || "请核对页面年份和适用范围。";
       const add = button("我已核对，将全文加入当前项目材料", "button button-small button-primary");
       add.addEventListener("click", async () => {
+        if (!view.active()) return;
         add.disabled = true;
         try {
-          const imported = await api(`/api/projects/${state.project.id}/official/import`, {
+          const imported = await api(`/api/projects/${view.id}/official/import`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ url: result.url }),
           });
-          await loadProject(state.project.id);
-          toast(imported.note || "官方通知已读取；确认文字后才能进入 RAG。");
+          if (!view.active()) return;
+          await loadProject(view.id);
+          if (view.active()) toast(imported.note || "官方通知已读取；确认文字后才能进入 RAG。");
         } catch (error) {
+          if (!view.active()) return;
           toast(error.message, true);
           add.disabled = false;
         }
@@ -2625,6 +2677,7 @@
       card.append(title, link, date, excerpt, warning, add);
       target.append(card);
     } catch (error) {
+      if (!view.active()) return;
       toast(error.message, true);
       if ((error.message || "").includes("积分不足") || (error.message || "").includes("402")) {
         openRechargeDialog();
@@ -2636,6 +2689,8 @@
   }
 
   async function saveFacts() {
+    const view = currentProjectView();
+    if (!view.active()) return;
     const payload = {};
     $$("[data-fact]").forEach((field) => {
       if (field.dataset.fact === "political_stage" && $("#politicalStageField").hidden) return;
@@ -2647,20 +2702,18 @@
       projectFields[field.dataset.project] = field.value.trim();
     });
     try {
-      await api(`/api/projects/${state.project.id}/facts`, {
+      await api(`/api/projects/${view.id}/facts/form`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ facts: payload, project: projectFields, expected_revision: state.project.material_revision }),
       });
-      await api(`/api/projects/${state.project.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(projectFields),
-      });
-      await loadProject(state.project.id);
+      if (!view.active()) return;
+      await loadProject(view.id);
+      if (!view.active()) return;
       $("#factsEditor").classList.add("hidden");
       toast("已保存为你确认的项目事实。");
     } catch (error) {
+      if (!view.active()) return;
       toast(error.message, true);
     }
   }
@@ -2774,13 +2827,16 @@
   }
 
   async function proposeFacts() {
+    const view = currentProjectView();
+    if (!view.active()) return;
     const btn = $("#proposeFactsBtn");
     btn.disabled = true;
     btn.textContent = "提取中…";
     const root = $("#factCandidates");
     root.replaceChildren();
     try {
-      const result = await api(`/api/projects/${state.project.id}/facts/propose`, { method: "POST" });
+      const result = await api(`/api/projects/${view.id}/facts/propose`, { method: "POST" });
+      if (!view.active()) return;
       if (!result.candidates?.length) {
         const note = document.createElement("div");
         note.className = "empty-note";
@@ -2799,18 +2855,20 @@
         evidence.textContent = `原文依据：“${candidate.source_quote}”`;
         const confirm = button("我已核对，确认保存", "button button-small button-primary");
         confirm.addEventListener("click", async () => {
+          if (!view.active()) return;
           confirm.disabled = true;
           try {
-            await api(`/api/projects/${state.project.id}/facts/confirm`, {
+            await api(`/api/projects/${view.id}/facts/confirm`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(candidate),
             });
+            if (!view.active()) return;
             card.remove();
-            await loadProject(state.project.id);
-            toast("已保存你确认的项目事实。");
+            await loadProject(view.id);
+            if (view.active()) toast("已保存你确认的项目事实。");
           } catch (error) {
-            toast(error.message, true);
+            if (view.active()) toast(error.message, true);
             confirm.disabled = false;
           }
         });
@@ -2818,6 +2876,7 @@
         root.append(card);
       }
     } catch (error) {
+      if (!view.active()) return;
       toast(error.message, true);
       if ((error.message || "").includes("积分不足") || (error.message || "").includes("402")) {
         openRechargeDialog();

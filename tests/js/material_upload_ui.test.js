@@ -100,7 +100,7 @@ function harness(sharedSession = new Map()) {
   const file = resolve(__dirname, "../../server/static/app.js");
   const source = readFileSync(file, "utf8").replace(/\}\)\(\);\s*$/, `
     globalThis.ui = {
-      state, renderUploadResult, renderDocuments, previewDocument,
+      state, renderUploadResult, renderDocuments, previewDocument, renderLeaderPhoto, proposeFacts, searchSources, previewOfficialUrl,
       clearDocumentPreview, fetchDocumentBlob, uploadFiles,
       uploadFilesToCloud, cloudUploadIntent, uploadResumable, setUploadKind, oversizedUploadError,
       renderPrivacyNotice, showModelStatus, updateTemplateQuickActions,
@@ -298,7 +298,7 @@ test("switching from a research project clears hidden editor fields before savin
   h.ui.setApi(async (url, options) => { requests.push({ url, options }); return {}; });
   h.ui.setLoadProject(async () => {});
   await h.ui.saveFacts();
-  const payload = JSON.parse(requests[0].options.body);
+  const { facts: payload } = JSON.parse(requests[0].options.body);
   assert.equal(payload.budget, undefined);
   assert.equal(payload.college, "新学院");
   h.ui.state.project.state.confirmed_facts.budget = "200 元";
@@ -1502,4 +1502,92 @@ test("switching projects during real SSE cancels the reader and clears the wait 
   assert.equal(h.timers.size, 0);
   assert.equal(h.ui.state.chatSending, false);
   assert.equal(cancelled, true);
+});
+
+test("saving the fact form sends one write to the originating project during navigation", async () => {
+  const h = harness();
+  h.ui.state.project = { id: "alpha", material_revision: 7 };
+  const writes = [];
+  const reloads = [];
+  const selectors = h.context.document.querySelectorAll;
+  h.context.document.querySelectorAll = sel => sel === "[data-project]"
+    ? [{ dataset: { project: "school" }, value: "甲大学" }] : selectors(sel);
+  h.setFactFields([{ dataset: { fact: "college" }, value: "甲学院" }]);
+  h.ui.setApi(async (url, options) => {
+    writes.push([url, JSON.parse(options.body)]);
+    h.ui.state.project = { id: "beta" };
+    return {};
+  });
+  h.ui.setLoadProject(async id => reloads.push(id));
+  await h.ui.saveFacts();
+  assert.deepEqual(writes, [["/api/projects/alpha/facts/form", {
+    facts: { college: "甲学院" }, project: { school: "甲大学" }, expected_revision: 7,
+  }]]);
+  assert.deepEqual(reloads, []);
+  assert.equal(h.element("#factsEditor").classList.contains("hidden"), false);
+});
+
+for (const kind of ["facts", "paper", "official"]) {
+  test(`a ${kind} result and its confirmation stay in the originating project`, async () => {
+    const h = harness();
+    const projects = [{ id: "alpha" }, { id: "beta" }];
+    h.ui.state.project = projects[0];
+    h.element("#paperQuery").value = "资料";
+    h.element("#officialUrl").value = "https://example.edu.cn/notice";
+    const panel = h.element(kind === "facts" ? "#factCandidates" : "#sourceResults");
+    const requests = [];
+    const result = { candidates: [{ key: "college", value: "甲学院", source_quote: "本人就读甲学院" }],
+      results: [{ title: "甲项目参考", authors: [] }], url: "https://example.edu.cn/notice", title: "甲校通知" };
+    let finish;
+    h.ui.setApi(url => {
+      requests.push(url);
+      return new Promise(resolve => { finish = () => resolve(result); });
+    });
+    const open = () => kind === "facts" ? h.ui.proposeFacts() :
+      kind === "paper" ? h.ui.searchSources("paper") : h.ui.previewOfficialUrl();
+    const first = open();
+    finish();
+    await first;
+    const oldButton = panel.children.at(-1).children.at(-1);
+    const second = open();
+    h.ui.state.project = projects[1];
+    const marker = new Element();
+    panel.replaceChildren(marker);
+    finish();
+    await second;
+    assert.deepEqual(panel.children, [marker]);
+    // Even a retained card cannot confirm data into another project.
+    oldButton.click();
+    assert.equal(requests.length, 2);
+  });
+}
+
+test("a delayed leader photo cannot replace another project's empty preview", async () => {
+  const h = harness();
+  h.ui.state.project = { id: "alpha", state: { leader_photo: "old" } };
+  let finish;
+  h.context.fetch = () => new Promise(resolve => {
+    finish = () => resolve({ ok: true, blob: async () => new Blob(["old photo"]) });
+  });
+  const pending = h.ui.renderLeaderPhoto();
+  h.ui.state.project = { id: "beta", state: {} };
+  await h.ui.renderLeaderPhoto();
+  finish();
+  await pending;
+  assert.equal(h.element("#leaderPhotoPreview").children[0].textContent, "暂无照片");
+  assert.equal(h.created.length, 0);
+});
+
+test("removing a material refreshes the project where the card was rendered", async () => {
+  const h = harness();
+  h.context.confirm = () => true;
+  h.ui.state.project = { id: "alpha" };
+  h.ui.state.documents = [doc];
+  const calls = [];
+  h.ui.setApi(async (url, options) => { calls.push([options.method, url]); return {}; });
+  h.ui.setLoadProject(async id => calls.push(["refresh", id]));
+  h.ui.renderDocuments();
+  const remove = h.element("#documentsList").children[0].children.at(-1).children.at(-1);
+  await remove.click();
+  assert.deepEqual(calls, [["DELETE", `/api/documents/${doc.id}`], ["refresh", "alpha"]]);
 });

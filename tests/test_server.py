@@ -1189,3 +1189,23 @@ def test_replacement_with_lost_commit_response_keeps_new_photo(client, monkeypat
     assert new != old and store.get_project(pid)["state"]["leader_photo"] == new
     assert store.get_document(new)["confirmed"]
     assert store.get_document(old) is None and not old_path.exists()
+
+
+def test_fact_form_updates_metadata_and_facts_in_one_revision(client):
+    project = client.post("/api/projects", json={"title": "表单测试"}).json()
+    root = f"/api/projects/{project['id']}"
+    revision = client.get(root).json()["material_revision"]
+    form = {"facts": {"college": "甲学院"}, "project": {"school": "甲大学"}, "expected_revision": revision}
+    assert client.put(root + "/facts/form", json=form).status_code == 200
+    saved = client.get(root).json()
+    assert saved["school"] == "甲大学" and saved["state"]["confirmed_facts"]["college"] == "甲学院"
+    assert saved["material_revision"] == revision + 1
+    form["project"]["school"] = "乙大学"
+    form["facts"]["college"] = "乙学院"
+    assert client.put(root + "/facts/form", json=form).status_code == 409
+    form["expected_revision"] = saved["material_revision"]
+    form["facts"]["application_year"] = "错误年份"
+    assert client.put(root + "/facts/form", json=form).status_code == 422
+    current = client.get(root).json()
+    assert current["school"] == "甲大学" and current["state"]["confirmed_facts"]["college"] == "甲学院"
+    assert current["material_revision"] == saved["material_revision"]

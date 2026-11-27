@@ -198,6 +198,12 @@ class ProjectUpdate(BaseModel):
     school: str | None = Field(default=None, max_length=120)
 
 
+class ProjectFactForm(BaseModel):
+    project: ProjectUpdate
+    facts: dict[str, str]
+    expected_revision: int = Field(ge=0)
+
+
 class OutlineUpdate(BaseModel):
     outline: list[dict[str, str]]
     expected_revision: int | None = None
@@ -2909,9 +2915,22 @@ def confirm_reference(project_id: str, payload: ReferenceConfirm) -> dict[str, A
     return {"references": refs, "confirmed": True, "source_type": ref["source_type"]}
 
 
+@app.put("/api/projects/{project_id}/facts/form")
+def save_project_fact_form(project_id: str, form: ProjectFactForm) -> dict[str, Any]:
+    return _save_project_facts(project_id, form.facts, form.project.model_dump(exclude_none=True), form.expected_revision)
+
+
 @app.put("/api/projects/{project_id}/facts")
 def update_project_facts(project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return _save_project_facts(project_id, payload, {}, None)
+
+
+def _save_project_facts(
+    project_id: str, payload: dict[str, Any], project_fields: dict[str, Any], expected_revision: int | None,
+) -> dict[str, Any]:
     project = _safe_project(project_id)
+    if expected_revision is not None and expected_revision != project["material_revision"]:
+        raise MaterialConflict("项目已变化，请刷新后重试")
     if len(payload) > 100:
         raise HTTPException(status_code=413, detail="一次最多保存 100 个信息字段")
     year_value = str(payload.get("application_year", "")).strip()
@@ -2942,10 +2961,11 @@ def update_project_facts(project_id: str, payload: dict[str, Any]) -> dict[str, 
     state.setdefault("fact_sources", {})
     for key in facts:
         state["fact_sources"][key] = "学生在网页中手动确认"
-    update_fields: dict[str, Any] = {"state": state}
+    update_fields = {**project_fields, "state": state}
     if facts.get("project_name"):
         update_fields["title"] = facts["project_name"]
-    store.update_project(project_id, **update_fields)
+    if not store.update_project(project_id, expected_revision=project["material_revision"], **update_fields):
+        raise HTTPException(status_code=404, detail="项目不存在")
     return {"confirmed_facts": confirmed}
 
 
