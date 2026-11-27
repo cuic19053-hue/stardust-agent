@@ -79,7 +79,13 @@ function harness(sharedSession = new Map()) {
     document,
     window: { location: { origin: "https://workbench.example.test" } },
     localStorage: { getItem: (k) => storage.get(k) || null, setItem: (k,v) => storage.set(k,v), removeItem: (k) => storage.delete(k) },
-    sessionStorage: { getItem: (k) => session.get(k) || null, setItem: (k,v) => session.set(k,v), removeItem: (k) => session.delete(k) },
+    sessionStorage: {
+      get length() { return session.size; },
+      key: index => [...session.keys()][index] ?? null,
+      getItem: key => session.get(key) ?? null,
+      setItem: (key, value) => session.set(key, value),
+      removeItem: key => session.delete(key),
+    },
     Headers,
     AbortController,
     Blob,
@@ -116,7 +122,7 @@ function harness(sharedSession = new Map()) {
       renderPrivacyNotice, showModelStatus, updateTemplateQuickActions,
       syncAuthControls, initializeCloudAuth, submitAuthForm,
       readPublicCache, writePublicCache, sameOriginAuthFetch, storeLlmConfig, loadCloudModelConfig, saveSelectedLlmConfig,
-      sendChat, syncChatControls, loadProject, refreshProjects, closeDeletedProject, startApplication, deleteCurrentProject, startGeneralChat, selectConversationSkill, configureSkillWorkspace, renderFacts, saveFacts, renderSections, recommendOutline, saveOutline, validate, restoreInterruptedChatMessage, updateRecoveredChatInput, startBatchGeneration, cancelBatchGeneration,
+      sendChat, syncChatControls, clearInterruptedChatMessages, loadProject, refreshProjects, closeDeletedProject, startApplication, deleteCurrentProject, startGeneralChat, selectConversationSkill, configureSkillWorkspace, renderFacts, saveFacts, renderSections, recommendOutline, saveOutline, validate, restoreInterruptedChatMessage, updateRecoveredChatInput, startBatchGeneration, cancelBatchGeneration,
       exportDoc, fetchExportBlob, flushDraftEdits, showChatDrafts, clearExportArtifacts, focusDraftSection,
       setApi(fn) { api = fn; },
       setLoadProject(fn) { loadProject = fn; },
@@ -773,6 +779,148 @@ function chapterEditor(h) {
   return { editor, status, save: section.children[0].children[1].children[2], section,
     type(value) { editor.value = value; editor.listeners.input(); } };
 }
+
+test("reloading a tab restores chapter edits with their exact base, including empty edits", () => {
+  const session = new Map();
+  const first = harness(session); exportingProject(first);
+  const blank = chapterEditor(first);
+  blank.type("");
+  const reloaded = harness(session); exportingProject(reloaded);
+  let requests = 0;
+  reloaded.ui.setApi(async () => { requests++; return {}; });
+  const recovered = chapterEditor(reloaded);
+  assert.equal(recovered.editor.value, "");
+  assert.match(recovered.status.textContent, /已恢复.*未保存/);
+  assert.equal(requests, 0);
+});
+
+test("a chapter recovered after reload still detects a competing server edit", async () => {
+  const session = new Map();
+  const first = harness(session); exportingProject(first);
+  chapterEditor(first).type("刷新前打的草稿");
+  const reloaded = harness(session); exportingProject(reloaded);
+  reloaded.ui.state.project.sections.purpose = "其他页面的更新";
+  reloaded.ui.state.project.material_revision = 3;
+  const recovered = chapterEditor(reloaded);
+  const conflict = recovered.section.children[1].children.at(-1);
+  assert.equal(recovered.editor.value, "刷新前打的草稿");
+  assert.equal(conflict.children[1].textContent, "其他页面的更新");
+  reloaded.ui.setApi(async (_url, options = {}) => {
+    assert.notEqual(options.method, "PUT");
+    return reloaded.ui.state.project;
+  });
+  await assert.rejects(reloaded.ui.flushDraftEdits(), /其他页面/);
+});
+
+test("reload after an unacknowledged save preserves later typing against the committed text", async () => {
+  const session = new Map();
+  const first = harness(session); exportingProject(first);
+  const editing = chapterEditor(first);
+  editing.type("第一次提交的正文");
+  let started;
+  const requested = new Promise(resolve => { started = resolve; });
+  first.ui.setApi(async (_url, options = {}) => {
+    if (options.method !== "PUT") return first.ui.state.project;
+    started();
+    return new Promise(() => {});
+  });
+  void editing.save.click();
+  await requested;
+  editing.type("提交后继续输入的正文");
+  const reloaded = harness(session); exportingProject(reloaded);
+  reloaded.ui.state.project.sections.purpose = "第一次提交的正文";
+  reloaded.ui.state.project.material_revision = 3;
+  const recovered = chapterEditor(reloaded);
+  assert.equal(recovered.editor.value, "提交后继续输入的正文");
+  let written;
+  reloaded.ui.setApi(async (url, options = {}) => {
+    if (options.method !== "PUT") return reloaded.ui.state.project;
+    written = JSON.parse(options.body);
+    return { material_revision: 4 };
+  });
+  await recovered.save.click();
+  assert.equal(written.base_content, "第一次提交的正文");
+  assert.equal(written.content, "提交后继续输入的正文");
+  const afterSaving = harness(session); exportingProject(afterSaving);
+  afterSaving.ui.state.project.sections.purpose = "服务器之后的新版本";
+  assert.equal(chapterEditor(afterSaving).editor.value, "服务器之后的新版本");
+});
+
+test("a reverted draft can be explicitly saved while a previous write remains unconfirmed", async () => {
+  const session = new Map();
+  const first = harness(session); exportingProject(first);
+  const editing = chapterEditor(first);
+  editing.type("此前发出的修改");
+  first.ui.setApi(async (_url, options = {}) => {
+    if (options.method !== "PUT") return first.ui.state.project;
+    throw new TypeError("response lost");
+  });
+  await editing.save.click();
+  editing.type("已保存正文");
+  const reloaded = harness(session); exportingProject(reloaded);
+  const recovered = chapterEditor(reloaded);
+  assert.match(recovered.status.textContent, /保存待确认/);
+  let written;
+  reloaded.ui.setApi(async (_url, options = {}) => {
+    if (options.method !== "PUT") return reloaded.ui.state.project;
+    written = JSON.parse(options.body);
+    return { material_revision: 3 };
+  });
+  await recovered.save.click();
+  assert.equal(written.base_content, "已保存正文");
+  assert.equal(written.content, "已保存正文");
+  assert.match(recovered.status.textContent, /已保存/);
+  assert.equal(session.size, 0);
+});
+
+test("browser recovery stays scoped to the authenticated account and removed projects", () => {
+  const session = new Map();
+  const old = harness(session); exportingProject(old);
+  old.ui.state.cloudMode = true;
+  old.ui.state.authSession = { user: { id: "owner" }, access_token: "sensitive-credential-token" };
+  chapterEditor(old).type("当前账号的未提交正文");
+  assert.ok([...session.values()].some(value => value.includes("当前账号的未提交正文")));
+  assert.ok([...session.values()].every(value => !value.includes("sensitive-credential-token")));
+  const other = harness(session); exportingProject(other);
+  other.ui.state.cloudMode = true;
+  other.ui.state.authSession = { user: { id: "other" } };
+  assert.equal(chapterEditor(other).editor.value, "已保存正文");
+  old.ui.closeDeletedProject(old.ui.state.project.id);
+  assert.ok([...session.values()].every(value => !value.includes("当前账号的未提交正文")));
+});
+
+test("signing out clears chapter recovery and a late save cannot bring it back", async () => {
+  const session = new Map([["unrelated", "retained"]]);
+  const h = harness(session); exportingProject(h);
+  h.ui.state.cloudMode = true;
+  h.ui.state.authSession = { user: { id: "previous" }, access_token: "old-token" };
+  const view = chapterEditor(h);
+  view.type("离开账号前正在保存的正文");
+  let respond, onWrite;
+  const waiting = new Promise(resolve => { onWrite = resolve; });
+  h.ui.setApi(async (_url, options = {}) => {
+    if (options.method !== "PUT") return h.ui.state.project;
+    onWrite();
+    return new Promise(resolve => { respond = resolve; });
+  });
+  const saving = view.save.click();
+  await waiting;
+  h.ui.clearInterruptedChatMessages();
+  h.ui.state.authSession = { user: { id: "next" } };
+  assert.deepEqual([...session], [["unrelated", "retained"]]);
+  respond({ material_revision: 3 });
+  await saving;
+  assert.deepEqual([...session], [["unrelated", "retained"]]);
+});
+
+test("a blocked browser storage keeps the chapter in memory and gives the student a save prompt", () => {
+  const h = harness(); exportingProject(h);
+  const view = chapterEditor(h);
+  h.context.sessionStorage.setItem = () => { throw new Error("quota exceeded"); };
+  view.type("写在受限环境中的草稿");
+  assert.match(h.element("#toast").textContent, /先保存正文再刷新/);
+  assert.equal(chapterEditor(h).editor.value, "写在受限环境中的草稿");
+});
 
 test("restoring a version first saves the current edit, then uses its revision and exact text", async () => {
   const h = harness(); exportingProject(h);

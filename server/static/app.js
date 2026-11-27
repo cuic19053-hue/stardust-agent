@@ -121,7 +121,8 @@
   // returned text only in this page, scoped to the originating project.
   const uncertainSectionDrafts = new Map();
   const sectionEdits = window.SectionEdits.create({
-    state, api: (...args) => api(...args), currentProjectView, setDraftSaveStatus, updateDraftStats,
+    state, api: (...args) => api(...args), currentProjectView, recoveryOwner: chatRecoveryOwner,
+    setDraftSaveStatus, updateDraftStats, toast,
   });
   const { flushDraftEdits, confirmGeneratedSection, applyGeneratedSection } = sectionEdits;
   const deletedProjectEpochs = new Map();
@@ -392,7 +393,9 @@
     const body = type.includes("application/json") ? await response.json() : await response.text();
     if (!response.ok) {
       const detail = typeof body === "object" ? body.detail || body.error : body;
-      throw new Error(detail || `请求失败 (${response.status})`);
+      const error = new Error(detail || `请求失败 (${response.status})`);
+      error.status = response.status;
+      throw error;
     }
     return body;
   }
@@ -3456,6 +3459,11 @@
       function paintDraft() {
         wordBadge.textContent = `${countWords(draft.content)} 字`;
         setDraftSaveStatus(statusPill, draft.content === draft.base);
+        if (draft.recovered && draft.content !== draft.base) statusPill.textContent = "● 已恢复，未保存";
+        if (draft.submitted !== undefined && draft.content === draft.base) {
+          statusPill.className = "section-status-pill unsaved";
+          statusPill.textContent = "● 保存待确认";
+        }
         conflictBox.replaceChildren();
         const conflict = draft.base !== draft.remote;
         conflictBox.classList.toggle("hidden", !conflict);
@@ -3474,23 +3482,21 @@
       }
       function resolveConflict(useRemote) {
         if (!currentEditor()) return;
-        draft.base = draft.remote;
         if (useRemote) editor.value = draft.remote;
-        recordInput();
+        recordInput(true);
       }
       function currentEditor() {
         return chatProjectIsActive(boundProjectId) && sectionEdits.isAttached(uncertainKey, editor);
       }
-      function recordInput() {
+      function recordInput(resolveConflict = false) {
         if (!sectionEdits.isAttached(uncertainKey, editor) || state.project?.id !== boundProjectId) return;
         clearExportArtifacts();
         window.MaterialPilot?.invalidateArtifacts?.();
-        draft.content = editor.value;
-        if (draft.content === draft.remote) draft.base = draft.remote;
+        sectionEdits.record(uncertainKey, editor.value, resolveConflict);
         paintDraft();
       }
       draft.display = { editor, paint: paintDraft };
-      if (draft.base !== draft.content || draft.base !== draft.remote) paintDraft();
+      if (draft.base !== draft.content || draft.base !== draft.remote || draft.submitted !== undefined) paintDraft();
 
       function renderUncertainDrafts() {
         uncertainBox.replaceChildren();
@@ -3628,7 +3634,7 @@
         editor.dispatchEvent(new Event("input"));
       });
 
-      editor.addEventListener("input", recordInput);
+      editor.addEventListener("input", () => recordInput());
 
       editor.addEventListener("keydown", (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === "s") {
