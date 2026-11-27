@@ -863,6 +863,14 @@ class OllamaAgent:
         project = self.store.get_project(project_id)
         if not project:
             raise ValueError("找不到这个项目。")
+        result = self._draft_section(project, section_id)
+        if persist:
+            from .generation_safety import persist_generated_section
+            persist_generated_section(self.store, project, section_id, result)
+        return result
+
+    def _draft_section(self, project: dict[str, Any], section_id: str) -> dict[str, Any]:
+        project_id = project["id"]
         if project["outline"] and not project["state"].get("outline_confirmed"):
             raise ValueError("请先确认或修改申报书目录，再开始生成章节。")
         section = next((item for item in project["outline"] if item.get("id") == section_id), None)
@@ -892,8 +900,6 @@ class OllamaAgent:
                         "requires_student_input": True, "notice": notice + "已保留现有正文。",
                         "evidence": [], "retrieval_mode": "needs_student_input"}
             content = "【待补充：个人情况和与本章节相关的具体经历】"
-            if persist:
-                self.tools.save_section(project_id, section_id, content)
             return {"section_id": section_id, "title": title, "content": content,
                     "requires_student_input": True, "notice": notice,
                     "evidence": [], "retrieval_mode": "needs_student_input"}
@@ -919,8 +925,6 @@ class OllamaAgent:
                 ("经费预算", state.get("budget") or "待补充"),
             ]
             content = "\n".join(f"- **{label}：** {value}" for label, value in fields)
-            if persist:
-                self.tools.save_section(project_id, section_id, content)
             return {
                 "section_id": section_id,
                 "title": title,
@@ -998,8 +1002,6 @@ class OllamaAgent:
                     "notice": "本章节还缺少相关资料，请先补充；已保留现有正文。",
                     "missing_fields": missing,
                 }
-            if persist:
-                self.tools.save_section(project_id, section_id, content)
             return {
                 "section_id": section_id,
                 "title": title,
@@ -1137,28 +1139,16 @@ class OllamaAgent:
                 if project_issues:
                     result["grounding_issues"] = project_issues
                     result["grounding_kind"] = "project"
-        from .generation_safety import mark_review_alternative, mark_review_save_uncertain, review_incomplete
+        from .generation_safety import review_incomplete
         if review_incomplete(result):
-            if persist:
-                try:
-                    version = self.store.save_section_version(
-                        project_id, section_id, workflow_res.content,
-                        source="ai_generated_alternative", review_card=result.get("review_card"),
-                    )
-                    mark_review_alternative(result, version["id"])
-                except Exception:
-                    # The model may already have billed. Return its content;
-                    # do not trigger another generation or claim it was saved.
-                    mark_review_save_uncertain(result)
+            result["review_incomplete"] = True
+            if result.get("grounding_issues"):
+                subject = "项目数据、成果或来源" if result.get("grounding_kind") == "project" else "部分个人数字"
+                result["notice"] = f"草稿中的{subject}需要你核对。"
+            elif result.get("revision_incomplete"):
+                result["notice"] = "后续修改未完成，上一版草稿仍可核对和编辑。"
             else:
-                # The caller has not yet saved this result to a task or version.
-                result["review_incomplete"] = True
-                result["notice"] = (("草稿中的项目数据、成果或来源需要你核对。" if result.get("grounding_kind") == "project"
-                                     else "草稿中的部分个人数字需要你核对。") if result.get("grounding_issues")
-                                    else "后续修改未完成，上一版草稿仍可核对和编辑。" if result.get("revision_incomplete")
-                                    else "本轮检查未完成。")
-        elif persist:
-            self.tools.save_section(project_id, section_id, workflow_res.content)
+                result["notice"] = "本轮检查未完成。"
         if excluded_personal_docs:
             note = "部分材料中的申请人姓名与当前学生不同，本次未用于写作，请核对材料。"
             result["notice"] = " ".join(filter(None, [result.get("notice"), note]))

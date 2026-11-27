@@ -1740,7 +1740,7 @@ class Store:
             rows = db.execute(
                 """SELECT * FROM section_versions
                 WHERE project_id=? AND section_id=?
-                ORDER BY created_at DESC LIMIT ?""",
+                ORDER BY created_at DESC, rowid DESC LIMIT ?""",
                 (project_id, section_id, max(1, min(limit, 50))),
             ).fetchall()
         results = []

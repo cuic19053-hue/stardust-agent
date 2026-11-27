@@ -151,9 +151,10 @@ def save_project_fact(
 
 
 @server.tool()
-def save_section(project_id: str, section_id: str, content: str) -> dict[str, Any]:
-    """保存一章草稿，供网页预览和修改。"""
-    return tools.save_section(project_id, section_id, content)
+def save_section(project_id: str, section_id: str, content: str,
+                 expected_revision: int | None = None, base_content: str | None = None) -> dict[str, Any]:
+    """保存完整章节（最多 30,000 字符）。编辑已有正文时传入 get_project_state 读到的 project.material_revision 或原正文。"""
+    return tools.save_section(project_id, section_id, content, expected_revision, base_content)
 
 
 @server.tool()

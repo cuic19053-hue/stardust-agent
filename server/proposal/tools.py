@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from .retrieval import ProjectRetriever
 from .knowledge import PublicKnowledgeRetriever
 from .skills import model_safe_guidance, registry, valid_fact_key
+from .sections import MAX_MANUAL_SECTION_LENGTH, SectionProjectMissing, save_manual_section
 from .storage import Store, new_id
 from .execution_budget import remaining_timeout, read_response
 
@@ -532,16 +533,15 @@ class ProposalTools:
             "warning": warning or "页面内容来自公开官方域名；请核对通知年份、适用范围和附件。",
         }
 
-    def save_section(self, project_id: str, section_id: str, content: str) -> dict[str, Any]:
+    def save_section(self, project_id: str, section_id: str, content: str,
+                     expected_revision: int | None = None, base_content: str | None = None) -> dict[str, Any]:
         project = self.store.get_project(project_id)
         if not project:
             return {"error": "找不到这个项目。"}
-        if not section_id or len(section_id) > 80:
-            return {"error": "章节标识无效。"}
-        sections = dict(project["sections"])
-        sections[section_id] = content[:30000]
-        self.store.update_project(project_id, sections=sections)
-        return {"success": True, "section_id": section_id, "character_count": len(content)}
+        try:
+            return save_manual_section(self.store, project, section_id, content, expected_revision, base_content)
+        except (SectionProjectMissing, ValueError) as exc:
+            return {"error": str(exc)}
 
     def save_project_fact(
         self,
@@ -1004,7 +1004,10 @@ class ProposalTools:
                         "properties": {
                             "project_id": {"type": "string"},
                             "section_id": {"type": "string"},
-                            "content": {"type": "string"},
+                            "content": {"type": "string", "maxLength": MAX_MANUAL_SECTION_LENGTH},
+                            "expected_revision": {"type": "integer", "minimum": 0,
+                                                  "description": "上次读取的 project.material_revision"},
+                            "base_content": {"type": "string", "description": "开始编辑时的完整正文"},
                         },
                         "required": ["project_id", "section_id", "content"],
                     },

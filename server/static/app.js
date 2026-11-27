@@ -3340,6 +3340,12 @@
     }
   }
 
+  const sectionVersionLabels = new Map([
+    ["before_restore", "恢复前的正文"], ["restore", "已恢复的正文"],
+    ["before_chat_replacement", "聊天草稿替换前的正文"], ["ai_generated", "生成草稿"],
+    ["ai_generated_alternative", "备选草稿"], ["user_edit", "手写正文"],
+  ]);
+
   function renderSections() {
     const root = $("#draftSections");
     sectionEdits.detachEditors();
@@ -3520,21 +3526,26 @@
           versionsBox.classList.add("hidden");
           return;
         }
-        const projectId = state.project?.id;
-        if (!projectId) return;
+        if (!currentEditor()) return;
+        const view = currentProjectView();
+        const versionsUrl = `/api/projects/${encodeURIComponent(view.id)}/sections/${encodeURIComponent(section.id)}/versions`;
         history.disabled = true;
         try {
-          const data = await api(`/api/projects/${encodeURIComponent(projectId)}/sections/${encodeURIComponent(section.id)}/versions`);
-          if (!chatProjectIsActive(projectId)) return;
+          const data = await api(versionsUrl);
+          if (!currentEditor()) return;
           versionsBox.replaceChildren();
           for (const version of data.versions || []) {
             if (typeof version.content !== "string") continue;
             const row = document.createElement("div");
+            const label = document.createElement("strong");
+            const savedAt = new Date(version.created_at);
+            const source = sectionVersionLabels.get(version.source) || "历史版本";
+            label.textContent = Number.isNaN(savedAt.getTime()) ? source : `${source} · ${savedAt.toLocaleString("zh-CN")}`;
             const text = document.createElement("pre");
-            text.textContent = version.content;
+            text.textContent = version.content || "（正文为空）";
             const use = button("放入编辑器", "button button-small button-secondary");
             use.addEventListener("click", () => {
-              if (!chatProjectIsActive(projectId)) return;
+              if (!currentEditor()) return;
               if (editor.value !== (state.project?.sections?.[section.id] || "") &&
                   !confirm("当前编辑内容还未保存，确定用历史版本替换编辑框内容吗？")) return;
               editor.value = version.content;
@@ -3543,13 +3554,43 @@
               updateDraftStats();
               toast("已放入编辑器，保存后生效。");
             });
-            row.append(text, use);
+            row.append(label, text, use);
+            if (version.id != null) {
+              const restore = button("恢复并保存", "button button-small button-secondary");
+              restore.addEventListener("click", async () => {
+                if (!currentEditor() || restore.disabled) return;
+                const dirty = editor.value !== (state.project.sections?.[section.id] || "");
+                if (dirty && !confirm("恢复前会先保存你正在编辑的正文，可在历史版本中找回。继续恢复吗？")) return;
+                restore.disabled = true;
+                try {
+                  await flushDraftEdits([{ area: editor, section: wrapper }]);
+                  if (!currentEditor()) return;
+                  clearExportArtifacts();
+                  window.MaterialPilot?.invalidateArtifacts?.();
+                  const restored = await api(`${versionsUrl}/${encodeURIComponent(version.id)}/restore`, {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ expected_revision: state.project.material_revision,
+                      base_content: state.project.sections?.[section.id] || "" }),
+                  });
+                  if (!view.active()) return;
+                  clearExportArtifacts();
+                  window.MaterialPilot?.invalidateArtifacts?.();
+                  await loadProject(view.id, { refreshList: false });
+                  if (view.active()) toast(restored.notice || "已恢复所选版本。");
+                } catch (error) {
+                  if (view.active()) toast(`恢复未确认：${error.message}`, true);
+                } finally {
+                  restore.disabled = false;
+                }
+              });
+              row.append(restore);
+            }
             versionsBox.append(row);
           }
           if (!versionsBox.children.length) versionsBox.textContent = "暂无历史版本。";
           versionsBox.classList.remove("hidden");
         } catch (error) {
-          toast(`读取历史版本失败：${error.message}`, true);
+          if (currentEditor()) toast(`读取历史版本失败：${error.message}`, true);
         } finally {
           history.disabled = false;
         }

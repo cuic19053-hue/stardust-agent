@@ -74,6 +74,10 @@ from proposal.wopally_transport import wopally_urlopen
 from proposal.tools import ProposalTools
 from proposal.jobs import GenerationJobRunner
 from proposal.local_chat_api import LocalChatAPI, register_local_chat_api
+from proposal.sections import (
+    MAX_MANUAL_SECTION_LENGTH, SECTION_LENGTH_NOTICE, SectionProjectMissing,
+    check_section_revision, save_manual_section, write_section,
+)
 from proposal.materials import MaterialConflict, enabled as material_enabled
 from proposal.skills import normalize_skill_id, registry as skill_registry, valid_fact_key
 from proposal.wopally_client import WopallyCardRejected, WopallyClient, WopallyUnavailable
@@ -209,10 +213,14 @@ class OutlineUpdate(BaseModel):
     expected_revision: int | None = None
 
 
-class SectionUpdate(BaseModel):
-    content: str = Field(max_length=30000)
-    expected_revision: int | None = None
-    base_content: str | None = Field(default=None, max_length=30000)
+class SectionPrecondition(BaseModel):
+    expected_revision: int | None = Field(default=None, ge=0)
+    # Older generated chapters can exceed the current limit for new edits.
+    base_content: str | None = None
+
+
+class SectionUpdate(SectionPrecondition):
+    content: str = Field(max_length=MAX_MANUAL_SECTION_LENGTH)
 
 
 class CreateJobInput(BaseModel):
@@ -323,7 +331,12 @@ register_review_api(app, lambda: store, lambda: CLOUD_MODE, lambda: _platform_bu
 @app.exception_handler(RequestValidationError)
 async def validation_error(request: Request, exc: RequestValidationError):
     # Pydantic 默认把 input 回显；凭据接口不能回显 Key、密码或 token。
-    return JSONResponse({"detail": "请求字段格式不正确，请检查输入。"}, status_code=422,
+    detail = "请求字段格式不正确，请检查输入。"
+    if getattr(request.scope.get("route"), "name", None) == "update_section" and any(
+        e["loc"] == ("body", "content") and e["type"] == "string_too_long" for e in exc.errors()
+    ):
+        detail = SECTION_LENGTH_NOTICE
+    return JSONResponse({"detail": detail}, status_code=422,
                         headers={"Cache-Control": "no-store"})
 
 
@@ -2549,15 +2562,34 @@ def list_section_versions(project_id: str, section_id: str, limit: int = 10) -> 
 
 
 @app.post("/api/projects/{project_id}/sections/{section_id}/versions/{version_id}/restore")
-def restore_section_version(project_id: str, section_id: str, version_id: str) -> dict[str, Any]:
+def restore_section_version(project_id: str, section_id: str, version_id: str,
+                            payload: SectionPrecondition | None = None) -> dict[str, Any]:
     project = _safe_project(project_id)
     ver = store.get_section_version(version_id)
     if not ver or ver.get("project_id") != project_id or ver.get("section_id") != section_id:
         raise HTTPException(status_code=404, detail="版本不存在")
-    content = ver.get("content", "")
-    tools.save_section(project_id, section_id, content)
-    store.save_section_version(project_id, section_id, content, source="restore")
-    return {"restored": True, "version_id": version_id, "content": content}
+    content = ver["content"]
+    current = project["sections"].get(section_id)
+    result = {"restored": True, "version_id": version_id, "content": content,
+              "material_revision": project["material_revision"]}
+    if current == content:
+        return result
+    if payload:
+        check_section_revision(project, section_id, payload.expected_revision, payload.base_content)
+    if current is not None:
+        try:
+            store.save_section_version(project_id, section_id, current, source="before_restore")
+        except Exception as exc:
+            raise HTTPException(503, "当前正文暂时无法备份，请稍后重试恢复。") from exc
+    try:
+        result["material_revision"] = write_section(store, project, section_id, content)
+    except SectionProjectMissing as exc:
+        raise HTTPException(404, str(exc)) from exc
+    try:
+        store.save_section_version(project_id, section_id, content, source="restore")
+    except Exception:
+        result["notice"] = "正文已恢复，恢复记录暂未写入历史版本。"
+    return result
 
 
 @app.post("/api/projects/{project_id}/sections/{section_id}/generate")
@@ -2569,43 +2601,11 @@ def generate_section(
         result = _metered_invoke(
             payload.llm_config if payload else None, request, f"section:{section_id}", project_id,
             lambda model: model.generate_section(project_id, section_id, persist=False))
-        if result.get("requires_student_input") and str(project.get("sections", {}).get(section_id) or "").strip():
-            return result
-        from proposal.generation_safety import mark_review_alternative, mark_review_save_uncertain, review_incomplete
-        if review_incomplete(result):
-            try:
-                version = store.save_section_version(project_id, section_id, result["content"],
-                                                     source="ai_generated_alternative", review_card=result.get("review_card"))
-                mark_review_alternative(result, str(version["id"]))
-            except Exception:
-                mark_review_save_uncertain(result)
-            return result
-        # The legacy path needs the same optimistic revision check: a slow
-        # generation must not overwrite text the student saved meanwhile.
-        try:
-            updated = store.update_project(project_id, expected_revision=project["material_revision"],
-                sections={**project["sections"], section_id: result["content"]})
-            if not updated:
-                raise MaterialConflict("项目已变化")
-            result.update(material_applied=True, material_revision=updated["material_revision"])
+        from proposal.generation_safety import persist_generated_section
+        persist_generated_section(store, project, section_id, result)
+        if result.get("material_applied"):
             from proposal.review_workflow import after_draft_saved
             result["review"] = after_draft_saved(store, project_id, "section_generation")
-            source = "ai_generated"
-        except MaterialConflict:
-            source = "ai_generated_alternative"
-            result.update(conflict_status="user_edit_preserved",
-                          notice="项目在生成期间发生变化，正文未覆盖，结果已存为备选版本")
-        try:
-            store.save_section_version(project_id, section_id, result["content"],
-                                       source=source, review_card=result.get("review_card"))
-        except Exception:
-            # Never turn a finished, potentially billed generation into a
-            # generic HTTP failure solely because its extra version failed.
-            if source == "ai_generated_alternative":
-                result.update(result_save_uncertain=True,
-                              notice="项目在生成期间发生变化，正文未覆盖；备选版本保存状态不明，请先复制当前草稿。")
-            else:
-                result["notice"] = "正文已保存，历史版本暂未保存。"
         return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2651,19 +2651,18 @@ def update_outline(project_id: str, payload: OutlineUpdate) -> dict[str, Any]:
 @app.put("/api/projects/{project_id}/sections/{section_id}")
 def update_section(project_id: str, section_id: str, payload: SectionUpdate) -> dict[str, Any]:
     project = _safe_project(project_id)
-    if payload.expected_revision is not None:
-        if payload.base_content is not None and project["sections"].get(section_id, "") != payload.base_content:
-            raise HTTPException(409, "该章节已在其他页面修改，请核对版本，未覆盖您的输入")
+    if payload.expected_revision is not None or payload.base_content is not None:
         if section_id not in {s["id"] for s in project["outline"]}:
             raise HTTPException(422, "章节不存在")
-        updated = store.update_project(project_id, expected_revision=payload.expected_revision,
-            sections={**project["sections"], section_id: payload.content})
-        return {"success": True, "section_id": section_id, "character_count": len(payload.content),
-                "material_revision": updated["material_revision"]}
-    result = tools.save_section(project_id, section_id, payload.content)
-    if result.get("error"):
-        raise HTTPException(status_code=400, detail=result["error"])
-    return result
+    try:
+        return save_manual_section(store, project, section_id, payload.content,
+                                   payload.expected_revision, payload.base_content)
+    except MaterialConflict:
+        raise
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except SectionProjectMissing as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @app.delete("/api/projects/{project_id}/diagrams/{diagram_id}")

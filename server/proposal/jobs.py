@@ -20,8 +20,7 @@ from threading import Lock
 from typing import Any, Callable, Dict, Optional
 
 from . import observability as obs
-from .generation_safety import mark_review_alternative, mark_review_save_uncertain, review_incomplete
-from .materials import MaterialConflict
+from .generation_safety import persist_generated_section
 
 logger = logging.getLogger("proposal_agent.jobs")
 
@@ -146,52 +145,11 @@ class GenerationJobRunner:
             if not job_after or job_after.get("status") == "cancelled":
                 return
 
-            generated_content = result.get("content", "")
-            review_card = result.get("review_card")
-
             project = self.store.get_project(project_id)
             if project is None:
                 raise ValueError("找不到这个项目")
-            sections = project["sections"]
-            incomplete = review_incomplete(result)
-            alternative = incomplete or content_hash(sections.get(section_id, "")) != base_version
-            if not alternative:
-                try:
-                    saved = self.store.update_project(
-                        project_id, expected_revision=project["material_revision"],
-                        sections={**sections, section_id: generated_content},
-                    )
-                except MaterialConflict:
-                    # A student or another chapter finished between the read and the write.
-                    alternative = True
-                else:
-                    if saved is None:
-                        raise ValueError("找不到这个项目")
-                    result.update(material_applied=True, material_revision=saved["material_revision"])
-
-            try:
-                version = self.store.save_section_version(
-                    project_id=project_id,
-                    section_id=section_id,
-                    content=generated_content,
-                    source="ai_generated_alternative" if alternative else "ai_generated",
-                    review_card=review_card,
-                )
-            except Exception:
-                logger.warning("Generation job %s could not record its chapter history", job_id)
-                if incomplete:
-                    mark_review_save_uncertain(result)
-                elif alternative:
-                    result.update(conflict_status="user_edit_preserved", result_save_uncertain=True,
-                                  notice="正文已有更新，生成结果保留在本次任务中，请核对后保存。")
-                else:
-                    result["notice"] = "正文已保存，历史版本暂未保存。"
-            else:
-                if incomplete:
-                    mark_review_alternative(result, version["id"])
-                elif alternative:
-                    result.update(conflict_status="user_edit_preserved", alternative_version_id=version["id"],
-                                  notice="项目在生成期间发生变化，生成草稿已保留在历史版本中。")
+            changed = content_hash(project["sections"].get(section_id, "")) != base_version
+            persist_generated_section(self.store, project, section_id, result, section_changed=changed)
 
             # 状态转移：completed -> finished
             self.store.update_generation_job(

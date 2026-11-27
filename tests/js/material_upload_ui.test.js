@@ -652,8 +652,8 @@ test("section history can be reviewed and placed into the editor without saving 
   await historyButton.click();
   const editor = body.children[1];
   const versionsBox = body.children[3];
-  assert.equal(versionsBox.children[0].children[0].textContent, "先前正文");
-  versionsBox.children[0].children[1].click();
+  assert.equal(versionsBox.children[0].children[1].textContent, "先前正文");
+  versionsBox.children[0].children[2].click();
   assert.equal(editor.value, "先前正文");
   assert.equal(h.ui.state.project.sections.purpose, "当前正文");
   assert.equal(calls.length, 1);
@@ -671,6 +671,32 @@ function chapterEditor(h) {
   return { editor, status, save: section.children[0].children[1].children[2], section,
     type(value) { editor.value = value; editor.listeners.input(); } };
 }
+
+test("restoring a version first saves the current edit, then uses its revision and exact text", async () => {
+  const h = harness(); exportingProject(h);
+  const view = chapterEditor(h);
+  view.type("需要保留的手稿");
+  const requests = [];
+  h.context.confirm = () => true;
+  h.ui.setApi(async (url, options = {}) => {
+    requests.push({ url, options });
+    if (url.endsWith("/versions")) return { versions: [{ id: "v1", source: "before_restore", content: "历史稿" }] };
+    if (options.method === "PUT") return { material_revision: 3 };
+    if (url.endsWith("/restore")) return { restored: true, material_revision: 4 };
+    return h.ui.state.project;
+  });
+  let reload;
+  h.ui.setLoadProject(async id => { reload = id; });
+  const versions = view.section.children[1].children[3];
+  versions.classList.add("hidden");
+  await view.section.children[0].children[1].children[3].click();
+  const row = versions.children[0];
+  assert.equal(row.children[0].textContent, "恢复前的正文");
+  await row.children.find(child => child.textContent === "恢复并保存").click();
+  assert.deepEqual(requests.filter(r => r.options.method).map(r => r.options.method), ["PUT", "POST"]);
+  assert.deepEqual(JSON.parse(requests.at(-1).options.body), { expected_revision: 3, base_content: "需要保留的手稿" });
+  assert.equal(reload, h.ui.state.project.id);
+});
 
 test("a cleared chapter survives project navigation and detached controls cannot save to another project", async () => {
   const h = harness(); exportingProject(h);
