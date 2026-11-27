@@ -3,6 +3,7 @@
   "use strict";
   let host, data, root, projectId, mountedOwner = "local", urls = [], fillPlan, artifactEpoch = 0;
   let mountVersion = 0, refreshSequence = 0, renderedRefresh = 0;
+  let workerReady, mountRefresh;
   const pendingJobs = new Map();
   let recoveryOwner = () => "local", recoveryStorage;
   const jobKey = (id, kind, target) => `${id}\0${kind}\0${target}`;
@@ -52,9 +53,8 @@
     return n;
   };
   const configured = () => Boolean(host?.state.project?.material?.enabled);
-  // Do not route generation away from the existing chain until the operator
-  // has explicitly declared the Worker ready.
-  const active = () => Boolean(configured() && projectId === host.state.project.id && data?.worker_ready
+  const workerStatus = () => workerReady ?? data?.worker_ready;
+  const active = () => Boolean(configured() && projectId === host.state.project.id && workerStatus() === true
     && mountedOwner === recoveryOwner() && host.isProjectActive?.(projectId) !== false);
   const path = suffix => `/api/projects/${encodeURIComponent(host.state.project.id)}/material${suffix}`;
   const request = (suffix, method = "GET", body) => host.api(path(suffix), {
@@ -81,6 +81,25 @@
       current: () => Boolean(project && project === host?.state.project && version === mountVersion
         && owner === recoveryOwner() && (view?.active() ?? host.isProjectActive?.(project.id) !== false)),
     };
+  }
+
+  async function usesWorker() {
+    if (!configured()) return false;
+    const scope = captureWorkspace();
+    if (!scope.current() || projectId !== scope.project.id || mountedOwner !== recoveryOwner())
+      throw new Error("项目已切换，请在当前项目重新操作。");
+    if (typeof workerStatus() === "boolean") return workerStatus();
+
+    const notice = "暂时无法确认材料后台状态，请稍后重试。";
+    try {
+      await waitFor(mountRefresh ?? refresh(), 15000, notice);
+    } catch {
+      if (!scope.current()) throw new Error("项目已切换，请在当前项目重新操作。");
+      if (typeof workerStatus() !== "boolean") throw new Error(notice);
+    }
+    if (!scope.current()) throw new Error("项目已切换，请在当前项目重新操作。");
+    if (typeof workerStatus() !== "boolean") throw new Error(notice);
+    return workerStatus();
   }
 
   function action(text, fn, parent) {
@@ -165,6 +184,7 @@
       // The material response contains a partial project view; keep the
       // project editor's revision attached to the data it actually loaded.
       data = next;
+      if (typeof next.worker_ready === "boolean") workerReady = next.worker_ready;
       renderedRefresh = sequence;
       draw();
       return;
@@ -192,6 +212,8 @@
     if (projectId !== scope.project?.id || mountedOwner !== owner || !configured()) data = null;
     projectId = scope.project?.id ?? null;
     mountedOwner = owner;
+    workerReady = scope.project?.material?.worker_ready;
+    mountRefresh = null;
     root.classList.toggle("hidden", !configured());
     revokeArtifacts();
     if (!configured()) { root.replaceChildren(); return; }
@@ -200,13 +222,17 @@
     if (ready) draw();
     else root.replaceChildren(el("p", "正在读取材料任务…"));
     const previous = data;
-    try { await refresh(); } catch (e) {
+    const initialRefresh = refresh();
+    mountRefresh = initialRefresh;
+    try { await initialRefresh; } catch (e) {
       if (!scope.current() || data !== previous) return;
       if (ready) host.toast(e.message, true);
       else {
         root.replaceChildren(el("p", `材料链路暂不可用：${e.message}`));
         action("刷新任务与关联提示", refresh, root);
       }
+    } finally {
+      if (mountRefresh === initialRefresh) mountRefresh = null;
     }
   }
   function draw() {
@@ -215,7 +241,7 @@
     root.replaceChildren();
     const details = el("details"); details.open = true;
     details.append(el("summary", "材料工作流 · 信息、要求、配图与交付"));
-    details.append(el("p", data.worker_ready
+    details.append(el("p", workerStatus() === true
       ? "已启用持久任务。付费模型须明确确认；失败不自动重复调用。"
       : "Worker 尚未配置：可整理信息和计划，完整生成与页面检查尚未启用。"));
     action("刷新任务与关联提示", refresh, details);
@@ -437,6 +463,7 @@
   }
   async function submit(kind, target, paid, extra = {}, { onSending, onAccepted, checking = false } = {}) {
     const scope = captureWorkspace();
+    if (workerStatus() === false) throw new Error("材料后台暂未启用，请刷新项目后继续。");
     if (paid && !confirm((checking ? "暂未查到上次任务。继续会沿用原编号，只有任务尚未登记才会创建。\n" : "") +
         (kind === "section" ? "本章沿用现有撰写与评审流程，最多六次模型请求。" :
         kind === "figure" ? "本次生成一张图片。" : "本次调用一次文字模型拟定候选方案。") +
@@ -648,10 +675,12 @@
     if (job) {
       onTrack?.({ kind: "worker-job", id: job.id });
     } else {
-      onTrack?.({ kind: "worker-request", id: options.idempotency_key });
-      job = await submit("export", "", false, options, { onAccepted: accepted => {
-        if (isCurrent()) onTrack?.({ kind: "worker-job", id: accepted.id });
-      } });
+      job = await submit("export", "", false, options, {
+        onSending: id => onTrack?.({ kind: "worker-request", id }),
+        onAccepted: accepted => {
+          if (isCurrent()) onTrack?.({ kind: "worker-job", id: accepted.id });
+        },
+      });
     }
     if (!isCurrent()) return;
     const id = projectId;
@@ -727,6 +756,6 @@
     }
     throw new Error("目录仍在后台生成，请在任务区查询");
   }
-  window.MaterialPilot = { mount, active, refresh, section, outline, exportDocument, flushEdits, blobUrl,
+  window.MaterialPilot = { mount, active, usesWorker, refresh, section, outline, exportDocument, flushEdits, blobUrl,
     invalidateArtifacts, configureRecovery, pendingJob, clearRecovery };
 })();

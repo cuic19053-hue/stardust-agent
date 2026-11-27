@@ -3308,7 +3308,8 @@
   }
 
   function shouldUseMaterialJob(projectId, kind, target) {
-    return hasPendingMaterialJob(projectId, kind, target) || window.MaterialPilot?.active();
+    if (hasPendingMaterialJob(projectId, kind, target)) return true;
+    return window.MaterialPilot?.usesWorker() ?? false;
   }
 
   function syncOutlineGenerateLabel() {
@@ -3328,8 +3329,10 @@
     btn.disabled = true;
     if (generate) btn.textContent = "正在整理…";
     try {
+      const worker = generate && await shouldUseMaterialJob(view.id, "outline");
+      if (!view.active()) return;
       const result = generate
-        ? (shouldUseMaterialJob(view.id, "outline")
+        ? (worker
           ? await window.MaterialPilot.outline()
           : await observeMaterialRequest(`/api/projects/${view.id}/outline/generate`, { method: "POST" }, 180000,
             "目录生成结果暂未收到，请稍后查看，避免重复提交。"))
@@ -3700,8 +3703,12 @@
       if (text) text.textContent = `${recoveryOnly ? "正在查询" : "正在生成"} [${i + 1}/${total}]：${section.title}…`;
 
       try {
-        const result = shouldUseMaterialJob(projectId, "section", section.id)
-          ? await window.MaterialPilot.section(section.id, null)
+        const worker = await shouldUseMaterialJob(projectId, "section", section.id);
+        if (state.batchAbort || !isCurrent()) {
+          stopped = state.batchAbort ? "已停止后续章节" : "已切换项目，停止后续章节";
+          break;
+        }
+        const result = worker ? await window.MaterialPilot.section(section.id, null)
           : await observeMaterialRequest(`/api/projects/${projectId}/sections/${section.id}/generate`,
               { method: "POST" }, 180000, SECTION_WAIT_NOTICE);
         if (!isCurrent()) { stopped = "已切换项目，停止后续章节"; break; }
@@ -4172,8 +4179,9 @@
             if (!mayRetainResult() || !currentEditor()) return;
           }
           const editorAtStart = editor.value;
-          let result = shouldUseMaterialJob(generationProjectId, "section", section.id)
-            ? await window.MaterialPilot.section(section.id, editor)
+          const worker = await shouldUseMaterialJob(generationProjectId, "section", section.id);
+          if (!mayRetainResult() || !currentEditor()) return;
+          let result = worker ? await window.MaterialPilot.section(section.id, editor)
             : await observeMaterialRequest(`/api/projects/${generationProjectId}/sections/${section.id}/generate`,
                 { method: "POST" }, 180000, SECTION_WAIT_NOTICE);
           if (!mayRetainResult()) return;

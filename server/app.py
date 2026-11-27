@@ -78,7 +78,7 @@ from proposal.sections import (
     MAX_MANUAL_SECTION_LENGTH, SECTION_LENGTH_NOTICE, SectionProjectMissing,
     check_section_revision, save_manual_section, write_section,
 )
-from proposal.materials import MaterialConflict, enabled as material_enabled
+from proposal.materials import MaterialConflict, enabled as material_enabled, worker_ready as material_worker_ready
 from proposal.skills import normalize_skill_id, registry as skill_registry, valid_fact_key
 from proposal.wopally_client import WopallyCardRejected, WopallyClient, WopallyUnavailable
 from proposal.material_worker_proxy import (
@@ -3226,7 +3226,7 @@ def _material_worker_bridge(request: Request, job_id: str, lease: str):
         raise HTTPException(404, "Worker 内部接口不可用")
     if (
         os.environ.get("MATERIAL_PIPELINE_ENABLED", "").lower() != "true"
-        or os.environ.get("MATERIAL_WORKER_READY", "").lower() != "true"
+        or not material_worker_ready()
     ):
         raise HTTPException(503, "材料 Worker 尚未启用")
     scheme, _, secret = request.headers.get("authorization", "").partition(" ")

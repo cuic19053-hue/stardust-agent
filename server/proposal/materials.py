@@ -46,6 +46,10 @@ def enabled(project: dict[str, Any]) -> bool:
     return bool(registry.get(skill_id))
 
 
+def worker_ready() -> bool:
+    return os.environ.get("MATERIAL_WORKER_READY", "").lower() == "true"
+
+
 class MaterialConflict(ValueError):
     """The caller must reload rather than overwrite a newer project."""
 
@@ -249,7 +253,7 @@ def material_view(project: dict[str, Any], documents: list[dict[str, Any]] | Non
 
 def attach_material(project: dict[str, Any]) -> dict[str, Any]:
     if enabled(project):
-        project["material"] = material_view(project)
+        project["material"] = {**material_view(project), "worker_ready": worker_ready()}
     return project
 
 

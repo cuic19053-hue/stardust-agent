@@ -268,9 +268,11 @@
           allowEmpty = confirm("尚无已保存的正文。是否仅导出空白/待补充草稿？这不会包含聊天里未保存的内容。");
           if (!allowEmpty) return;
         }
+        const worker = await window.MaterialPilot?.usesWorker();
+        if (!isCurrentExport()) return;
         const requestId = Array.from(crypto.getRandomValues(new Uint8Array(16)),
           byte => byte.toString(16).padStart(2, "0")).join("");
-        if (window.MaterialPilot?.active()) {
+        if (worker) {
           await window.MaterialPilot.exportDocument({ allow_empty_draft: allowEmpty, idempotency_key: requestId },
             isCurrentExport,
             (url, warnings) => downloadWorkerResult(url, warnings, projectId, isCurrentExport),

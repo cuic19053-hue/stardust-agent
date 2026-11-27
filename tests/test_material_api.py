@@ -51,6 +51,17 @@ def test_material_api_supports_catalogue_types_and_rejects_unknown(api):
     assert client.get(f"/api/projects/{p['id']}/material").status_code == 404
 
 
+@pytest.mark.parametrize("ready", [False, True])
+def test_project_detail_exposes_same_worker_readiness_as_material_context(api, monkeypatch, ready):
+    client, _, project = api
+    url = f"/api/projects/{project['id']}"
+    monkeypatch.setenv("MATERIAL_WORKER_READY", str(ready).lower())
+    detail = client.get(url).json()
+    context = client.get(url + "/material").json()
+    assert detail["material"]["enabled"] is True
+    assert detail["material"]["worker_ready"] is context["worker_ready"] is ready
+
+
 def test_non_innovation_export_job_runs_end_to_end(api, monkeypatch):
     import material_worker
     from docx import Document

@@ -267,6 +267,7 @@ test("typing while a candidate is being generated keeps both the editor text and
   let finish;
   h.ui.setApi(() => new Promise(resolve => { finish = resolve; }));
   const pending = h.ui.generateOutline();
+  await new Promise(resolve => setImmediate(resolve));
   const input = h.element("#outlineList").children[0].children[1];
   input.value = "继续写的栏目";
   input.listeners.input();
@@ -391,6 +392,7 @@ test("a candidate returned after logout cannot recreate directory recovery", asy
   let finish;
   h.ui.setApi(() => new Promise(resolve => { finish = resolve; }));
   const pending = h.ui.generateOutline();
+  await new Promise(resolve => setImmediate(resolve));
   h.ui.clearInterruptedChatMessages();
   h.ui.state.authSession = { user: { id: "next" } };
   finish({ outline: [{ id: "candidate", title: "旧账号的候选" }] });
@@ -603,6 +605,7 @@ test("batch generation stops on project switch without writing into another proj
   let finish;
   h.ui.setApi((url, options) => { calls.push({ url, options }); return new Promise(resolve => { finish = resolve; }); });
   const running = h.ui.startBatchGeneration();
+  await new Promise(resolve => setImmediate(resolve));
   h.ui.state.project = { id: "second-project", sections: { one: "新项目正文" } };
   finish({ content: "旧项目生成结果" });
   await running;
@@ -633,6 +636,7 @@ test("batch recovery resumes only the pending chapter and leaves prior and later
   const calls = [];
   h.context.window.MaterialPilot = {
     active: () => true,
+    usesWorker: () => true,
     pendingJob: (_id, kind, sid) => kind === "section" && sid === "pending" && unresolved,
     section: async sid => {
       calls.push(sid);
@@ -648,6 +652,22 @@ test("batch recovery resumes only the pending chapter and leaves prior and later
   assert.equal(h.ui.state.project.sections.pending, "找回第二章");
   assert.equal(h.ui.state.project.sections.later, undefined);
   assert.equal(h.element("#batchGenerateSectionsBtn").textContent, "⚡ 批量生成所有章节");
+});
+
+test("cancelling batch generation while the route is loading sends neither kind of generation request", async () => {
+  const h = harness(); exportingProject(h);
+  let ready;
+  h.context.window.MaterialPilot = {
+    usesWorker: () => new Promise(resolve => { ready = resolve; }),
+    section: () => assert.fail("cancelled batch submitted a worker job"),
+  };
+  h.ui.setApi(() => assert.fail("cancelled batch submitted a legacy request"));
+  const progress = h.ui.startBatchGeneration();
+  assert.equal(typeof ready, "function");
+  h.ui.cancelBatchGeneration();
+  ready(true);
+  await progress;
+  assert.match(h.element("#batchProgressText").textContent, /停止后续章节/);
 });
 
 test("batch stops when a draft requires review", async () => {
@@ -668,6 +688,7 @@ test("batch cancellation does not send subsequent model requests", async () => {
   let finish;
   h.ui.setApi((url, options) => { calls.push({ url, options }); return new Promise(resolve => { finish = resolve; }); });
   const running = h.ui.startBatchGeneration();
+  await new Promise(resolve => setImmediate(resolve));
   h.ui.cancelBatchGeneration();
   finish({ content: "后台当前章可能已保存" });
   await running;
@@ -684,6 +705,7 @@ test("batch preserves a student's edit made while a chapter is generating", asyn
   const calls = []; let finish;
   h.ui.setApi((url, options) => { calls.push({ url, options }); return new Promise(resolve => { finish = resolve; }); });
   const running = h.ui.startBatchGeneration();
+  await new Promise(resolve => setImmediate(resolve));
   area.value = "等待期间手写的修改";
   finish({ content: "后台已生成的正文", material_applied: true, material_revision: 5 });
   await running;
@@ -795,7 +817,7 @@ test("a missing background export receipt can be recovered after refresh", async
     assert.equal(url, base + "/chat-drafts");
     return { items: [] };
   });
-  first.context.window.MaterialPilot = { active: () => true, exportDocument: async (options, _active, _ready, track) => {
+  first.context.window.MaterialPilot = { active: () => true, usesWorker: () => true, exportDocument: async (options, _active, _ready, track) => {
     submissions++;
     key = options.idempotency_key;
     track({ kind: "worker-request", id: key });
@@ -887,7 +909,7 @@ test("the export toolbar can retry an existing background job file", async () =>
     assert.match(url, /chat-drafts$/);
     return { items: [] };
   });
-  h.context.window.MaterialPilot = { active: () => true, exportDocument: (_opts, _current, onReady) => {
+  h.context.window.MaterialPilot = { active: () => true, usesWorker: () => true, exportDocument: (_opts, _current, onReady) => {
     jobs++;
     return onReady(`/api/projects/${h.ui.state.project.id}/material/jobs/${"b".repeat(32)}/files/proposal.docx`);
   } };
@@ -1511,6 +1533,7 @@ test("section generation retains edits made during the model request", async () 
   let finish; const calls = [];
   h.ui.setApi((url, options) => { calls.push({ url, options }); return new Promise(resolve => { finish = resolve; }); });
   const running = section.children[0].children[1].children[1].click();
+  await new Promise(resolve => setImmediate(resolve));
   editor.value = "学生刚写的内容";
   finish({ content: "服务器保存的生成正文", material_applied: true, material_revision: 5 });
   await running;
@@ -1552,6 +1575,7 @@ test("a silent section request unlocks with uncertain result, without retry", as
   let calls = 0;
   h.ui.setApi(() => { calls++; return new Promise(() => {}); });
   const running = button.click();
+  await new Promise(resolve => setImmediate(resolve));
   const timeout = [...timers.values()].find(item => item.delay === 180000);
   assert.ok(timeout);
   timeout.callback();
@@ -1594,6 +1618,7 @@ test("an uncertain generated draft stays scoped to its original project", async 
   h.ui.renderSections();
   const first = h.element("#draftSections").children[0];
   const generating = first.children[0].children[1].children[1].click();
+  await new Promise(resolve => setImmediate(resolve));
   h.ui.state.project = { id: "second", outline: [{ id: "purpose", title: "新项目正文" }],
     sections: { purpose: "另一个项目" } };
   h.ui.renderSections();
@@ -1615,6 +1640,7 @@ test("an old account's late draft is not retained after account switch", async (
   h.ui.setApi(() => new Promise(resolve => { complete = resolve; }));
   h.ui.renderSections();
   const generating = h.element("#draftSections").children[0].children[0].children[1].children[1].click();
+  await new Promise(resolve => setImmediate(resolve));
   h.ui.state.authSession = { user: { id: "new-account" } };
   complete({ conflict_status: "user_edit_preserved", result_save_uncertain: true, content: "旧账号草稿" });
   await generating;

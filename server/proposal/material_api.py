@@ -19,7 +19,7 @@ from .material_figures import FigureSpec
 from .material_jobs import MaterialJobs, MaterialSecurityUnavailable, checked_bundle, job_id
 from .material_release_gate import platform_material_jobs_ready
 from .materials import (
-    MaterialConflict, Requirement, RULES, TRACKING, enabled, material_view, digest, prepare_update,
+    MaterialConflict, Requirement, RULES, TRACKING, enabled, material_view, digest, prepare_update, worker_ready,
 )
 from .model_config_security import encrypt_config
 from .chat_drafts import require_export_content
@@ -117,7 +117,7 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
                 "requirements": project["state"].get(RULES, []),
                 "plans": project["state"].get("_material_plans", []),
                 "jobs": MaterialJobs(store).call("list", project_id=project_id),
-                "worker_ready": os.environ.get("MATERIAL_WORKER_READY", "").lower() == "true"}
+                "worker_ready": worker_ready()}
 
     @router.put("/requirements")
     def update_requirements(project_id: str, payload: RequirementsInput):
@@ -160,7 +160,7 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
     @router.post("/jobs", status_code=202)
     def submit(project_id: str, payload: JobInput):
         store, project = project_for(project_id)
-        if os.environ.get("MATERIAL_WORKER_READY", "").lower() != "true":
+        if not worker_ready():
             raise HTTPException(503, "材料 Worker 尚未启用，不能提交长任务")
         if payload.kind == "export":
             from .exporter import ensure_grant_income_export_safe
