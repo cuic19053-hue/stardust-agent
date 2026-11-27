@@ -118,6 +118,42 @@ def test_worker_export_recovers_exact_request_and_checks_the_current_snapshot(ap
     assert client.get(artifact).content == latest.content
 
 
+def test_paid_job_lookup_recovers_original_and_replayed_apply_preserves_newer_text(api):
+    client, store, project = api
+    pid = project["id"]
+    base = f"/api/projects/{pid}/material/jobs"
+    key = "a" * 32
+    body = {"revision": project["material_revision"], "kind": "section", "target": "method",
+            "confirm_paid": True, "idempotency_key": key, "llm_config": {"provider": "ollama"}}
+    submitted = client.post(base, json=body)
+    assert submitted.status_code == 202, submitted.text
+    job_id = submitted.json()["id"]
+    queue = MaterialJobs(store)
+    job = queue.claim_local()
+    assert job["id"] == job_id
+    queue.worker_local(job, "finish", status="completed", result={"content": "本次生成的正文", "status": "passed"})
+    found = client.get(f"{base}/by-request/{key}")
+    assert found.headers["Cache-Control"] == "private, no-store"
+    assert found.json()["id"] == job_id and found.json()["status"] == "completed"
+    assert "payload" not in found.json()
+    assert client.post(base, json=body).json()["id"] == job_id
+    assert len(queue.call("list", project_id=pid)) == 1
+    other = store.create_project(title="另一个项目")
+    assert client.get(f"{base}/by-request/{key}".replace(pid, other["id"])).status_code == 404
+
+    apply_url = f"{base}/{job_id}/apply"
+    applied = client.post(apply_url)
+    applied.raise_for_status()
+    assert applied.json()["material_revision"] == store.get_project(pid)["material_revision"]
+    assert store.get_project(pid)["sections"]["method"] == "本次生成的正文"
+    store.update_project(pid, sections={"method": "学生后来手写的正文"})
+    replay = client.post(apply_url)
+    replay.raise_for_status()
+    assert replay.json()["conflict_status"] == "user_edit_preserved"
+    assert store.get_project(pid)["sections"]["method"] == "学生后来手写的正文"
+    assert len(store.list_section_versions(pid, "method")) == 1
+
+
 def test_export_snapshot_preserves_income_optout_after_30_messages(api):
     import material_worker
     client, store, project = api

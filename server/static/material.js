@@ -2,6 +2,48 @@
 (() => {
   "use strict";
   let host, data, root, projectId, urls = [], fillPlan, artifactEpoch = 0;
+  const pendingJobs = new Map();
+  let recoveryOwner = () => "local", recoveryStorage;
+  const jobKey = (id, kind, target) => `${id}\0${kind}\0${target}`;
+
+  function configureRecovery(owner) {
+    recoveryOwner = owner;
+    recoveryStorage = window.DraftRecovery.create("stardust-material-job-v1:", recoveryOwner);
+  }
+
+  function pendingJob(id, kind, target) {
+    const owner = recoveryOwner();
+    if (!owner) return null;
+    const key = jobKey(id, kind, target);
+    const inMemory = pendingJobs.get(owner + "\0" + key);
+    if (inMemory) return inMemory;
+    const saved = recoveryStorage?.read(key);
+    const identifier = saved?.jobId ?? saved?.requestId;
+    return typeof identifier === "string" && /^[a-f0-9]{32}$/.test(identifier) ? saved : null;
+  }
+
+  function clearRecovery(id) {
+    const prefix = id ? `${id}\0` : "";
+    for (const key of pendingJobs.keys()) {
+      if (key.slice(key.indexOf("\0") + 1).startsWith(prefix)) pendingJobs.delete(key);
+    }
+    recoveryStorage?.clear(prefix);
+  }
+
+  function trackedAction(id, kind, target, isCurrent) {
+    const owner = recoveryOwner();
+    const key = jobKey(id, kind, target);
+    const memoryKey = owner + "\0" + key;
+    const current = () => isCurrent() && owner === recoveryOwner();
+    function record(value) {
+      if (!owner || !current()) return;
+      if (value) pendingJobs.set(memoryKey, value);
+      else pendingJobs.delete(memoryKey);
+      recoveryStorage?.write(key, value);
+    }
+    return { id, kind, target, current, record, read: () => pendingJob(id, kind, target) };
+  }
+
   const el = (tag, text, cls) => {
     const n = document.createElement(tag);
     if (text !== undefined) n.textContent = text;
@@ -54,6 +96,7 @@
     });
     wrap.append(node); parent.append(wrap); return node;
   }
+  const terminalJobs = new Set(["completed", "failed", "cancelled", "needs_review"]);
   const jobStatus = { pending: "排队中", running: "执行中", completed: "已完成",
     failed: "失败", cancelled: "已取消", needs_review: "待核对结果与费用" };
   const jobKind = { section: "章节", outline: "候选目录", plan: "配图建议",
@@ -254,14 +297,16 @@
     data.plans.forEach(plan => {
       const row = el("div", `${plan.title} → ${plan.section_id} · ${plan.renderer}`, "material-job");
       action("编辑", () => { fill(plan); box.open = true; }, row);
-      action("确认并生成此图", async () => {
-        if (!plan.confirmed) {
+      const drawLabel = () => pendingJob(projectId, "figure", plan.id) ? "查看上次绘图任务" : "确认并生成此图";
+      const drawFigure = action(drawLabel(), async () => {
+        if (!plan.confirmed && !pendingJob(projectId, "figure", plan.id)) {
           fill(plan);
           box.open = true;
           host.toast("请先核对候选方案，点击下方保存并确认");
           return;
         }
-        await submit("figure", plan.id, plan.renderer === "gpt");
+        try { await listedJob("figure", plan.id, plan.renderer === "gpt"); }
+        finally { drawFigure.textContent = drawLabel(); }
       }, row);
       action("移除计划", async () => {
         await request("/plans", "PUT", { revision: data.context.revision, items: data.plans.filter(p => p.id !== plan.id) }); await refresh();
@@ -271,11 +316,17 @@
     let editingId = null;
     const title = input(box, "图题");
     const section = select(box, "所属章节", host.state.outline.map(s => [s.id, s.title]));
-    action("根据已确认资料拟定配图方案", async () => {
+    const proposePlan = action("根据已确认资料拟定配图方案", async () => {
       if (!section.value) throw new Error("请先确认目录");
-      await refresh();
-      await submit("plan", section.value, true);
+      try { await listedJob("plan", section.value, true); }
+      finally { updatePlanLabel(); }
     }, box);
+    const updatePlanLabel = () => {
+      proposePlan.textContent = pendingJob(projectId, "plan", section.value)
+        ? "查看上次配图建议任务" : "根据已确认资料拟定配图方案";
+    };
+    section.onchange = updatePlanLabel;
+    updatePlanLabel();
     const renderer = select(box, "绘图方式", [["svg", "流程／架构（HTML/SVG）"], ["python", "数据图（Python）"], ["gpt", "概念／场景（GPT Image，付费）"], ["overlay", "已有图片追加准确文字（不调用生图模型）"], ["upload", "真实上传照片／素材（不调用模型）"]]);
     const chart = select(box, "数据图类型", [["bar", "柱状图"], ["line", "折线图"], ["gantt", "甘特图"]]);
     const nodes = input(box, "流程节点：每行一个", "", true);
@@ -327,15 +378,25 @@
     }, box);
     parent.append(box);
   }
-  async function submit(kind, target, paid, extra = {}, onAccepted) {
-    if (paid && !confirm((kind === "section" ? "本章沿用现有撰写与评审流程，最多六次模型请求。" :
+  async function submit(kind, target, paid, extra = {}, { onSending, onAccepted, checking = false } = {}) {
+    if (paid && !confirm((checking ? "暂未查到上次任务。继续会沿用原编号，只有任务尚未登记才会创建。\n" : "") +
+        (kind === "section" ? "本章沿用现有撰写与评审流程，最多六次模型请求。" :
         kind === "figure" ? "本次生成一张图片。" : "本次调用一次文字模型拟定候选方案。") +
         "平台模型按现有积分规则结算，自定义模型由服务商收费；不自动付费重绘。是否确认？")) return null;
-    const job = await waitFor(request("/jobs", "POST", {
-      revision: data.context.revision, kind, target, idempotency_key: crypto.randomUUID(),
+    const body = {
+      revision: data?.context.revision ?? host.state.project.material_revision,
+      kind, target, idempotency_key: extra.idempotency_key || crypto.randomUUID().replaceAll("-", ""),
       llm_config: paid ? { ...host.state.llmConfig } : null, confirm_paid: Boolean(paid),
       ...extra,
-    }), 30000, JOB_SUBMIT_NOTICE);
+    };
+    onSending?.(body.idempotency_key);
+    let job;
+    try {
+      job = await waitFor(request("/jobs", "POST", body), 30000, JOB_SUBMIT_NOTICE);
+    } catch (error) {
+      if (!error.status || error.status >= 500) throw new Error(JOB_SUBMIT_NOTICE);
+      throw error;
+    }
     onAccepted?.(job);
     try {
       await waitFor(refresh(), 15000, "任务已提交，但暂时无法刷新任务列表；请稍后查看，不要重复提交。");
@@ -345,14 +406,81 @@
     host.toast("任务已保存，刷新页面后仍可查询。");
     return job;
   }
+  async function getTrackedJob(action) {
+    const { id, kind, target } = action;
+    const previous = action.read();
+    if (previous) {
+      const suffix = previous.jobId ? `/jobs/${previous.jobId}` : `/jobs/by-request/${previous.requestId}`;
+      try {
+        const job = await waitFor(request(suffix), 15000, JOB_STATUS_NOTICE);
+        if (!action.current()) throw new Error("项目已切换，请返回原项目查看任务。");
+        if (job?.project_id !== id || job.kind !== kind || job.target !== target
+            || !/^[a-f0-9]{32}$/.test(job.id) || (previous.jobId && job.id !== previous.jobId))
+          throw new Error("暂时无法确认上次后台任务。");
+        action.record({ ...previous, jobId: job.id });
+        return job;
+      } catch (error) {
+        if (!action.current() || error.status !== 404) throw error;
+        if (previous.jobId || !configured()) {
+          action.record(null);
+          throw new Error("任务暂不可查看。可检查任务区，再决定是否重新生成。");
+        }
+      }
+      await waitFor(refresh(), 15000, "暂时无法读取项目版本，请稍后查看上次任务。");
+      if (!action.current()) throw new Error("项目已切换，请返回原项目查看任务。");
+    }
+    const running = projectId === id && data?.jobs?.find(job =>
+      job.kind === kind && job.target === target && ["pending", "running"].includes(job.status));
+    if (running) {
+      action.record({ jobId: running.id });
+      return running;
+    }
+    try {
+      return await submit(kind, target, true, previous ? { idempotency_key: previous.requestId } : {}, {
+        checking: Boolean(previous),
+        onSending: requestId => action.record({ requestId }),
+        onAccepted: job => action.record({ jobId: job.id }),
+      });
+    } catch (error) {
+      if ([400, 401, 402, 403, 404, 409, 422].includes(error.status) && !action.read()?.jobId && !previous)
+        action.record(null);
+      throw error;
+    }
+  }
+
+  async function listedJob(kind, target, paid) {
+    const id = host.state.project?.id;
+    const view = host.captureView?.();
+    const action = trackedAction(id, kind, target,
+      () => host.state.project?.id === id && (view?.active() ?? host.isProjectActive?.(id) !== false));
+    if (!action.read()) await refresh();
+    if (!action.current()) return;
+    if (!paid && !action.read()) return submit(kind, target, false);
+    try {
+      const job = await getTrackedJob(action);
+      if (!job || !action.current()) return;
+      if (terminalJobs.has(job.status)) {
+        action.record(null);
+        host.toast(job.error || "已找到上次任务，可在任务区查看结果。", job.status !== "completed");
+      } else {
+        host.toast("已找到后台任务，可在任务区查看进度。");
+      }
+    } finally {
+      if (action.current()) void refresh().catch(() => {});
+    }
+  }
+
   async function section(sid, editor) {
     const id = host.state.project?.id;
-    const isCurrent = () => Boolean(id && host.state.project?.id === id && projectId === id && host.isProjectActive?.(id) !== false);
+    const view = host.captureView?.();
+    const action = trackedAction(id, "section", sid, () => Boolean(id && host.state.project?.id === id
+      && (view?.active() ?? host.isProjectActive?.(id) !== false)));
+    const isCurrent = action.current;
     const loadedRevision = host.state.project.material_revision;
     const original = editor?.value;
-    await waitFor(refresh(), 15000, "材料状态暂时无法读取，请检查网络后再生成。");
+    if (!action.read()) await waitFor(refresh(), 15000, "材料状态暂时无法读取，请检查网络后再生成。");
     if (!isCurrent()) throw new Error("项目已切换，未提交该章节任务。");
-    if (editor && original !== (host.state.project.sections?.[sid] || "")) {
+    if (!action.read() && editor && original !== (host.state.project.sections?.[sid] || "")) {
       if (loadedRevision !== data.context.revision)
         throw new Error("项目已在其他操作中变化，请先保存并核对当前章节，未覆盖您的编辑");
       await waitFor(host.api(`/api/projects/${projectId}/sections/${sid}`, {
@@ -366,20 +494,25 @@
       await waitFor(refresh(), 15000, "材料状态暂时无法读取，请检查网络后再生成。");
       if (!isCurrent()) throw new Error("项目已切换，未提交该章节任务。");
     }
-    const baseRevision = data.context.revision;
-    const job = await submit("section", sid, true);
+    const baseRevision = data?.context.revision ?? loadedRevision;
+    const job = await getTrackedJob(action);
     if (!job) throw new Error("已取消模型调用");
     if (!isCurrent()) throw new Error("任务可能仍在原项目中执行，请返回原项目查询。");
+    let current = job;
     for (let i = 0; i < 120; i++) {
-      await new Promise(resolve => setTimeout(resolve, 2500));
-      if (!isCurrent()) throw new Error("任务继续运行，可返回项目查询");
-      const current = await waitFor(request(`/jobs/${job.id}`), 15000, JOB_STATUS_NOTICE);
+      if (!terminalJobs.has(current.status)) {
+        await new Promise(resolve => setTimeout(resolve, 2500));
+        if (!isCurrent()) throw new Error("任务继续运行，可返回项目查询");
+        current = await waitFor(request(`/jobs/${job.id}`), 15000, JOB_STATUS_NOTICE);
+      }
       if (!isCurrent()) throw new Error("任务可能仍在原项目中执行，请返回原项目查询。");
       if (current.status === "completed") {
         if (current.result?.review_incomplete || current.result?.status === "review_failed") {
           // Keep the completed (and potentially billed) result in the task
           // list. Never silently apply or re-run an unreviewed draft.
           await refresh();
+          if (!isCurrent()) throw new Error("项目已切换，请返回原项目查看草稿。");
+          action.record(null);
           return { ...current.result, review_incomplete: true, conflict_status: "user_edit_preserved",
             notice: current.result?.grounding_issues?.length
               ? (current.result?.grounding_kind === "project"
@@ -402,9 +535,14 @@
           "暂未收到草稿保存结果，请刷新原项目查看，不要重复生成。");
         if (!isCurrent()) throw new Error("项目已切换，请返回原项目查看草稿结果。");
         await waitFor(refresh(), 15000, "草稿已处理，但暂时无法刷新项目，请稍后查看。");
+        if (!isCurrent()) throw new Error("项目已切换，请返回原项目查看草稿。");
+        action.record(null);
         return { ...result, material_applied: true };
       }
-      if (["failed", "cancelled", "needs_review"].includes(current.status)) throw new Error(current.error || current.status);
+      if (["failed", "cancelled", "needs_review"].includes(current.status)) {
+        action.record(null);
+        throw new Error(current.error || "后台任务未完成，可在任务区查看。");
+      }
     }
     throw new Error("任务仍在后台执行，请稍后刷新任务列表，不必重复提交");
   }
@@ -448,9 +586,9 @@
       onTrack?.({ kind: "worker-job", id: job.id });
     } else {
       onTrack?.({ kind: "worker-request", id: options.idempotency_key });
-      job = await submit("export", "", false, options, accepted => {
+      job = await submit("export", "", false, options, { onAccepted: accepted => {
         if (isCurrent()) onTrack?.({ kind: "worker-job", id: accepted.id });
-      });
+      } });
     }
     if (!isCurrent()) return;
     const id = projectId;
@@ -498,22 +636,34 @@
   }
   async function outline() {
     const id = host.state.project?.id;
-    const activeProject = () => host.state.project?.id === id && host.isProjectActive?.(id) !== false;
-    await waitFor(refresh(), 15000, "暂时无法读取项目材料，请稍后再拟目录。");
-    if (!activeProject()) throw new Error("项目已切换");
-    const job = await submit("outline", "", true);
+    const view = host.captureView?.();
+    const action = trackedAction(id, "outline", "",
+      () => host.state.project?.id === id && (view?.active() ?? host.isProjectActive?.(id) !== false));
+    if (!action.read()) await waitFor(refresh(), 15000, "暂时无法读取项目材料，请稍后再拟目录。");
+    if (!action.current()) throw new Error("项目已切换");
+    const job = await getTrackedJob(action);
     if (!job) throw new Error("已取消目录模型调用");
+    let current = job;
     for (let i = 0; i < 120; i++) {
-      await new Promise(resolve => setTimeout(resolve, 2500));
-      if (!activeProject()) throw new Error("任务继续执行，请返回项目查询");
-      const current = await waitFor(request(`/jobs/${job.id}`), 15000, JOB_STATUS_NOTICE);
+      if (!action.current()) throw new Error("任务继续执行，请返回项目查询");
+      if (!terminalJobs.has(current.status)) {
+        await new Promise(resolve => setTimeout(resolve, 2500));
+        if (!action.current()) throw new Error("任务继续执行，请返回项目查询");
+        current = await waitFor(request(`/jobs/${job.id}`), 15000, JOB_STATUS_NOTICE);
+      }
+      if (!action.current()) throw new Error("任务继续执行，请返回项目查询");
       if (current.status === "completed") {
+        action.record(null);
         void refresh().catch(() => {});
         return { ...current.result, warning: current.result?.notice || "目录为候选方案，请核对后确认" };
       }
-      if (["failed", "cancelled", "needs_review"].includes(current.status)) throw new Error(current.error || current.status);
+      if (["failed", "cancelled", "needs_review"].includes(current.status)) {
+        action.record(null);
+        throw new Error(current.error || "后台任务未完成，可在任务区查看。");
+      }
     }
     throw new Error("目录仍在后台生成，请在任务区查询");
   }
-  window.MaterialPilot = { mount, active, refresh, section, outline, exportDocument, flushEdits, blobUrl, invalidateArtifacts };
+  window.MaterialPilot = { mount, active, refresh, section, outline, exportDocument, flushEdits, blobUrl,
+    invalidateArtifacts, configureRecovery, pendingJob, clearRecovery };
 })();

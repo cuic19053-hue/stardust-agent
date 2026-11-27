@@ -130,6 +130,7 @@
   const documentRecovery = window.DraftRecovery.create("stardust-document-recovery-v1:", chatRecoveryOwner);
   let documentRecoveryWarning = false;
   const factEdits = window.FactEdits.create(chatRecoveryOwner, toast);
+  window.MaterialPilot?.configureRecovery?.(chatRecoveryOwner);
   let factFormProjectId = null;
   const sectionEdits = window.SectionEdits.create({
     state, api: (...args) => api(...args), currentProjectView, recoveryOwner: chatRecoveryOwner,
@@ -255,6 +256,7 @@
     documentReviews.clear();
     documentRecovery.clear();
     clearWordExportRecovery();
+    window.MaterialPilot?.clearRecovery?.();
     documentRecoveryWarning = false;
     factFormProjectId = null;
     deletedProjectEpochs.clear();
@@ -1396,6 +1398,7 @@
     for (const key of documentReviews.keys()) if (key.startsWith(keyPrefix)) documentReviews.delete(key);
     documentRecovery.clear(keyPrefix);
     clearWordExportRecovery(projectId);
+    window.MaterialPilot?.clearRecovery?.(projectId);
     if (factFormProjectId === projectId) factFormProjectId = null;
     outlineDrafts.delete(projectId);
     outlinePreviews.delete(projectId);
@@ -1470,7 +1473,8 @@
       renderConfirmedSources();
       renderOutline();
       renderSections();
-      if (window.MaterialPilot) await window.MaterialPilot.mount({ api, state, toast, reload: loadProject, flushEdits: flushDraftEdits, previewOutline: showOutlineFromTask, isProjectActive: chatProjectIsActive });
+      if (window.MaterialPilot) await window.MaterialPilot.mount({ api, state, toast, reload: loadProject, flushEdits: flushDraftEdits, previewOutline: showOutlineFromTask, isProjectActive: chatProjectIsActive,
+        captureView: currentProjectView });
       if (revision !== projectLoadRevision) return;
       if (window.DraftReview) void window.DraftReview.mount({ api, state, toast,
         focusSection: focusDraftSection,
@@ -3299,6 +3303,21 @@
     handleTabNavigation("outline-panel");
   }
 
+  function hasPendingMaterialJob(projectId, kind, target = "") {
+    return Boolean(window.MaterialPilot?.pendingJob?.(projectId, kind, target));
+  }
+
+  function shouldUseMaterialJob(projectId, kind, target) {
+    return hasPendingMaterialJob(projectId, kind, target) || window.MaterialPilot?.active();
+  }
+
+  function syncOutlineGenerateLabel() {
+    const btn = $("#generateOutlineBtn");
+    const projectId = state.project?.id;
+    if (btn && !outlineRequests.has(projectId))
+      btn.textContent = hasPendingMaterialJob(projectId, "outline") ? "查看上次目录任务" : "拟一份目录";
+  }
+
   async function suggestOutline(generate) {
     const view = currentProjectView();
     const btn = $(generate ? "#generateOutlineBtn" : "#resetOutlineBtn");
@@ -3310,7 +3329,7 @@
     if (generate) btn.textContent = "正在整理…";
     try {
       const result = generate
-        ? (window.MaterialPilot?.active()
+        ? (shouldUseMaterialJob(view.id, "outline")
           ? await window.MaterialPilot.outline()
           : await observeMaterialRequest(`/api/projects/${view.id}/outline/generate`, { method: "POST" }, 180000,
             "目录生成结果暂未收到，请稍后查看，避免重复提交。"))
@@ -3337,7 +3356,7 @@
     } finally {
       if (outlineRequests.get(view.id) === request) outlineRequests.delete(view.id);
       btn.disabled = false;
-      if (generate) btn.textContent = "拟一份目录";
+      if (generate) syncOutlineGenerateLabel();
     }
   }
 
@@ -3345,6 +3364,7 @@
   const recommendOutline = () => suggestOutline(false);
 
   function renderOutline() {
+    syncOutlineGenerateLabel();
     const list = $("#outlineList");
     list.replaceChildren();
     const view = currentProjectView();
@@ -3605,6 +3625,14 @@
     uncertainSectionDrafts.set(key, drafts);
   }
 
+  function syncBatchGenerateLabel() {
+    const button = $("#batchGenerateSectionsBtn");
+    if (!button || state.batchGenerating) return;
+    const project = state.project;
+    const pending = project?.outline?.some(section => hasPendingMaterialJob(project.id, "section", section.id));
+    button.textContent = pending ? "查看待确认的章节任务" : "⚡ 批量生成所有章节";
+  }
+
   async function startBatchGeneration() {
     if (!state.project?.outline?.length) {
       toast("请先拟定并确认目录", true);
@@ -3644,16 +3672,19 @@
     const fill = $("#batchProgressFill");
     const text = $("#batchProgressText");
     const batchBtn = $("#batchGenerateSectionsBtn");
+    const outline = copyOutline(state.project.outline);
+    const pending = outline.filter(section => hasPendingMaterialJob(projectId, "section", section.id));
+    const recoveryOnly = pending.length > 0;
+    const chapters = recoveryOnly ? pending : outline;
 
     if (wrapper) wrapper.classList.remove("hidden");
     if (batchBtn) {
       batchBtn.disabled = true;
-      batchBtn.textContent = "批量生成中…";
+      batchBtn.textContent = recoveryOnly ? "正在查询任务…" : "批量生成中…";
     }
 
-    const outline = copyOutline(state.project.outline);
     let completedCount = 0;
-    const total = outline.length;
+    const total = chapters.length;
     let stopped = "";
 
     for (let i = 0; i < total; i++) {
@@ -3661,13 +3692,15 @@
         stopped = state.batchAbort ? "已停止后续章节" : "已切换项目，停止后续章节";
         break;
       }
-      const section = outline[i];
+      const section = chapters[i];
+      // Another control may have finished this recovery since batch started.
+      if (recoveryOnly && !hasPendingMaterialJob(projectId, "section", section.id)) continue;
       const base = state.project.sections?.[section.id] || "";
       if (fill) fill.style.width = `${Math.round(((i + 0.1) / total) * 100)}%`;
-      if (text) text.textContent = `正在生成 [${i + 1}/${total}]：${section.title}…`;
+      if (text) text.textContent = `${recoveryOnly ? "正在查询" : "正在生成"} [${i + 1}/${total}]：${section.title}…`;
 
       try {
-        const result = window.MaterialPilot?.active()
+        const result = shouldUseMaterialJob(projectId, "section", section.id)
           ? await window.MaterialPilot.section(section.id, null)
           : await observeMaterialRequest(`/api/projects/${projectId}/sections/${section.id}/generate`,
               { method: "POST" }, 180000, SECTION_WAIT_NOTICE);
@@ -3726,11 +3759,12 @@
     }
 
     if (fill && !stopped) fill.style.width = "100%";
-    if (text) text.textContent = `${stopped || "批量生成结束"}，共完成 ${completedCount}/${total} 章节。`;
+    const done = recoveryOnly ? "章节任务查询完成" : "批量生成结束";
+    if (text) text.textContent = `${stopped || done}，共完成 ${completedCount}/${total} 章节。`;
     if (isCurrent()) {
       if (!editorsChanged()) renderSections();
       updateDraftStats();
-      toast(stopped || `批量生成完成，共更新 ${completedCount} 个章节。`, Boolean(stopped));
+      toast(stopped || `${done}，共更新 ${completedCount} 个章节。`, Boolean(stopped));
     }
 
     setTimeout(() => {
@@ -3739,10 +3773,8 @@
 
     state.batchGenerating = false;
     state.batchAbort = false;
-    if (batchBtn) {
-      batchBtn.disabled = false;
-      batchBtn.textContent = "⚡ 批量生成所有章节";
-    }
+    if (batchBtn) batchBtn.disabled = false;
+    syncBatchGenerateLabel();
   }
 
   function cancelBatchGeneration() {
@@ -3797,6 +3829,7 @@
   ]);
 
   function renderSections() {
+    syncBatchGenerateLabel();
     const root = $("#draftSections");
     sectionEdits.detachEditors();
     root.replaceChildren();
@@ -3851,7 +3884,9 @@
       const copy = button("📋 复制", "button button-small button-quiet");
       copy.title = "复制本章节草稿正文到剪贴板";
 
-      const generate = button("生成草稿", "button button-small button-secondary");
+      const generationLabel = () => hasPendingMaterialJob(boundProjectId, "section", section.id)
+        ? "查看上次生成任务" : "生成草稿";
+      const generate = button(generationLabel(), "button button-small button-secondary");
       const save = button("保存", "button button-small button-primary");
       const history = button("历史版本", "button button-small button-quiet");
       actions.append(copy, generate, save, history);
@@ -4137,7 +4172,7 @@
             if (!mayRetainResult() || !currentEditor()) return;
           }
           const editorAtStart = editor.value;
-          let result = window.MaterialPilot?.active()
+          let result = shouldUseMaterialJob(generationProjectId, "section", section.id)
             ? await window.MaterialPilot.section(section.id, editor)
             : await observeMaterialRequest(`/api/projects/${generationProjectId}/sections/${section.id}/generate`,
                 { method: "POST" }, 180000, SECTION_WAIT_NOTICE);
@@ -4250,7 +4285,8 @@
           }
         } finally {
           generate.disabled = false;
-          generate.textContent = "生成草稿";
+          generate.textContent = generationLabel();
+          syncBatchGenerateLabel();
           wrapper.classList.remove("generating");
         }
       });

@@ -306,6 +306,14 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
             raise HTTPException(413, "本次上下文过大，请拆分项目资料后再提交；尚未调用模型")
         return queue.submit(project_id, payload.kind, payload.target, job_payload, payload.idempotency_key)
 
+    @router.get("/jobs/by-request/{request_id}")
+    def job_by_request(project_id: str, request_id: str = PathParam(pattern=r"^[a-f0-9]{32}$")):
+        store, _ = project_for(project_id)
+        job = MaterialJobs(store).find(project_id, request_id)
+        if not job:
+            raise HTTPException(404, "未找到这次任务。")
+        return job
+
     @router.get("/exports/by-request/{request_id}")
     def export_by_request(project_id: str, request_id: str = PathParam(pattern=r"^[a-f0-9]{32}$")):
         store, _ = project_for(project_id)
@@ -330,6 +338,18 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
             raise HTTPException(404, "任务不存在")
         return result
 
+    def section_apply_receipt(store, project_id, section_id, result):
+        if result.get("conflict_status") or not result.get("applied"):
+            return result
+        latest = store.get_project(project_id)
+        if not latest:
+            raise HTTPException(404, "项目不存在")
+        if (not any(section.get("id") == section_id for section in latest["outline"])
+                or latest["sections"].get(section_id) != result.get("content")):
+            return {**result, "conflict_status": "user_edit_preserved",
+                    "notice": "该任务已经保存过，项目正文随后有更新。可在任务区查看生成稿。"}
+        return {**result, "material_revision": latest["material_revision"]}
+
     @router.post("/jobs/{identifier}/apply")
     def apply(project_id: str, identifier: str, payload: ApplyInput | None = None):
         store, project = project_for(project_id)
@@ -345,7 +365,8 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
         if raw["kind"] == "outline":
             return {**raw["result"], "applied": False, "confirmed": False}
         if raw["result"].get("applied"):
-            return raw["result"]
+            return (section_apply_receipt(store, project_id, raw["target"], raw["result"])
+                    if raw["kind"] == "section" else raw["result"])
         result = dict(raw["result"])
         from .generation_safety import review_incomplete
         if raw["kind"] == "section" and review_incomplete(result) and not (payload and payload.use_unreviewed_draft):
@@ -374,6 +395,7 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
         if raw["kind"] == "section" and applied.get("applied"):
             from .review_workflow import after_draft_saved
             applied["review"] = after_draft_saved(store, project_id, "section_generation")
+            return section_apply_receipt(store, project_id, raw["target"], applied)
         return applied
 
     @router.post("/figures/{figure_id}/confirm-text")

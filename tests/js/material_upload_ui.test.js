@@ -624,6 +624,32 @@ test("batch stops after an uncertain result rather than generating further chapt
   assert.equal(h.ui.state.batchGenerating, false);
 });
 
+test("batch recovery resumes only the pending chapter and leaves prior and later chapters alone", async () => {
+  const h = harness(); exportingProject(h);
+  h.ui.state.project.outline = [{ id: "done", title: "第一章" }, { id: "pending", title: "第二章" },
+    { id: "later", title: "第三章" }];
+  h.ui.state.project.sections = { done: "已经生成" };
+  let unresolved = true;
+  const calls = [];
+  h.context.window.MaterialPilot = {
+    active: () => true,
+    pendingJob: (_id, kind, sid) => kind === "section" && sid === "pending" && unresolved,
+    section: async sid => {
+      calls.push(sid);
+      unresolved = false;
+      return { content: "找回第二章", material_applied: true, material_revision: 3 };
+    },
+  };
+  h.ui.renderSections();
+  assert.equal(h.element("#batchGenerateSectionsBtn").textContent, "查看待确认的章节任务");
+  await h.ui.startBatchGeneration();
+  assert.deepEqual(calls, ["pending"]);
+  assert.equal(h.ui.state.project.sections.done, "已经生成");
+  assert.equal(h.ui.state.project.sections.pending, "找回第二章");
+  assert.equal(h.ui.state.project.sections.later, undefined);
+  assert.equal(h.element("#batchGenerateSectionsBtn").textContent, "⚡ 批量生成所有章节");
+});
+
 test("batch stops when a draft requires review", async () => {
   const h = harness(); exportingProject(h);
   h.ui.state.project.outline = [{ id: "one", title: "第一章" }, { id: "two", title: "第二章" }];
