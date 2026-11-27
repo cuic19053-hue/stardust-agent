@@ -109,7 +109,7 @@ function harness(sharedSession = new Map()) {
     setInterval(callback) { const id = nextTimer++; timers.set(id, callback); return id; },
     clearInterval(id) { timers.delete(id); },
   });
-  for (const name of ["material-upload.js", "section-edits.js", "word-export.js"]) {
+  for (const name of ["material-upload.js", "draft-recovery.js", "section-edits.js", "word-export.js"]) {
     const moduleFile = resolve(__dirname, "../../server/static", name);
     vm.runInContext(readFileSync(moduleFile, "utf8"), context, { filename: moduleFile });
   }
@@ -295,6 +295,164 @@ test("a refreshed outline keeps local edits and exposes the competing saved vers
   comparison.children[1].click();
   assert.equal(h.element("#saveOutlineBtn").disabled, false);
 });
+
+test("reopening the page restores an edited directory against the original baseline", () => {
+  const session = new Map();
+  const initial = harness(session); exportingProject(initial);
+  const edit = openOutlineEditor(initial);
+  edit.rename("刷新前的目录");
+  const reloaded = harness(session); exportingProject(reloaded);
+  reloaded.ui.state.project.outline[0].title = "另一页先保存的目录";
+  openOutlineEditor(reloaded);
+  assert.equal(reloaded.ui.state.outline[0].title, "刷新前的目录");
+  assert.match(reloaded.element("#outlineWarning").textContent, /其他页面/);
+  assert.equal(reloaded.element("#saveOutlineBtn").disabled, true);
+  assert.equal(reloaded.requests.length, 0);
+});
+
+test("a committed outline save with a lost receipt preserves typing after submission", async () => {
+  const session = new Map();
+  const first = harness(session); exportingProject(first);
+  const edit = openOutlineEditor(first);
+  edit.rename(" 已提交的目录 ");
+  let launched;
+  const started = new Promise(resolve => { launched = resolve; });
+  first.ui.setApi(async (_url, options) => {
+    launched(JSON.parse(options.body));
+    return new Promise(() => {});
+  });
+  void first.ui.saveOutline();
+  assert.equal((await started).outline[0].title.trim(), "已提交的目录");
+  edit.rename("提交后继续改的目录");
+
+  const reloaded = harness(session); exportingProject(reloaded);
+  reloaded.ui.state.project.state.outline_confirmed = true;
+  reloaded.ui.state.project.outline[0].title = "已提交的目录";
+  openOutlineEditor(reloaded);
+  assert.equal(reloaded.ui.state.outline[0].title, "提交后继续改的目录");
+  assert.equal(reloaded.element("#saveOutlineBtn").disabled, false);
+  let saving;
+  reloaded.ui.setApi(async (_url, options) => {
+    saving = JSON.parse(options.body);
+    return { outline: saving.outline, material_revision: 4 };
+  });
+  await reloaded.ui.saveOutline();
+  assert.equal(saving.base_outline[0].title, "已提交的目录");
+  assert.equal(saving.outline[0].title, "提交后继续改的目录");
+  assert.equal(session.size, 0);
+});
+
+test("refresh keeps a completed candidate alongside the outline still being edited", async () => {
+  const session = new Map();
+  const first = harness(session); exportingProject(first);
+  const edit = openOutlineEditor(first);
+  edit.rename("正在整理的目录");
+  first.ui.setApi(async () => ({ outline: [{ id: "candidate", title: "已完成的候选目录" }] }));
+  await first.ui.generateOutline();
+  const reloaded = harness(session); exportingProject(reloaded);
+  openOutlineEditor(reloaded);
+  assert.equal(reloaded.ui.state.outline[0].title, "正在整理的目录");
+  assert.ok(reloaded.element("#outlineList").children.some(child => child.textContent === "查看已生成的候选目录"));
+});
+
+test("undoing a local directory edit removes the pending browser draft", () => {
+  const session = new Map();
+  const h = harness(session); exportingProject(h);
+  h.ui.state.project.state.outline_confirmed = true;
+  const editing = openOutlineEditor(h);
+  editing.rename("瞬时改动");
+  assert.equal(session.size, 1);
+  editing.rename("项目目的");
+  assert.equal(session.size, 0);
+  assert.equal(h.element("#outlineWarning").textContent, "");
+});
+
+test("directory recovery remains bound to the owning account and clears when its project is deleted", () => {
+  const session = new Map([["unrelated", "keep"]]);
+  const owner = harness(session); exportingProject(owner);
+  owner.ui.state.cloudMode = true;
+  owner.ui.state.authSession.user = { id: "owner" };
+  openOutlineEditor(owner).rename("项目的私有目录草稿");
+  const other = harness(session); exportingProject(other);
+  other.ui.state.cloudMode = true;
+  other.ui.state.authSession.user = { id: "different-account" };
+  openOutlineEditor(other);
+  assert.equal(other.ui.state.outline[0].title, "项目目的");
+  assert.ok([...session.values()].some(value => value.includes("项目的私有目录草稿")));
+  owner.ui.closeDeletedProject(owner.ui.state.project.id);
+  assert.deepEqual([...session], [["unrelated", "keep"]]);
+});
+
+test("a candidate returned after logout cannot recreate directory recovery", async () => {
+  const session = new Map();
+  const h = harness(session); exportingProject(h);
+  h.ui.state.authSession.user = { id: "previous" };
+  openOutlineEditor(h).rename("退出前的目录");
+  let finish;
+  h.ui.setApi(() => new Promise(resolve => { finish = resolve; }));
+  const pending = h.ui.generateOutline();
+  h.ui.clearInterruptedChatMessages();
+  h.ui.state.authSession = { user: { id: "next" } };
+  finish({ outline: [{ id: "candidate", title: "旧账号的候选" }] });
+  await pending;
+  assert.equal(session.size, 0);
+});
+
+test("blocked browser storage leaves the working directory usable and warns about refresh", () => {
+  const h = harness(); exportingProject(h);
+  const editing = openOutlineEditor(h);
+  h.context.sessionStorage.setItem = () => { throw new Error("storage blocked"); };
+  editing.rename("仅保存在当前页的目录");
+  assert.match(h.element("#toast").textContent, /先保存目录再刷新/);
+  openOutlineEditor(h);
+  assert.equal(h.ui.state.outline[0].title, "仅保存在当前页的目录");
+});
+
+test("returning to a project during a directory save preserves later typing and clears the loading state", async () => {
+  const h = harness(); exportingProject(h);
+  h.ui.setChatRefresh(async () => {});
+  const project = h.ui.state.project;
+  const source = { ...project, title: "编辑中的项目", outline: project.outline.map(row => ({ ...row })),
+    state: { ...project.state, outline_confirmed: true } };
+  let uploaded;
+  let responded;
+  let start;
+  const sent = new Promise(resolve => { start = resolve; });
+  h.ui.setApi(async (url, options = {}) => {
+    if (options.method === "PUT") {
+      const body = JSON.parse(options.body);
+      uploaded = body.outline;
+      start();
+      return new Promise(resolve => { responded = resolve; });
+    }
+    if (url.endsWith("/other")) return { ...source, id: "other", title: "另一项目" };
+    return { ...source };
+  });
+  openOutlineEditor(h).rename("服务器将收到的目录");
+  const saving = h.ui.saveOutline();
+  await sent;
+  openOutlineEditor(h).rename("保存期间继续编辑的目录");
+  await h.ui.loadProject("other", { refreshList: false });
+  await h.ui.loadProject(source.id, { refreshList: false });
+  assert.equal(h.element("#saveOutlineBtn").disabled, true);
+  source.outline = uploaded;
+  source.material_revision++;
+  responded({ outline: uploaded, material_revision: source.material_revision });
+  await saving;
+  assert.equal(h.ui.state.project.outline[0].title, "服务器将收到的目录");
+  assert.equal(h.ui.state.outline[0].title, "保存期间继续编辑的目录");
+  assert.equal(h.element("#saveOutlineBtn").disabled, false);
+});
+
+function openOutlineEditor(h) {
+  h.ui.restoreOutlineEditor(h.ui.state.project);
+  h.ui.renderOutline();
+  return { rename(title) {
+    const input = h.element("#outlineList").children[0].children[1];
+    input.value = title;
+    input.listeners.input();
+  } };
+}
 
 test("removing the only directory row still leaves manual addition available", () => {
   const h = harness(); exportingProject(h);
@@ -854,6 +1012,14 @@ function chapterEditor(h) {
   return { editor, status, save: section.children[0].children[1].children[2], section,
     type(value) { editor.value = value; editor.listeners.input(); } };
 }
+
+test("chapter drafts written by the previous recovery format still open after refresh", () => {
+  const session = new Map();
+  const h = harness(session); exportingProject(h);
+  session.set(`stardust-section-recovery-v1:${h.ui.state.project.id}\0purpose\0local`,
+    JSON.stringify({ base: "已保存正文", content: "上一版本工作台保存的草稿" }));
+  assert.equal(chapterEditor(h).editor.value, "上一版本工作台保存的草稿");
+});
 
 test("reloading a tab restores chapter edits with their exact base, including empty edits", () => {
   const session = new Map();

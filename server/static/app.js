@@ -123,6 +123,8 @@
   const outlineDrafts = new Map();
   const outlinePreviews = new Map();
   const outlineRequests = new Map();
+  const outlineRecovery = window.DraftRecovery.create("stardust-outline-recovery-v1:", chatRecoveryOwner);
+  let outlineRecoveryWarning = false;
   const sectionEdits = window.SectionEdits.create({
     state, api: (...args) => api(...args), currentProjectView, recoveryOwner: chatRecoveryOwner,
     setDraftSaveStatus, updateDraftStats, toast,
@@ -240,6 +242,8 @@
     outlineDrafts.clear();
     outlinePreviews.clear();
     outlineRequests.clear();
+    outlineRecovery.clear();
+    outlineRecoveryWarning = false;
     deletedProjectEpochs.clear();
     const input = $("#chatInput");
     if (input) {
@@ -1376,6 +1380,7 @@
     outlineDrafts.delete(projectId);
     outlinePreviews.delete(projectId);
     outlineRequests.delete(projectId);
+    outlineRecovery.clear(`${projectId}\0`);
     for (const key of uncertainSectionDrafts.keys()) {
       if (key.startsWith(`${projectId}\0`)) uncertainSectionDrafts.delete(key);
     }
@@ -2944,11 +2949,57 @@
     return a.length === b.length && a.every((row, index) => row.id === b[index].id && row.title === b[index].title);
   }
 
+  function savedOutlineRows(rows) {
+    if (!Array.isArray(rows) || !rows.every(row => typeof row?.id === "string" && typeof row.title === "string")) return null;
+    return copyOutline(rows);
+  }
+
+  function persistOutlineEditor(projectId) {
+    const draft = outlineDrafts.get(projectId);
+    const preview = outlinePreviews.get(projectId);
+    const value = draft || preview ? {
+      draft: draft && { base: draft.base, rows: draft.rows, warning: draft.warning, submitted: draft.submitted },
+      preview: preview && { outline: preview.outline, warning: preview.warning },
+    } : null;
+    if (outlineRecovery.write(projectId, value) || !value || outlineRecoveryWarning) return;
+    outlineRecoveryWarning = true;
+    toast("浏览器暂时无法保留目录草稿，请先保存目录再刷新。", true);
+  }
+
   function restoreOutlineEditor(project) {
-    const draft = outlineDrafts.get(project.id);
+    const id = project.id;
+    if (!outlineDrafts.has(id) && !outlinePreviews.has(id)) {
+      const recovery = outlineRecovery.read(id);
+      const base = savedOutlineRows(recovery?.draft?.base);
+      const rows = savedOutlineRows(recovery?.draft?.rows);
+      if (base && rows) outlineDrafts.set(id, {
+        base, rows, warning: typeof recovery.draft.warning === "string" ? recovery.draft.warning : "",
+        submitted: savedOutlineRows(recovery.draft.submitted) || undefined, recovered: true,
+      });
+      const outline = savedOutlineRows(recovery?.preview?.outline);
+      if (outline?.length) outlinePreviews.set(id, {
+        outline, warning: typeof recovery.preview.warning === "string" ? recovery.preview.warning : "",
+      });
+    }
+    const draft = outlineDrafts.get(id);
     const saved = copyOutline(project.outline);
-    if (draft && !draft.saving && sameOutline(saved, draft.rows)) outlineDrafts.delete(project.id);
-    state.outline = outlineDrafts.get(project.id)?.rows || saved;
+    if (draft && !draft.saving && project.state?.outline_confirmed) {
+      if (draft.submitted && sameOutline(saved, draft.submitted)) {
+        draft.base = saved;
+        draft.submitted = undefined;
+        if (sameOutline(saved, normalizedOutline(draft.rows))) draft.rows = saved;
+      }
+      if (!draft.submitted && sameOutline(saved, draft.rows)) outlineDrafts.delete(id);
+    }
+    state.outline = outlineDrafts.get(id)?.rows || saved;
+    persistOutlineEditor(id);
+  }
+
+  function normalizedOutline(rows) {
+    return rows.map(({ id, title }, index) => ({
+      id: id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || `section_${index + 1}`,
+      title: Array.from(title.trim()).slice(0, 100).join(""),
+    }));
   }
 
   function editOutline(rows, warning = "") {
@@ -2957,8 +3008,12 @@
     const draft = outlineDrafts.get(project.id) || { base: copyOutline(project.outline) };
     draft.rows = rows;
     draft.warning = warning;
-    outlineDrafts.set(project.id, draft);
+    draft.recovered = false;
+    if (!draft.saving && !draft.submitted && project.state?.outline_confirmed
+        && sameOutline(draft.base, rows) && sameOutline(rows, copyOutline(project.outline))) outlineDrafts.delete(project.id);
+    else outlineDrafts.set(project.id, draft);
     state.outline = rows;
+    persistOutlineEditor(project.id);
     clearExportArtifacts();
   }
 
@@ -3005,6 +3060,7 @@
   function showOutlineFromTask(result) {
     if (!state.project || !result.outline?.length) return;
     outlinePreviews.set(state.project.id, result);
+    persistOutlineEditor(state.project.id);
     if (!outlineDrafts.has(state.project.id)) applyOutlinePreview(result);
     else renderOutline();
     handleTabNavigation("outline-panel");
@@ -3031,10 +3087,11 @@
         if (view.active()) toast(result.warning || "暂未取得候选目录。", true);
         return;
       }
+      outlinePreviews.set(view.id, result);
+      persistOutlineEditor(view.id);
       if (view.active() && sameOutline(current, state.outline) && !outlineDrafts.has(view.id)) {
         applyOutlinePreview(result);
       } else {
-        outlinePreviews.set(view.id, result);
         if (view.active()) {
           renderOutline();
           toast("候选目录已就绪，可在目录编辑器中查看。");
@@ -3063,6 +3120,8 @@
     const conflict = draft && !sameOutline(draft.base, saved);
     const warning = $("#outlineWarning");
     warning.textContent = conflict ? "其他页面已修改目录，请核对后选择要保留的版本。"
+      : draft?.submitted && !draft.saving ? "上一次目录保存待确认，请核对后保存。"
+      : draft?.recovered ? "目录草稿已恢复，请核对后保存。"
       : draft?.warning || (draft ? "目录有待保存的修改。" : "");
     list.className = "outline-list";
     if (!state.outline.length) {
@@ -3088,8 +3147,9 @@
       input.addEventListener("input", () => {
         if (!view.active()) return;
         editOutline(state.outline.map((item, i) => i === index ? { ...item, title: input.value } : item));
-        if (!conflict) warning.textContent = "目录有待保存的修改。";
-        discard.classList.remove("hidden");
+        const hasDraft = outlineDrafts.has(view.id);
+        if (!conflict || !hasDraft) warning.textContent = hasDraft ? "目录有待保存的修改。" : "";
+        discard.classList.toggle("hidden", !hasDraft);
       });
       const move = (offset, label, title) => {
         const control = button(label, offset > 0 ? "remove-outline down-outline" : "remove-outline");
@@ -3128,6 +3188,7 @@
       if (!view.active() || outlineDrafts.get(view.id)?.saving) return;
       if (!confirm("放弃本页目录修改，恢复已保存的目录吗？")) return;
       outlineDrafts.delete(view.id);
+      persistOutlineEditor(view.id);
       restoreOutlineEditor(state.project);
       renderOutline();
     });
@@ -3149,6 +3210,8 @@
       keep.addEventListener("click", () => {
         if (!view.active() || outlineDrafts.get(view.id) !== draft || draft.saving) return;
         draft.base = saved;
+        draft.submitted = undefined;
+        persistOutlineEditor(view.id);
         renderOutline();
       });
       comparison.append(caption, keep);
@@ -3186,21 +3249,37 @@
     if (removed.length && !confirm("移出的章节将从后续 Word 导出中排除，正文可从「已移出的章节」恢复。继续保存吗？")) return;
     outlineDrafts.set(view.id, draft);
     draft.saving = true;
+    const previousSubmission = draft.submitted;
+    let submitted;
     $("#saveOutlineBtn").disabled = true;
     clearExportArtifacts();
     window.MaterialPilot?.invalidateArtifacts?.();
     try {
       await flushDraftEdits();
       if (!view.active()) return;
+      submitted = normalizedOutline(rows);
+      draft.submitted = submitted;
+      persistOutlineEditor(view.id);
+      const fencePreviousWrite = previousSubmission && sameOutline(submitted, draft.base);
       const result = await api(`/api/projects/${view.id}/outline`, {
         method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ outline: rows, base_outline: draft.base }),
+        body: JSON.stringify({ outline: rows, base_outline: draft.base,
+          expected_revision: fencePreviousWrite ? state.project.material_revision : undefined }),
       });
-      if (outlineDrafts.get(view.id) === draft) {
+      const stillTracked = outlineDrafts.get(view.id) === draft;
+      if (stillTracked) {
         draft.base = copyOutline(result.outline);
+        draft.submitted = undefined;
         if (draft.rows === rows) outlineDrafts.delete(view.id);
+        persistOutlineEditor(view.id);
       }
-      if (!view.active()) return;
+      if (!view.active()) {
+        if (stillTracked && chatProjectIsActive(view.id)) {
+          draft.saving = false;
+          await loadProject(view.id, { refreshList: false });
+        }
+        return;
+      }
       if (result.material_revision < state.project.material_revision) {
         await loadProject(view.id, { refreshList: false });
         return;
@@ -3217,12 +3296,19 @@
       if (window.MaterialPilot?.active()) void window.MaterialPilot.refresh().catch(() => {});
       toast(draft.rows === rows ? "目录已确认。现在可以逐章生成或编辑。" : "已保存提交时的目录，本页还有新修改待保存。");
     } catch (error) {
+      if (submitted && outlineDrafts.get(view.id) === draft && error.status >= 400 && error.status < 500) {
+        draft.submitted = previousSubmission;
+        persistOutlineEditor(view.id);
+      }
       if (!view.active()) return;
-      if (error.status === 409) await loadProject(view.id, { refreshList: false });
+      if (error.status === 409) {
+        draft.saving = false;
+        await loadProject(view.id, { refreshList: false });
+      }
       if (view.active()) toast(error.message, true);
     } finally {
       draft.saving = false;
-      if (view.active()) renderOutline();
+      if (view.active() || (chatProjectIsActive(view.id) && outlineDrafts.get(view.id) === draft)) renderOutline();
     }
   }
 
@@ -5504,7 +5590,7 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     window.addEventListener("beforeunload", event => {
-      if (!sectionEdits.hasUnsaved() && !outlineDrafts.size && !outlinePreviews.size) return;
+      if (!sectionEdits.hasUnsaved() && !outlineDrafts.size && !outlinePreviews.size && !outlineRecovery.hasEntries()) return;
       event.preventDefault();
       event.returnValue = "";
     });

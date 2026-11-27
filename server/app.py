@@ -30,7 +30,7 @@ SERVER_DIR = Path(__file__).resolve().parent
 STATIC_DIR = SERVER_DIR / "static"
 ASSET_VERSIONS = {
     name: hashlib.sha256((STATIC_DIR / name).read_bytes()).hexdigest()[:16]
-    for name in ("app.js", "app.css", "material.js", "review.js", "material-upload.js", "section-edits.js", "word-export.js",
+    for name in ("app.js", "app.css", "material.js", "review.js", "material-upload.js", "draft-recovery.js", "section-edits.js", "word-export.js",
                  "student-intake-demo.js", "student-intake-demo.css", "student-intake-demo.json",
                  "student-intake-local.js", "student-intake-worker.js", "student-intake-local.css",
                  "intake-0p5b-v1/model.json")

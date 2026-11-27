@@ -7,50 +7,24 @@
   function create({ state, api, currentProjectView, recoveryOwner, setDraftSaveStatus, updateDraftStats, toast }) {
     const sectionEdits = new Map();
     let notifiedStorageFailure = false;
-    const storageKey = (key, owner) => `${recoveryPrefix}${key}\0${owner}`;
+    const recovery = window.DraftRecovery.create(recoveryPrefix, recoveryOwner);
 
     function readRecovery(key, owner) {
       if (!owner) return null;
-      try {
-        const raw = sessionStorage.getItem(storageKey(key, owner));
-        if (!raw) return null;
-        const saved = JSON.parse(raw);
-        return typeof saved?.base === "string" && typeof saved.content === "string"
-          ? { owner, base: saved.base, content: saved.content,
-            submitted: typeof saved.submitted === "string" ? saved.submitted : undefined, recovered: true, pending: 0 }
-          : null;
-      } catch {
-        return null;
-      }
+      const saved = recovery.read(key);
+      return typeof saved?.base === "string" && typeof saved.content === "string"
+        ? { owner, base: saved.base, content: saved.content,
+          submitted: typeof saved.submitted === "string" ? saved.submitted : undefined, recovered: true, pending: 0 }
+        : null;
     }
 
     function persistEdit(key, draft) {
       if (!draft.owner || draft.owner !== recoveryOwner() || sectionEdits.get(key) !== draft) return;
-      const keyInStorage = storageKey(key, draft.owner);
+      const { base, content, submitted } = draft;
       const dirty = needsRecovery(draft);
-      try {
-        if (dirty) {
-          const { base, content, submitted } = draft;
-          sessionStorage.setItem(keyInStorage, JSON.stringify({ base, content, submitted }));
-        } else {
-          sessionStorage.removeItem(keyInStorage);
-        }
-      } catch {
-        if (!dirty || notifiedStorageFailure) return;
-        notifiedStorageFailure = true;
-        toast("浏览器暂时无法保留章节草稿，请先保存正文再刷新。", true);
-      }
-    }
-
-    function removeRecovery(prefix) {
-      try {
-        for (let i = sessionStorage.length - 1; i >= 0; i--) {
-          const key = sessionStorage.key(i);
-          if (key?.startsWith(prefix)) sessionStorage.removeItem(key);
-        }
-      } catch {
-        // Browsers can deny access to session storage.
-      }
+      if (recovery.write(key, dirty ? { base, content, submitted } : null) || !dirty || notifiedStorageFailure) return;
+      notifiedStorageFailure = true;
+      toast("浏览器暂时无法保留章节草稿，请先保存正文再刷新。", true);
     }
 
     function setRemote(draft, content) {
@@ -102,26 +76,19 @@
       for (const key of sectionEdits.keys()) {
         if (key.startsWith(prefix)) sectionEdits.delete(key);
       }
-      removeRecovery(recoveryPrefix + prefix);
+      recovery.clear(prefix);
     }
 
     function clear() {
       sectionEdits.clear();
       notifiedStorageFailure = false;
-      removeRecovery(recoveryPrefix);
+      recovery.clear();
     }
 
     function hasUnsaved() {
       const owner = recoveryOwner();
       if ([...sectionEdits.values()].some(draft => draft.owner === owner && (draft.pending || needsRecovery(draft)))) return true;
-      if (!owner) return false;
-      try {
-        for (let i = 0; i < sessionStorage.length; i++) {
-          const key = sessionStorage.key(i);
-          if (key?.startsWith(recoveryPrefix) && key.endsWith(`\0${owner}`)) return true;
-        }
-      } catch {}
-      return false;
+      return recovery.hasEntries();
     }
 
     async function writeSection(id, sid, base, content, revision) {
