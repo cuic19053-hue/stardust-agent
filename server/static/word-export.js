@@ -49,7 +49,9 @@
     }
   }
 
-  function create({ state, $, api, chatProjectIsActive, flushDraftEdits, showChatDrafts, toast, openRechargeDialog }) {
+  function create({ state, $, api, chatProjectIsActive, recoveryOwner, flushDraftEdits, showChatDrafts, toast, openRechargeDialog }) {
+    const recovery = window.DraftRecovery.create("stardust-word-export-v1:", recoveryOwner);
+    const attempts = new Map();
     let exportDownloadUrl = null;
     let exportInProgress = false;
     let exportArtifactRevision = 0;
@@ -60,24 +62,51 @@
       return [$("#exportBtn"), $("#quickExportTopBtn"), $("#headingExportBtn")];
     }
 
-    function showIdleButtons(retry) {
+    function requestIdFor(projectId) {
+      if (!projectId) return null;
+      const saved = attempts.get(projectId);
+      const id = saved?.owner === recoveryOwner() ? saved?.id : recovery.read(projectId);
+      return typeof id === "string" && /^[a-f0-9]{32}$/.test(id) ? id : null;
+    }
+
+    function rememberRequest(projectId, id) {
+      if (id) attempts.set(projectId, { id, owner: recoveryOwner() });
+      else attempts.delete(projectId);
+      recovery.write(projectId, id);
+    }
+
+    function clearRecovery(projectId) {
+      if (projectId) attempts.delete(projectId);
+      else attempts.clear();
+      recovery.clear(projectId ? `${projectId}\0` : "");
+    }
+
+    function syncButtons() {
+      if (exportInProgress) return;
+      const projectId = state.project?.id;
+      const retry = pendingDownload && pendingDownload.projectId === projectId;
+      const label = retry ? "重试下载 Word" : requestIdFor(projectId) ? "检查 Word 导出结果" : "";
       const [btn, topBtn, headingBtn] = exportButtons();
       for (const button of [btn, topBtn, headingBtn]) {
         if (!button) continue;
         button.disabled = false;
-        if (retry) button.textContent = "重试下载 Word";
+        if (label) button.textContent = label;
       }
-      if (!retry) {
+      if (!label) {
         if (btn) btn.innerHTML = '生成并下载 Word 申报书 <span>↓</span>';
         if (topBtn) topBtn.innerHTML = '<span>📥 导出草稿</span>';
         if (headingBtn) headingBtn.textContent = "📥 导出 Word";
       }
     }
 
-    function invalidate() {
+    function invalidate({ preserveRecovery = false } = {}) {
       exportArtifactRevision++;
-      if (pendingDownload && !exportInProgress) showIdleButtons(false);
+      const projectId = state.project?.id;
+      const hadAttempt = requestIdFor(projectId);
+      if (hadAttempt && !preserveRecovery) rememberRequest(projectId, null);
+      const hadDownload = pendingDownload;
       pendingDownload = null;
+      if (hadAttempt || hadDownload) syncButtons();
       downloadController?.abort();
       if (exportDownloadUrl) URL.revokeObjectURL(exportDownloadUrl);
       exportDownloadUrl = null;
@@ -91,7 +120,7 @@
     }
 
     async function downloadCurrent(isCurrent) {
-      const { url, projectId, worker, digest, warnings } = pendingDownload;
+      const { url, projectId, worker, digest, warnings, requestId } = pendingDownload;
       downloadController = new AbortController();
       const options = { expectedDigest: digest, controller: downloadController };
       const blob = worker
@@ -99,6 +128,7 @@
         : await fetchExportBlob(url, projectId, options);
       if (!isCurrent()) return;
       pendingDownload = null;
+      if (requestId) rememberRequest(projectId, null);
       if (exportDownloadUrl) URL.revokeObjectURL(exportDownloadUrl);
       exportDownloadUrl = URL.createObjectURL(blob);
 
@@ -120,6 +150,43 @@
       toast("Word 草稿已生成并开始下载。");
     }
 
+    async function requestExport(url, options, timeout) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeout);
+      try {
+        return await api(url, { ...options, signal: controller.signal, cache: "no-store" });
+      } catch (error) {
+        if (controller.signal.aborted || error instanceof TypeError)
+          throw new Error("暂未收到 Word 导出结果。");
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    async function acceptResult(result, projectId, requestId, isCurrent) {
+      if (!isCurrent()) return;
+      const notices = {
+        processing: "Word 草稿仍在生成，请稍后再检查。",
+        stale: "项目内容已更新，请重新导出 Word 草稿。",
+        failed: "这次 Word 导出失败，可以重新生成。",
+        expired: "这次 Word 导出已超时，可以重新生成。",
+        missing: "这次导出暂未找到，可以重新生成。",
+      };
+      if (Object.hasOwn(notices, result?.status)) {
+        if (result.status !== "processing") rememberRequest(projectId, null);
+        toast(notices[result.status], result.status !== "processing");
+        return;
+      }
+      if (result?.download_url !== `/api/projects/${encodeURIComponent(projectId)}/download`)
+        throw new Error("下载地址不属于当前项目");
+      if (result.status === "completed" && !/^sha-256=:[A-Za-z0-9+/]{43}=:$/.test(result.download_digest))
+        throw new Error("云端暂未返回可核对的 Word 文件版本。");
+      pendingDownload = { projectId, requestId, url: result.download_url,
+        digest: result.download_digest, warnings: result.warnings };
+      await downloadCurrent(isCurrent);
+    }
+
     async function exportDoc(options = {}) {
       if (exportInProgress || !state.project) return;
       exportInProgress = true;
@@ -127,11 +194,13 @@
       const artifactRevision = exportArtifactRevision;
       const isCurrentExport = () => chatProjectIsActive(projectId) && artifactRevision === exportArtifactRevision;
       const retry = pendingDownload?.projectId === projectId;
+      let requestId = requestIdFor(projectId);
+      const endpoint = `/api/projects/${encodeURIComponent(projectId)}/export`;
       if (!retry) pendingDownload = null;
       for (const button of exportButtons()) {
         if (!button) continue;
         button.disabled = true;
-        button.textContent = retry ? "正在下载…" : "正在生成…";
+        button.textContent = retry ? "正在下载…" : requestId ? "正在检查…" : "正在生成…";
       }
       try {
         if (retry) {
@@ -140,6 +209,11 @@
         }
         await flushDraftEdits();
         if (!isCurrentExport()) return;
+        if (requestId) {
+          const result = await requestExport(`${endpoint}/status/${requestId}`, {}, 15000);
+          await acceptResult(result, projectId, requestId, isCurrentExport);
+          return;
+        }
         if (!options.skipChatDrafts) {
           const preview = await api(`/api/projects/${projectId}/chat-drafts`);
           if (!isCurrentExport()) return;
@@ -166,31 +240,33 @@
           });
           return;
         }
-        const result = await api(`/api/projects/${projectId}/export`, {
+        requestId = Array.from(crypto.getRandomValues(new Uint8Array(16)),
+          byte => byte.toString(16).padStart(2, "0")).join("");
+        rememberRequest(projectId, requestId);
+        const result = await requestExport(endpoint, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ allow_empty_draft: allowEmpty }),
-        });
-        if (!isCurrentExport()) return;
-        if (result.download_url !== `/api/projects/${encodeURIComponent(projectId)}/download`)
-          throw new Error("下载地址不属于当前项目");
-        pendingDownload = { projectId, url: result.download_url, digest: result.download_digest, warnings: result.warnings };
-        await downloadCurrent(isCurrentExport);
+          body: JSON.stringify({ allow_empty_draft: allowEmpty, request_id: requestId }),
+        }, 65000);
+        await acceptResult(result, projectId, requestId, isCurrentExport);
       } catch (error) {
         if (!isCurrentExport()) return;
-        if (error.status === 404 || error.status === 409) pendingDownload = null;
-        const message = pendingDownload ? `${error.message} 可点击「重试下载 Word」。` : error.message;
-        toast(message, true);
+        if ([400, 404, 409, 422].includes(error.status)) {
+          if (requestId) rememberRequest(projectId, null);
+          pendingDownload = null;
+        }
+        const action = pendingDownload ? "重试下载 Word" : requestIdFor(projectId) ? "检查 Word 导出结果" : "";
+        toast(action ? `${error.message} 可点击「${action}」。` : error.message, true);
         if (!pendingDownload && ((error.message || "").includes("积分不足") || (error.message || "").includes("402"))) {
           openRechargeDialog();
         }
       } finally {
         downloadController = null;
         exportInProgress = false;
-        showIdleButtons(Boolean(pendingDownload && pendingDownload.projectId === state.project?.id));
+        syncButtons();
       }
     }
 
-    return { exportDoc, fetchExportBlob, invalidate };
+    return { exportDoc, fetchExportBlob, invalidate, syncButtons, clearRecovery };
   }
 
   window.WordExport = { create, fetchWordFile };

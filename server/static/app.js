@@ -254,6 +254,7 @@
     documentCorrections.clear();
     documentReviews.clear();
     documentRecovery.clear();
+    clearWordExportRecovery();
     documentRecoveryWarning = false;
     factFormProjectId = null;
     deletedProjectEpochs.clear();
@@ -1394,6 +1395,7 @@
     for (const key of documentCorrections.keys()) if (key.startsWith(keyPrefix)) documentCorrections.delete(key);
     for (const key of documentReviews.keys()) if (key.startsWith(keyPrefix)) documentReviews.delete(key);
     documentRecovery.clear(keyPrefix);
+    clearWordExportRecovery(projectId);
     if (factFormProjectId === projectId) factFormProjectId = null;
     outlineDrafts.delete(projectId);
     outlinePreviews.delete(projectId);
@@ -1444,10 +1446,11 @@
         if ($("#privateRagConsent")) $("#privateRagConsent").checked = false;
         $("#privateRagResults")?.replaceChildren();
         $("#uploadResult").classList.add("hidden");
-        clearExportArtifacts();
+        clearExportArtifacts({ preserveRecovery: true });
         if (mobileLayout?.matches) showMobileWorkspaceView("chat");
       }
       state.project = project;
+      syncWordExportButtons();
       try { localStorage.setItem(activeProjectKey, projectId); } catch {}
       state.documents = project.documents || [];
       state.messages = project.messages || [];
@@ -5161,12 +5164,14 @@
     }
   }
 
-  const { exportDoc, fetchExportBlob, invalidate: invalidateWordExport } = window.WordExport.create({
-    state, $, api: (...args) => api(...args), chatProjectIsActive, flushDraftEdits, showChatDrafts, toast, openRechargeDialog,
+  const { exportDoc, fetchExportBlob, invalidate: invalidateWordExport,
+    syncButtons: syncWordExportButtons, clearRecovery: clearWordExportRecovery } = window.WordExport.create({
+    state, $, api: (...args) => api(...args), chatProjectIsActive, recoveryOwner: chatRecoveryOwner,
+    flushDraftEdits, showChatDrafts, toast, openRechargeDialog,
   });
 
-  function clearExportArtifacts() {
-    invalidateWordExport();
+  function clearExportArtifacts(options) {
+    invalidateWordExport(options);
     $("#chatDraftDialog")?.close();
     $("#chatDraftItems")?.replaceChildren();
     const save = $("#confirmChatDraftsBtn");

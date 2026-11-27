@@ -689,6 +689,76 @@ test("Word export retries a failed download without generating a second document
   assert.equal(h.element("#headingExportBtn").textContent, "📥 导出 Word");
 });
 
+test("a lost Word export receipt survives a reload and downloads the original file", async () => {
+  const first = harness(); exportingProject(first);
+  const project = first.ui.state.project;
+  const exportUrl = `/api/projects/${project.id}/export`;
+  first.ui.state.authSession.user = { id: "student-one" };
+  let requestId;
+  first.ui.setApi(async (url, opts) => {
+    if (url.endsWith("/chat-drafts")) return { items: [] };
+    assert.equal(url, exportUrl);
+    requestId = JSON.parse(opts.body).request_id;
+    throw new Error("连接已中断");
+  });
+  await first.ui.exportDoc();
+  assert.match(requestId, /^[a-f0-9]{32}$/);
+  assert.equal(first.element("#headingExportBtn").textContent, "检查 Word 导出结果");
+  assert.equal(first.requests.length, 0);
+
+  const reloaded = harness(first.session);
+  reloaded.ui.state.authSession = { user: { id: "student-one" }, access_token: "new-jwt" };
+  const calls = [];
+  reloaded.ui.setApi(async url => {
+    if (url === `/api/projects/${project.id}`) return project;
+    if (url === "/api/user/balance") return { balance: 0 };
+    calls.push(url);
+    assert.equal(url, `${exportUrl}/status/${requestId}`);
+    return calls.length === 1 ? { status: "processing" } : {
+      status: "completed", download_url: `/api/projects/${project.id}/download`,
+      download_digest: wordDigest, warnings: ["学校模板待核对。"],
+    };
+  });
+  await reloaded.ui.loadProject(project.id, { refreshList: false });
+  assert.equal(reloaded.element("#headingExportBtn").textContent, "检查 Word 导出结果");
+  await reloaded.ui.exportDoc();
+  assert.match(reloaded.element("#toast").textContent, /仍在生成/);
+  assert.equal(reloaded.element("#headingExportBtn").textContent, "检查 Word 导出结果");
+  await reloaded.ui.exportDoc();
+  assert.equal(calls.length, 2);
+  assert.equal(reloaded.requests[0].options.headers.Authorization, "Bearer new-jwt");
+  assert.equal(reloaded.created.length, 1);
+  assert.match(reloaded.element("#exportResult").children[0].textContent, /学校模板待核对/);
+  assert.equal(reloaded.element("#headingExportBtn").textContent, "📥 导出 Word");
+  assert.ok(![...first.session.keys()].some(key => key.startsWith("stardust-word-export-v1:")));
+});
+
+test("an uncertain Word export remains scoped and a new edit invalidates it", async () => {
+  const h = harness(); exportingProject(h);
+  const first = h.ui.state.project;
+  const second = { ...first, id: "b".repeat(32) };
+  h.ui.state.authSession.user = { id: "student-one" };
+  h.ui.setApi(async url => {
+    if (url.endsWith("/chat-drafts")) return { items: [] };
+    if (url.endsWith("/export")) throw new Error("连接已中断");
+    if (url.endsWith(first.id)) return first;
+    if (url.endsWith(second.id)) return second;
+    throw Error(`unexpected ${url}`);
+  });
+  await h.ui.exportDoc();
+  await h.ui.loadProject(second.id, { refreshList: false });
+  assert.equal(h.element("#headingExportBtn").textContent, "📥 导出 Word");
+  h.ui.state.authSession.user = { id: "student-two" };
+  await h.ui.loadProject(first.id, { refreshList: false });
+  assert.equal(h.element("#headingExportBtn").textContent, "📥 导出 Word");
+  h.ui.state.authSession.user = { id: "student-one" };
+  await h.ui.loadProject(first.id, { refreshList: false });
+  assert.equal(h.element("#headingExportBtn").textContent, "检查 Word 导出结果");
+  h.ui.clearExportArtifacts();
+  assert.equal(h.element("#headingExportBtn").textContent, "📥 导出 Word");
+  assert.ok(![...h.session.keys()].some(key => key.startsWith("stardust-word-export-v1:")));
+});
+
 test("a stalled Word download times out and releases the toolbar for retry", async () => {
   const h = harness(); exportingProject(h);
   h.ui.setApi(async url => url.endsWith("/chat-drafts") ? { items: [] }
