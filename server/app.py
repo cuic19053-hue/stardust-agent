@@ -30,7 +30,7 @@ SERVER_DIR = Path(__file__).resolve().parent
 STATIC_DIR = SERVER_DIR / "static"
 ASSET_VERSIONS = {
     name: hashlib.sha256((STATIC_DIR / name).read_bytes()).hexdigest()[:16]
-    for name in ("app.js", "app.css", "material.js", "review.js", "material-upload.js", "draft-recovery.js", "section-edits.js", "word-export.js",
+    for name in ("app.js", "app.css", "material.js", "review.js", "material-upload.js", "draft-recovery.js", "section-edits.js", "fact-edits.js", "word-export.js",
                  "student-intake-demo.js", "student-intake-demo.css", "student-intake-demo.json",
                  "student-intake-local.js", "student-intake-worker.js", "student-intake-local.css",
                  "intake-0p5b-v1/model.json")
@@ -206,6 +206,7 @@ class ProjectFactForm(BaseModel):
     project: ProjectUpdate
     facts: dict[str, str]
     expected_revision: int = Field(ge=0)
+    supersedes_pending_save: bool = False
 
 
 class OutlineUpdate(BaseModel):
@@ -2937,7 +2938,8 @@ def confirm_reference(project_id: str, payload: ReferenceConfirm) -> dict[str, A
 
 @app.put("/api/projects/{project_id}/facts/form")
 def save_project_fact_form(project_id: str, form: ProjectFactForm) -> dict[str, Any]:
-    return _save_project_facts(project_id, form.facts, form.project.model_dump(exclude_none=True), form.expected_revision)
+    return _save_project_facts(project_id, form.facts, form.project.model_dump(exclude_none=True), form.expected_revision,
+                               supersedes_pending_save=form.supersedes_pending_save)
 
 
 @app.put("/api/projects/{project_id}/facts")
@@ -2947,6 +2949,7 @@ def update_project_facts(project_id: str, payload: dict[str, Any]) -> dict[str, 
 
 def _save_project_facts(
     project_id: str, payload: dict[str, Any], project_fields: dict[str, Any], expected_revision: int | None,
+    *, supersedes_pending_save: bool = False,
 ) -> dict[str, Any]:
     project = _safe_project(project_id)
     if expected_revision is not None and expected_revision != project["material_revision"]:
@@ -2970,6 +2973,8 @@ def _save_project_facts(
     changed = False
     for key, raw in payload.items():
         if not valid_fact_key(key):
+            if form_save:
+                raise HTTPException(422, "表单含无效字段，请核对后重新保存。")
             continue
         value = str(raw).strip()
         if form_save and value == str(confirmed.get(key, "")):
@@ -2992,11 +2997,18 @@ def _save_project_facts(
         state["confirmed_facts"] = confirmed
         state["fact_sources"] = sources
         fields["state"] = state
-    if not fields:
-        return {"confirmed_facts": confirmed}
-    if not store.update_project(project_id, expected_revision=project["material_revision"], **fields):
+    if supersedes_pending_save and not fields:
+        # Advance the revision even when the chosen values are unchanged, so an earlier save cannot land later.
+        fields["state"] = state
+    saved = store.update_project(project_id, expected_revision=project["material_revision"], **fields) if fields else project
+    if not saved:
         raise HTTPException(status_code=404, detail="项目不存在")
-    return {"confirmed_facts": confirmed}
+    return {
+        "confirmed_facts": confirmed,
+        "fact_sources": sources,
+        "material_revision": saved["material_revision"],
+        "project": {key: saved.get(key) for key in ("title", "level", "discipline", "school")},
+    }
 
 
 @app.post("/api/projects/{project_id}/intake/propose")

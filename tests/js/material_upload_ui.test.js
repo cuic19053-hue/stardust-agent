@@ -109,7 +109,7 @@ function harness(sharedSession = new Map()) {
     setInterval(callback) { const id = nextTimer++; timers.set(id, callback); return id; },
     clearInterval(id) { timers.delete(id); },
   });
-  for (const name of ["material-upload.js", "draft-recovery.js", "section-edits.js", "word-export.js"]) {
+  for (const name of ["material-upload.js", "draft-recovery.js", "section-edits.js", "fact-edits.js", "word-export.js"]) {
     const moduleFile = resolve(__dirname, "../../server/static", name);
     vm.runInContext(readFileSync(moduleFile, "utf8"), context, { filename: moduleFile });
   }
@@ -122,7 +122,7 @@ function harness(sharedSession = new Map()) {
       renderPrivacyNotice, showModelStatus, updateTemplateQuickActions,
       syncAuthControls, initializeCloudAuth, submitAuthForm,
       readPublicCache, writePublicCache, sameOriginAuthFetch, storeLlmConfig, loadCloudModelConfig, saveSelectedLlmConfig,
-      sendChat, syncChatControls, clearInterruptedChatMessages, loadProject, refreshProjects, closeDeletedProject, startApplication, deleteCurrentProject, startGeneralChat, selectConversationSkill, configureSkillWorkspace, renderFacts, saveFacts, renderSections, restoreOutlineEditor, renderOutline, generateOutline, recommendOutline, saveOutline, validate, restoreInterruptedChatMessage, updateRecoveredChatInput, startBatchGeneration, cancelBatchGeneration,
+      sendChat, syncChatControls, clearInterruptedChatMessages, loadProject, refreshProjects, closeDeletedProject, startApplication, deleteCurrentProject, startGeneralChat, selectConversationSkill, configureSkillWorkspace, renderFacts, recordFactInput, saveFacts, renderSections, restoreOutlineEditor, renderOutline, generateOutline, recommendOutline, saveOutline, validate, restoreInterruptedChatMessage, updateRecoveredChatInput, startBatchGeneration, cancelBatchGeneration,
       exportDoc, fetchExportBlob, flushDraftEdits, showChatDrafts, clearExportArtifacts, focusDraftSection,
       setApi(fn) { api = fn; },
       setLoadProject(fn) { loadProject = fn; },
@@ -547,9 +547,7 @@ test("switching from a research project clears hidden editor fields before savin
   h.ui.setApi(async (url, options) => { requests.push({ url, options }); return {}; });
   h.ui.setLoadProject(async () => {});
   await h.ui.saveFacts();
-  const { facts: payload } = JSON.parse(requests[0].options.body);
-  assert.equal(payload.budget, undefined);
-  assert.equal(payload.college, undefined, "leave the existing college and its evidence intact");
+  assert.deepEqual(requests, [], "unchanged fields and their evidence need no write");
   h.ui.state.project.state.confirmed_facts.budget = "200 元";
   h.ui.renderFacts();
   assert.equal(budgetParent.classList.contains("hidden"), false, "previously saved data remains editable");
@@ -2167,6 +2165,161 @@ test("switching projects during real SSE cancels the reader and clears the wait 
   assert.equal(h.timers.size, 0);
   assert.equal(h.ui.state.chatSending, false);
   assert.equal(cancelled, true);
+});
+
+function factsWorkbench(h, project) {
+  h.ui.state.project = project;
+  const college = Object.assign(h.element('[data-fact="college"]'), { dataset: { fact: "college" } });
+  const title = Object.assign(h.element('[data-fact="project_name"]'), { dataset: { fact: "project_name" } });
+  const school = Object.assign(h.element('[data-project="school"]'), { dataset: { project: "school" } });
+  h.setFactFields([college, title]);
+  const query = h.context.document.querySelectorAll;
+  h.context.document.querySelectorAll = selector => selector === "[data-project]" ? [school] : query(selector);
+  h.ui.renderFacts();
+  return { college, title, school, type(field, value) { field.value = value; h.ui.recordFactInput(field); } };
+}
+
+test("fact drafts and explicit deletions survive project refresh and a new browser page instance", () => {
+  const session = new Map();
+  const project = { id: "p", school: "服务器学校", state: { confirmed_facts: { college: "服务器学院" } } };
+  const original = harness(session);
+  const form = factsWorkbench(original, project);
+  form.type(form.college, "");
+  form.type(form.school, "我的学校");
+  original.ui.recordFactInput({ dataset: { fact: "custom_field_1" }, value: "新增但未确认的事实" });
+  original.ui.renderFacts();
+  assert.equal(form.college.value, "");
+  assert.equal(form.school.value, "我的学校");
+  assert.equal(original.element("#dynamicFactsGrid").children[0].children[1].value, "新增但未确认的事实");
+
+  const reopened = harness(session);
+  const recovered = factsWorkbench(reopened, { ...project });
+  assert.equal(recovered.college.value, "");
+  assert.equal(recovered.school.value, "我的学校");
+  assert.match(reopened.element("#factFormStatus").textContent, /已恢复未保存/);
+  assert.equal(reopened.requests.length, 0);
+  assert.equal(project.state.confirmed_facts.college, "服务器学院");
+});
+
+test("another page changing the same fact requires an explicit decision", async () => {
+  const session = new Map();
+  const prior = { id: "p", material_revision: 1, state: { confirmed_facts: { college: "旧学院" } } };
+  const original = harness(session);
+  const edit = factsWorkbench(original, prior);
+  edit.type(edit.college, "我的学院");
+  const h = harness(session);
+  const remote = { ...prior, material_revision: 2, state: { confirmed_facts: { college: "服务器的新学院" } } };
+  const form = factsWorkbench(h, remote);
+  assert.equal(form.college.value, "我的学院");
+  assert.equal(h.element("#saveFactsBtn").disabled, true);
+  const conflict = h.element("#factConflictList").children[0];
+  assert.match(conflict.children[1].textContent, /服务器的新学院/);
+  let writes = [];
+  h.ui.setApi(async (_url, options) => { writes.push(JSON.parse(options.body)); return {}; });
+  h.ui.setLoadProject(async () => {});
+  await h.ui.saveFacts();
+  assert.equal(writes.length, 0);
+  conflict.children[2].click();
+  await h.ui.saveFacts();
+  assert.deepEqual(writes, [{ facts: { college: "我的学院" }, project: {}, expected_revision: 2 }]);
+});
+
+test("an unrelated project revision lets the fact form retry only the original save", async () => {
+  const h = harness();
+  const initial = { id: "p", material_revision: 1, school: "旧学校", state: { confirmed_facts: { college: "旧学院" } } };
+  const form = factsWorkbench(h, initial);
+  form.type(form.college, "我的学院");
+  const attempts = [];
+  const latest = { ...initial, material_revision: 2, school: "另一页更新的学校" };
+  h.ui.setLoadProject(async () => {
+    h.ui.state.project = latest;
+    h.ui.renderFacts();
+  });
+  h.ui.setApi(async (_url, options) => {
+    attempts.push(JSON.parse(options.body));
+    if (attempts.length === 1) throw Object.assign(new Error("项目已变化"), { status: 409 });
+    return {};
+  });
+  await h.ui.saveFacts();
+  assert.deepEqual(attempts, [
+    { facts: { college: "我的学院" }, project: {}, expected_revision: 1 },
+    { facts: { college: "我的学院" }, project: {}, expected_revision: 2 },
+  ]);
+  assert.equal(form.school.value, "另一页更新的学校");
+});
+
+test("refresh after an unacknowledged fact save preserves edits made during the request", async () => {
+  const session = new Map();
+  const h = harness(session);
+  const initial = { id: "p", material_revision: 1, state: { confirmed_facts: { college: "旧学院" } } };
+  const form = factsWorkbench(h, initial);
+  form.type(form.college, "已提交给服务器");
+  let start;
+  const requestStarted = new Promise(resolve => { start = resolve; });
+  h.ui.setApi(async () => { start(); return new Promise(() => {}); });
+  void h.ui.saveFacts();
+  await requestStarted;
+  form.type(form.college, "保存期间继续编辑");
+  const reopened = harness(session);
+  const latest = { ...initial, material_revision: 2, state: { confirmed_facts: { college: "已提交给服务器" } } };
+  const recovered = factsWorkbench(reopened, latest);
+  assert.equal(recovered.college.value, "保存期间继续编辑");
+  assert.equal(reopened.element("#saveFactsBtn").disabled, false);
+  let payload;
+  reopened.ui.setApi(async (_url, options) => { payload = JSON.parse(options.body); return {}; });
+  reopened.ui.setLoadProject(async () => {});
+  await reopened.ui.saveFacts();
+  assert.deepEqual(payload, { facts: { college: "保存期间继续编辑" }, project: {}, expected_revision: 2 });
+});
+
+test("explicitly reverting an unconfirmed edit sends a fenced fact save", async () => {
+  const session = new Map();
+  const h = harness(session);
+  const project = { id: "p", material_revision: 1, state: { confirmed_facts: { college: "旧学院" } } };
+  const original = factsWorkbench(h, project);
+  original.type(original.college, "发出的修改");
+  h.ui.setApi(async () => { throw new TypeError("network failure"); });
+  await h.ui.saveFacts();
+  original.type(original.college, "旧学院");
+  const reopened = harness(session);
+  factsWorkbench(reopened, project);
+  assert.match(reopened.element("#factFormStatus").textContent, /上一次保存待确认/);
+  let sent;
+  reopened.ui.setApi(async (_url, options) => { sent = JSON.parse(options.body); return {}; });
+  reopened.ui.setLoadProject(async () => {});
+  await reopened.ui.saveFacts();
+  assert.deepEqual(sent, { facts: { college: "旧学院" }, project: {}, expected_revision: 1, supersedes_pending_save: true });
+  assert.equal(session.size, 0);
+});
+
+test("renaming a project via its fact respects an independently changed project title", async () => {
+  const session = new Map();
+  const h = harness(session);
+  const initial = { id: "p", title: "旧标题", state: { confirmed_facts: { project_name: "旧名称" } } };
+  const fields = factsWorkbench(h, initial);
+  fields.type(fields.title, "我正在写的新名称");
+  const reopened = harness(session);
+  factsWorkbench(reopened, { ...initial, title: "通过项目设置修改的标题" });
+  assert.equal(reopened.element("#saveFactsBtn").disabled, true);
+  assert.match(reopened.element("#factConflictList").children[0].children[1].textContent, /通过项目设置修改的标题/);
+});
+
+test("fact recovery stays under the owning account and deletion clears it", () => {
+  const session = new Map([["other-feature", "unchanged"]]);
+  const first = harness(session);
+  first.ui.state.cloudMode = true;
+  first.ui.state.authSession = { user: { id: "first" }, access_token: "first-token" };
+  const project = { id: "p", state: { confirmed_facts: { college: "已确认" } } };
+  const editing = factsWorkbench(first, project);
+  editing.type(editing.college, "账号专属未保存信息");
+  const second = harness(session);
+  second.ui.state.cloudMode = true;
+  second.ui.state.authSession = { user: { id: "second" } };
+  const reopened = factsWorkbench(second, project);
+  assert.equal(reopened.college.value, "已确认");
+  assert.ok([...session.values()].every(value => !value.includes("first-token")));
+  first.ui.closeDeletedProject(project.id);
+  assert.deepEqual([...session], [["other-feature", "unchanged"]]);
 });
 
 test("saving the fact form sends one write to the originating project during navigation", async () => {

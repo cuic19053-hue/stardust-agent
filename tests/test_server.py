@@ -1035,7 +1035,7 @@ def test_sensitive_endpoints_are_never_cached_or_echo_invalid_secrets(client, mo
     assert 'no-cache' in response.headers['cache-control']
     assert '/static/app.js?v=' in response.text
     assert '/static/app.css?v=' in response.text
-    for script in ('material-upload.js', 'draft-recovery.js', 'section-edits.js', 'word-export.js'):
+    for script in ('material-upload.js', 'draft-recovery.js', 'section-edits.js', 'fact-edits.js', 'word-export.js'):
         assert '/static/' + script + '?v=' in response.text
         assert response.text.index('/static/' + script) < response.text.index('/static/app.js')
     body = client.get('/api/ping').json()
@@ -1099,7 +1099,7 @@ def test_model_config_cloud_crud_and_no_secret_in_save_response(client, monkeypa
     assert client.post('/api/user/llm-config', json=config, headers=headers).status_code == 422
 
 
-@pytest.mark.parametrize('name', ['app.js', 'material-upload.js', 'draft-recovery.js', 'section-edits.js', 'word-export.js'])
+@pytest.mark.parametrize('name', ['app.js', 'material-upload.js', 'draft-recovery.js', 'section-edits.js', 'fact-edits.js', 'word-export.js'])
 def test_only_matching_content_hashed_assets_receive_immutable_cache(client, name):
     import app as server_app
     version = server_app.ASSET_VERSIONS[name]
@@ -1198,7 +1198,11 @@ def test_fact_form_updates_metadata_and_facts_in_one_revision(client):
     root = f"/api/projects/{project['id']}"
     revision = client.get(root).json()["material_revision"]
     form = {"facts": {"college": "甲学院"}, "project": {"school": "甲大学"}, "expected_revision": revision}
-    assert client.put(root + "/facts/form", json=form).status_code == 200
+    receipt = client.put(root + "/facts/form", json=form)
+    assert receipt.status_code == 200
+    assert receipt.json()["project"]["school"] == "甲大学"
+    assert receipt.json()["confirmed_facts"]["college"] == "甲学院"
+    assert receipt.json()["material_revision"] == revision + 1
     saved = client.get(root).json()
     assert saved["school"] == "甲大学" and saved["state"]["confirmed_facts"]["college"] == "甲学院"
     assert saved["material_revision"] == revision + 1
@@ -1233,6 +1237,31 @@ def test_fact_form_clears_existing_fields_and_keeps_untouched_evidence(client):
     form["expected_revision"] = saved["material_revision"]
     assert client.put(root + "/facts/form", json=form).status_code == 200
     assert client.get(root).json()["material_revision"] == saved["material_revision"]
+
+
+def test_fact_form_rejects_invalid_fields_without_saving_valid_ones(client):
+    project = client.post("/api/projects", json={"title": "字段校验", "school": "原学校"}).json()
+    root = f"/api/projects/{project['id']}"
+    response = client.put(root + "/facts/form", json={
+        "expected_revision": project["material_revision"], "project": {"school": "新学校"},
+        "facts": {"college": "新学院", "template_preference": "不允许的字段"},
+    })
+    assert response.status_code == 422
+    current = client.get(root).json()
+    assert current["school"] == "原学校" and current["material_revision"] == project["material_revision"]
+
+
+def test_reverting_a_pending_fact_save_advances_the_revision_without_changing_facts(client):
+    project = client.post("/api/projects", json={"title": "保存状态验证", "school": "原学校"}).json()
+    url = f"/api/projects/{project['id']}/facts/form"
+    first_revision = project["material_revision"]
+    override = client.put(url, json={"facts": {}, "project": {"school": "原学校"},
+        "expected_revision": first_revision, "supersedes_pending_save": True})
+    override.raise_for_status()
+    late = client.put(url, json={"facts": {}, "project": {"school": "迟到的修改"}, "expected_revision": first_revision})
+    assert late.status_code == 409
+    current = client.get(f"/api/projects/{project['id']}").json()
+    assert current["material_revision"] == first_revision + 1 and current["school"] == "原学校"
 
 
 def test_oversized_fact_form_keeps_all_original_fields(client):

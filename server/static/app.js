@@ -125,6 +125,8 @@
   const outlineRequests = new Map();
   const outlineRecovery = window.DraftRecovery.create("stardust-outline-recovery-v1:", chatRecoveryOwner);
   let outlineRecoveryWarning = false;
+  const factEdits = window.FactEdits.create(chatRecoveryOwner, toast);
+  let factFormProjectId = null;
   const sectionEdits = window.SectionEdits.create({
     state, api: (...args) => api(...args), currentProjectView, recoveryOwner: chatRecoveryOwner,
     setDraftSaveStatus, updateDraftStats, toast,
@@ -244,6 +246,8 @@
     outlineRequests.clear();
     outlineRecovery.clear();
     outlineRecoveryWarning = false;
+    factEdits.clear();
+    factFormProjectId = null;
     deletedProjectEpochs.clear();
     const input = $("#chatInput");
     if (input) {
@@ -1377,6 +1381,8 @@
     persistInterruptedChatMessages();
     deletedProjectEpochs.set(projectId, (deletedProjectEpochs.get(projectId) || 0) + 1);
     sectionEdits.removeProject(projectId);
+    factEdits.removeProject(projectId);
+    if (factFormProjectId === projectId) factFormProjectId = null;
     outlineDrafts.delete(projectId);
     outlinePreviews.delete(projectId);
     outlineRequests.delete(projectId);
@@ -2229,6 +2235,13 @@
   }
 
   function renderFacts() {
+    const project = state.project;
+    if (!project) return;
+    const draft = factEdits.open(project);
+    if (factFormProjectId !== project.id) {
+      factFormProjectId = project.id;
+      $("#factsEditor").classList.toggle("hidden", !draft.entries.size);
+    }
     renderIntakeArchive();
     updateIntakeModelNote();
     const facts = { ...(state.project?.state?.confirmed_facts || {}) };
@@ -2271,8 +2284,6 @@
         }
       });
       summary.append(box);
-      const input = $(`[data-fact="${key}"]`);
-      if (input) input.value = val || "";
     }
     const photoId = state.project?.state?.leader_photo || facts.leader_photo;
     const photoBox = document.createElement("div");
@@ -2292,9 +2303,12 @@
     const dynamic = $("#dynamicFactsGrid");
     if (dynamic) {
       dynamic.replaceChildren();
-      for (const [key, value] of Object.entries(facts)) {
-        if (key in labels || key.startsWith("skill_") || key.startsWith("template_") || key.startsWith("fact_")) continue;
-        appendDynamicFact(key, value);
+      const dynamicKeys = new Set(Object.keys(facts));
+      for (const entry of draft.entries.values()) if (entry.group === "facts") dynamicKeys.add(entry.key);
+      for (const key of dynamicKeys) {
+        if (Object.hasOwn(labels, key) || key.startsWith("skill_") || key.startsWith("template_")
+            || key.startsWith("fact_") || key === "leader_photo") continue;
+        appendDynamicFact(key, factEdits.value(project, draft, "facts", key));
       }
     }
     // The editor survives project switches. Always refresh every input,
@@ -2304,8 +2318,8 @@
       "expected_output", "constraints", "duration", "budget", "leader_name", "advisor_name", "team"]);
     $$("[data-fact]").forEach((field) => {
       const key = field.dataset.fact;
-      const value = facts[key];
-      field.value = value == null ? "" : String(value);
+      const value = factEdits.value(project, draft, "facts", key);
+      field.value = value;
       const parent = field.closest(".field");
       if (parent && projectOnlyFacts.has(key)) {
         // Existing values remain visible/editable even after a skill change.
@@ -2315,8 +2329,59 @@
     const photoField = $(".leader-photo-field");
     if (photoField) photoField.classList.toggle("hidden", personalApplication && !photoId);
     $$("[data-project]").forEach((field) => {
-      field.value = state.project?.[field.dataset.project] || "";
+      field.value = factEdits.value(project, draft, "project", field.dataset.project);
     });
+    renderFactDraftStatus(project, draft);
+  }
+
+  const projectFieldLabels = { title: "项目名称", level: "申报级别", discipline: "专业 / 学科", school: "学校" };
+
+  function renderFactDraftStatus(project, draft) {
+    const notice = $("#factFormStatus");
+    const list = $("#factConflictList");
+    if (!notice || !list) return;
+    const conflicts = factEdits.conflicts(project, draft);
+    const awaitingReceipt = [...draft.entries.values()].some(entry => entry.submitted !== undefined);
+    notice.textContent = draft.saving ? "正在保存，可以继续编辑。" : conflicts.length
+      ? "其他页面已修改下列字段，选择要保留的值后再保存。"
+      : awaitingReceipt ? "上一次保存待确认，请核对后保存。"
+      : draft.entries.size ? (draft.recovered ? "已恢复未保存的信息，请核对后保存。" : "有修改待保存。") : "";
+    notice.hidden = !notice.textContent;
+    list.hidden = !conflicts.length;
+    const view = currentProjectView();
+    list.replaceChildren();
+    for (const entry of conflicts) {
+      const row = document.createElement("div");
+      row.className = "section-versions";
+      const label = document.createElement("strong");
+      label.textContent = entry.group === "project" ? projectFieldLabels[entry.key] || entry.key
+        : labels[entry.key] || entry.key.replace(/_/g, " ");
+      const current = document.createElement("p");
+      current.textContent = `已保存：${factEdits.readValue(project, entry.group, entry.key) || "（空）"}`
+        + (entry.group === "facts" && entry.key === "project_name" ? `，当前项目标题「${project.title || "（空）"}」` : "");
+      const keep = button("保留本页输入");
+      const accept = button("使用已保存值", "button button-small button-quiet");
+      const resolve = keepLocal => {
+        if (!view.active() || state.project !== project) return;
+        factEdits.resolve(project, entry, keepLocal);
+        renderFacts();
+      };
+      keep.disabled = accept.disabled = draft.saving;
+      keep.addEventListener("click", () => resolve(true));
+      accept.addEventListener("click", () => resolve(false));
+      row.append(label, current, keep, accept);
+      list.append(row);
+    }
+    $("#saveFactsBtn").disabled = draft.saving || conflicts.length > 0;
+  }
+
+  function recordFactInput(field, project = state.project) {
+    if (!project || typeof field?.value !== "string") return;
+    const key = field.dataset?.fact || field.dataset?.project;
+    const group = field.dataset?.fact ? "facts" : "project";
+    if (!/^[a-z][a-z0-9_]{1,63}$/.test(key || "") || (group === "project" && !Object.hasOwn(projectFieldLabels, key))
+        || (key === "political_stage" && $("#politicalStageField").hidden)) return;
+    factEdits.edit(project, group, key, field.value);
   }
 
   let leaderPhotoBlobUrl = "";
@@ -2741,34 +2806,77 @@
   async function saveFacts() {
     const view = currentProjectView();
     if (!view.active()) return;
-    const payload = {};
-    const confirmed = state.project.state?.confirmed_facts || {};
-    $$("[data-fact]").forEach((field) => {
-      if (field.dataset.fact === "political_stage" && $("#politicalStageField").hidden) return;
-      const value = field.value.trim();
-      const original = String(confirmed[field.dataset.fact] ?? "").replace(/\r\n?/g, "\n").trim();
-      if (value !== original) payload[field.dataset.fact] = value;
-    });
-    const projectFields = {};
-    $$("[data-project]").forEach((field) => {
-      const key = field.dataset.project;
-      const value = field.value.trim();
-      if (value !== String(state.project[key] ?? "")) projectFields[key] = value;
-    });
+    const draft = factEdits.open(state.project);
+    if (draft.saving) return;
+    for (const field of [...$$("[data-fact]"), ...$$("[data-project]")]) recordFactInput(field);
+    if (factEdits.conflicts(state.project, draft).length) {
+      renderFactDraftStatus(state.project, draft);
+      return;
+    }
+    const initial = factEdits.prepare(state.project, draft);
+    if (!initial.changes.length) return;
+    draft.saving = true;
+    clearExportArtifacts();
+    window.MaterialPilot?.invalidateArtifacts?.();
+    renderFactDraftStatus(state.project, draft);
+    let plan = initial;
     try {
-      await api(`/api/projects/${view.id}/facts/form`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ facts: payload, project: projectFields, expected_revision: state.project.material_revision }),
-      });
-      if (!view.active()) return;
-      await loadProject(view.id);
-      if (!view.active()) return;
-      $("#factsEditor").classList.add("hidden");
-      toast("已保存为你确认的项目事实。");
+      for (let attempt = 0; attempt < 2; attempt++) {
+        factEdits.start(view.id, draft, plan.changes);
+        try {
+          const receipt = await observeMaterialRequest(`/api/projects/${view.id}/facts/form`, {
+            method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(plan.payload),
+          }, 30000, "保存结果待确认，已保留本页输入。");
+          factEdits.finish(view.id, draft, plan.changes);
+          if (view.active() && Number.isSafeInteger(receipt?.material_revision)
+              && receipt.material_revision >= state.project.material_revision) {
+            Object.assign(state.project, receipt.project);
+            state.project.state ||= {};
+            state.project.state.confirmed_facts = receipt.confirmed_facts;
+            state.project.state.fact_sources = receipt.fact_sources;
+            state.project.material_revision = receipt.material_revision;
+          }
+          break;
+        } catch (error) {
+          if (error.status >= 400 && error.status < 500) factEdits.finish(view.id, draft, plan.changes, true);
+          if (error.status !== 409 || !view.active()) throw error;
+          const revision = state.project.material_revision;
+          await loadProject(view.id, { refreshList: false });
+          if (!view.active()) return;
+          factEdits.open(state.project, true);
+          if (factEdits.conflicts(state.project, draft).length) {
+            toast("这些字段同时被修改，请核对后保存。", true);
+            return;
+          }
+          const next = factEdits.prepare(state.project, draft);
+          if (!next.changes.length) break;
+          if (attempt || state.project.material_revision === revision) throw error;
+          const sameInputs = next.changes.every(({ entry, value }) =>
+            initial.changes.some(change => change.entry === entry && change.value === value));
+          if (!sameInputs) {
+            toast("已载入最新项目信息，本页还有修改待保存。");
+            return;
+          }
+          plan = next;
+        }
+      }
+      if (view.active()) {
+        clearExportArtifacts();
+        window.MaterialPilot?.invalidateArtifacts?.();
+        await loadProject(view.id);
+        if (!view.active()) return;
+        if (!draft.entries.size) $("#factsEditor").classList.add("hidden");
+        toast(draft.entries.size ? "已保存提交时的信息，本页还有修改待保存。" : "已保存为你确认的项目事实。");
+      } else if (factEdits.tracked(view.id, draft) && chatProjectIsActive(view.id)) {
+        draft.saving = false;
+        await loadProject(view.id, { refreshList: false });
+      }
     } catch (error) {
       if (!view.active()) return;
-      toast(error.message, true);
+      toast(error.status ? error.message : "保存结果待确认，已保留本页输入。", true);
+    } finally {
+      draft.saving = false;
+      if (state.project?.id === view.id && factEdits.tracked(view.id, draft)) renderFactDraftStatus(state.project, draft);
     }
   }
 
@@ -5313,8 +5421,15 @@
     });
     $("#editFactsBtn").addEventListener("click", () => {
       $("#factsEditor").classList.toggle("hidden");
-      renderFacts();
     });
+    const factsEditor = $("#factsEditor");
+    const onFactInput = event => {
+      if (factFormProjectId !== state.project?.id) return;
+      recordFactInput(event.target);
+      renderFactDraftStatus(state.project, factEdits.open(state.project));
+    };
+    factsEditor.addEventListener("input", onFactInput);
+    factsEditor.addEventListener("change", onFactInput);
     $("#addFactBtn").addEventListener("click", addCustomFact);
     $("#saveFactsBtn").addEventListener("click", saveFacts);
     $("#chooseLeaderPhotoBtn")?.addEventListener("click", () => $("#leaderPhotoInput")?.click());
@@ -5590,7 +5705,7 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     window.addEventListener("beforeunload", event => {
-      if (!sectionEdits.hasUnsaved() && !outlineDrafts.size && !outlinePreviews.size && !outlineRecovery.hasEntries()) return;
+      if (!sectionEdits.hasUnsaved() && !factEdits.hasUnsaved() && !outlineDrafts.size && !outlinePreviews.size && !outlineRecovery.hasEntries()) return;
       event.preventDefault();
       event.returnValue = "";
     });
