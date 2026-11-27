@@ -122,6 +122,29 @@ def test_masked_model_quote_does_not_drop_other_explicit_fields_or_reveal_income
         assert client.post(url + "/confirm", json=body({**result, "facts": [row]})).status_code == 200
 
 
+def test_two_awards_are_rebuilt_as_distinct_records_and_confirmed_individually(api):
+    client, store, pid, model = api
+    first, second = "我在青石设计赛获得市级二等奖", "在白榆创新赛获得院级一等奖"
+    store.add_message(pid, "user", f"{first}，{second}。")
+    model._post.return_value = response(fact("application.type", "stated", "青石设计赛", first))
+    url = f"/api/projects/{pid}/intake"
+    result = client.post(url + "/propose").json()
+    by_record = {}
+    assert len(result["facts"]) == 6
+    for row in result["facts"]:
+        item = row["fact"]
+        by_record.setdefault(item["record_id"], {})[item["field"]] = item["value"]
+        assert item["evidence"][0]["quote"] == (first if item["record_id"] == "award_1" else second)
+    assert by_record == {
+        "award_1": {"award.name": "青石设计赛", "award.level": "市级", "award.prize": "二等奖"},
+        "award_2": {"award.name": "白榆创新赛", "award.level": "院级", "award.prize": "一等奖"},
+    }
+    assert intake.ARCHIVE not in store.get_project(pid)["state"]
+    chosen = result["facts"][-1]
+    assert client.post(url + "/confirm", json=body({**result, "facts": [chosen]})).status_code == 200
+    assert [row["fact"] for row in store.get_project(pid)["state"][intake.ARCHIVE]] == [chosen["fact"]]
+
+
 def test_manual_review_and_history_bound_do_not_write(api):
     client, store, pid, model = api
     store.add_message(pid, "user", TEXT)
