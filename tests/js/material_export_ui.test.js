@@ -16,14 +16,16 @@ function harness(statuses, switchProject = false, onFetch = () => {}, { stallPol
     return statuses.length > 1 ? statuses.shift() : statuses[0];
   } };
   const context = vm.createContext({
-    window: {}, console, Blob, crypto: { randomUUID: () => "one-export-only" },
+    window: {}, console, Blob, AbortController, crypto: { randomUUID: () => "one-export-only" },
     setTimeout: (callback, delay) => { if (delay < 15000 || pollPending) callback(); return 1; }, clearTimeout() {},
     document: { querySelectorAll: () => draftAreas, body: { append() {} },
       createElement: () => ({ click() { downloads.push({ href: this.href, name: this.download }); }, remove() {} }) },
     fetch: async (url, options) => {
       fetches.push({ url, options });
       onFetch();
-      return { ok: true, blob: async () => new Blob(["synthetic Word"]) };
+      return { ok: true, blob: async () => new Blob(["PK\x03\x04", Buffer.alloc(24)], {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      }) };
     },
     URL: { createObjectURL: () => "blob:private-word", revokeObjectURL(url) { revoked.push(url); } },
   });
@@ -32,6 +34,7 @@ function harness(statuses, switchProject = false, onFetch = () => {}, { stallPol
       globalThis.init = config => { host = config; projectId = config.state.project.id;
         data = { context: { revision: 4 } }; refresh = async () => {}; };
       window.MaterialPilot =`);
+  vm.runInContext(readFileSync(resolve(__dirname, "../../server/static/word-export.js"), "utf8"), context);
   vm.runInContext(source, context);
   context.init(host);
   return { export: isCurrent => context.window.MaterialPilot.exportDocument({}, isCurrent),

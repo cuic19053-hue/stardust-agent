@@ -1,3 +1,7 @@
+import base64
+import hashlib
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -29,6 +33,15 @@ def api(monkeypatch, tmp_path):
         yield client,store,p
 
 
+def test_documented_worker_command_starts_without_a_pythonpath(tmp_path):
+    worker = Path(__file__).resolve().parents[1] / "server" / "material_worker.py"
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    process = subprocess.run([sys.executable, str(worker), "--help"], env=env, cwd=tmp_path,
+                             capture_output=True, text=True, timeout=15)
+    assert process.returncode == 0, process.stderr
+    assert "--local-data" in process.stdout
+
+
 def test_material_api_supports_catalogue_types_and_rejects_unknown(api):
     client,store,p = api
     assert client.get(f"/api/projects/{p['id']}/material").status_code == 200
@@ -55,6 +68,12 @@ def test_non_innovation_export_job_runs_end_to_end(api, monkeypatch):
     assert job["status"] == "completed", job
     path = store.files_dir / project["id"] / "_material" / job["id"] / "proposal.docx"
     assert "国家奖学金" in "\n".join(p.text for p in Document(path).paragraphs)
+    download = client.get(f"/api/projects/{project['id']}/material/jobs/{job['id']}/files/proposal.docx")
+    download.raise_for_status()
+    assert download.content == path.read_bytes()
+    digest = base64.b64encode(hashlib.sha256(download.content).digest()).decode("ascii")
+    assert download.headers["Repr-Digest"] == f"sha-256=:{digest}:"
+    assert download.headers["Content-Type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 def test_export_snapshot_preserves_income_optout_after_30_messages(api):

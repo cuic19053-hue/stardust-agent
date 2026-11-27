@@ -1,8 +1,16 @@
 const assert = require("node:assert/strict");
+const { Buffer } = require("node:buffer");
+const { createHash, webcrypto } = require("node:crypto");
 const { readFileSync } = require("node:fs");
 const { resolve } = require("node:path");
 const { test } = require("node:test");
 const vm = require("node:vm");
+
+const wordType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const wordBytes = Buffer.concat([Buffer.from("PK\x03\x04"), Buffer.alloc(24)]);
+const wordDigest = `sha-256=:${createHash("sha256").update(wordBytes).digest("base64")}:`;
+const wordResponse = () => ({ ok: true, headers: new Headers({ "Repr-Digest": wordDigest }),
+  blob: async () => new Blob([wordBytes], { type: wordType }) });
 
 class Element {
   constructor(tag = "div") {
@@ -75,6 +83,8 @@ function harness(sharedSession = new Map()) {
     Headers,
     AbortController,
     Blob,
+    crypto: webcrypto,
+    btoa: value => Buffer.from(value, "binary").toString("base64"),
     TextEncoder,
     TextDecoder,
     URL: {
@@ -86,7 +96,7 @@ function harness(sharedSession = new Map()) {
     },
     fetch: async (url, options) => {
       requests.push({ url, options });
-      return { ok: true, blob: async () => new Blob(["test original"]) };
+      return url.endsWith("/download") ? wordResponse() : { ok: true, blob: async () => new Blob(["test original"]) };
     },
     setTimeout: () => 0,
     clearTimeout() {},
@@ -421,6 +431,98 @@ test("batch preserves a student's edit made while a chapter is generating", asyn
   assert.match(h.element("#batchProgressText").textContent, /手写编辑已保留/);
 });
 
+test("Word export retries a failed download without generating a second document", async () => {
+  const h = harness(); exportingProject(h);
+  let exports = 0, attempts = 0;
+  h.ui.setApi(async (url) => {
+    if (url.endsWith("/chat-drafts")) return { items: [] };
+    exports++;
+    return { download_url: `/api/projects/${h.ui.state.project.id}/download`, download_digest: wordDigest };
+  });
+  h.context.fetch = async () => ++attempts === 1
+    ? { ok: true, blob: async () => new Blob(["<html>gateway error</html>"], { type: "text/html" }) }
+    : wordResponse();
+  await h.ui.exportDoc();
+  assert.equal(h.created.length, 0);
+  assert.equal(h.element("#headingExportBtn").textContent, "重试下载 Word");
+  await h.ui.exportDoc();
+  assert.equal(exports, 1);
+  assert.equal(attempts, 2);
+  assert.equal(h.created.length, 1);
+  assert.equal(h.element("#headingExportBtn").textContent, "📥 导出 Word");
+});
+
+test("a stalled Word download times out and releases the toolbar for retry", async () => {
+  const h = harness(); exportingProject(h);
+  h.ui.setApi(async url => url.endsWith("/chat-drafts") ? { items: [] }
+    : { download_url: `/api/projects/${h.ui.state.project.id}/download` });
+  let deadline;
+  h.context.setTimeout = (callback, time) => {
+    if (time === 45000) deadline = callback;
+    return 1;
+  };
+  h.context.fetch = (_url, { signal }) => new Promise((_, reject) => {
+    signal.addEventListener("abort", () => reject(new Error("download aborted")), { once: true });
+  });
+  const attempt = h.ui.exportDoc();
+  while (!deadline) await Promise.resolve();
+  deadline();
+  await attempt;
+  assert.match(h.element("#toast").textContent, /Word 下载超时/);
+  assert.equal(h.element("#headingExportBtn").disabled, false);
+  assert.equal(h.element("#headingExportBtn").textContent, "重试下载 Word");
+  assert.equal(h.created.length, 0);
+});
+
+test("Word download detects corrupted bytes with a valid MIME type and ZIP signature", async () => {
+  const h = harness(); exportingProject(h);
+  const response = wordResponse();
+  response.blob = async () => new Blob([wordBytes, "changed"], { type: wordType });
+  h.context.fetch = async () => response;
+  await assert.rejects(h.ui.fetchExportBlob(`/api/projects/${h.ui.state.project.id}/download`, h.ui.state.project.id), /校验失败/);
+});
+
+test("a different server export invalidates the download receipt", async () => {
+  const h = harness(); exportingProject(h);
+  let exports = 0;
+  h.ui.setApi(async url => {
+    if (url.endsWith("/chat-drafts")) return { items: [] };
+    exports++;
+    return { download_url: `/api/projects/${h.ui.state.project.id}/download`,
+      download_digest: exports === 1 ? "sha-256=:another-export:" : wordDigest };
+  });
+  await h.ui.exportDoc();
+  assert.equal(h.created.length, 0);
+  assert.match(h.element("#toast").textContent, /重新导出/);
+  assert.equal(h.element("#headingExportBtn").textContent, "📥 导出 Word");
+  await h.ui.exportDoc();
+  assert.equal(exports, 2);
+  assert.equal(h.created.length, 1);
+});
+
+test("the export toolbar can retry an existing background job file", async () => {
+  const h = harness(); exportingProject(h);
+  let jobs = 0, gets = 0;
+  h.ui.setApi(async url => {
+    assert.match(url, /chat-drafts$/);
+    return { items: [] };
+  });
+  h.context.window.MaterialPilot = { active: () => true, exportDocument: (_opts, _current, onReady) => {
+    jobs++;
+    return onReady(`/api/projects/${h.ui.state.project.id}/material/jobs/${"b".repeat(32)}/files/proposal.docx`);
+  } };
+  h.context.fetch = async () => {
+    if (++gets === 1) throw new TypeError("disconnected");
+    return wordResponse();
+  };
+  await h.ui.exportDoc();
+  assert.equal(h.element("#headingExportBtn").textContent, "重试下载 Word");
+  await h.ui.exportDoc();
+  assert.equal(jobs, 1);
+  assert.equal(gets, 2);
+  assert.equal(h.created.length, 1);
+});
+
 test("legacy export fetches private file with bearer and links only a blob", async () => {
   const h = harness(); exportingProject(h);
   const calls = [];
@@ -485,7 +587,7 @@ test("download failure is not reported as a started download", async () => {
   });
   h.context.fetch = async () => ({ ok: false, json: async () => ({ detail: "登录过期" }) });
   await h.ui.exportDoc();
-  assert.equal(h.element("#toast").textContent, "登录过期");
+  assert.match(h.element("#toast").textContent, /登录过期.*重试下载 Word/);
   assert.equal(h.created.length, 0);
   assert.equal(h.element("#exportBtn").disabled, false);
 });

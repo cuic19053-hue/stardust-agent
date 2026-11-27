@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import logging
 import os
@@ -15,10 +16,15 @@ from pydantic import BaseModel
 
 from proposal.chat_drafts import require_export_content
 from proposal.exporter import ensure_grant_income_artifact_safe, export_input_fingerprint, export_project
+from proposal.materials import MaterialConflict
 
 
 logger = logging.getLogger(__name__)
 WORD_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def word_digest(sha256: bytes) -> str:
+    return f"sha-256=:{base64.b64encode(sha256).decode('ascii')}:"
 
 
 class ExportInput(BaseModel):
@@ -100,6 +106,7 @@ def register_export_api(app: FastAPI, get_store, load_project, validate_project)
         state_data.update(exported_docx_fingerprint=source_fingerprint,
                           exported_docx_sha256=hashlib.sha256(output_path.read_bytes()).hexdigest(),
                           exported_docx_local_name=output_path.name)
+        storage_path = None
         if hasattr(store, "persist_generated_file"):
             storage_path = store.persist_generated_file(
                 project_id,
@@ -108,7 +115,23 @@ def register_export_api(app: FastAPI, get_store, load_project, validate_project)
                 WORD_CONTENT_TYPE,
             )
             state_data["exported_docx_storage_path"] = storage_path
-        store.update_project(project_id, expected_revision=current.get("material_revision", 0), state=state_data)
+        def discard_unpublished() -> None:
+            try:
+                output_path.unlink(missing_ok=True)
+                if storage_path and hasattr(store, "discard_generated_export"):
+                    store.discard_generated_export(project_id, storage_path)
+            except (OSError, RuntimeError):
+                logger.warning("Could not remove unpublished Word export; project_id=%s", project_id)
+
+        try:
+            saved = store.update_project(project_id, expected_revision=current.get("material_revision", 0), state=state_data)
+        except MaterialConflict:
+            # Only clean up a rejected publication. A lost acknowledgement may conceal a successful write.
+            discard_unpublished()
+            raise
+        if saved is None:
+            discard_unpublished()
+            raise HTTPException(404, "项目不存在")
         previous_name = current["state"].get("exported_docx_local_name", "")
         previous_storage = current["state"].get("exported_docx_storage_path", "")
         try:
@@ -121,6 +144,7 @@ def register_export_api(app: FastAPI, get_store, load_project, validate_project)
             # Publishing succeeded; old-file cleanup must not hide the new result.
             logger.warning("Previous Word export cleanup deferred; project_id=%s", project_id)
         result["download_url"] = f"/api/projects/{project_id}/download"
+        result["download_digest"] = word_digest(bytes.fromhex(state_data["exported_docx_sha256"]))
         result["validation"] = preflight
         return result
 
@@ -142,6 +166,7 @@ def register_export_api(app: FastAPI, get_store, load_project, validate_project)
                 content=content,
                 media_type=WORD_CONTENT_TYPE,
                 headers={"Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(download_name)}",
+                         "Repr-Digest": word_digest(bytes.fromhex(state_data["exported_docx_sha256"])),
                          "Cache-Control": "private, no-store"},
             )
         name = state_data.get("exported_docx_local_name", "")
@@ -160,5 +185,6 @@ def register_export_api(app: FastAPI, get_store, load_project, validate_project)
             content=content,
             media_type=WORD_CONTENT_TYPE,
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(download_name)}",
+                     "Repr-Digest": word_digest(bytes.fromhex(state_data["exported_docx_sha256"])),
                      "Cache-Control": "private, no-store"},
         )

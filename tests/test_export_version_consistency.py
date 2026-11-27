@@ -1,4 +1,6 @@
 """A downloaded Word file must still represent the current saved inputs."""
+import base64
+import hashlib
 import io
 
 from docx import Document
@@ -85,9 +87,19 @@ def test_edit_then_undo_during_render_cannot_publish_the_intermediate_body(isola
     assert not store.get_project(project_id)["state"].get("exported_docx_fingerprint")
 
 
-def test_edit_at_publication_keeps_student_text_and_rejects_export(isolated, monkeypatch):
+@pytest.mark.parametrize("cloud_file", [False, True])
+def test_edit_at_publication_keeps_student_text_and_rejects_export(isolated, monkeypatch, cloud_file):
     client, store, project_id = isolated
     update = store.update_project
+    uploaded, removed = [], []
+    if cloud_file:
+        def upload(_pid, name, path, _mime):
+            assert path.is_file()
+            uploaded.append(f"owner/project/_generated/{name}")
+            return uploaded[-1]
+
+        monkeypatch.setattr(store, "persist_generated_file", upload, raising=False)
+        monkeypatch.setattr(store, "discard_generated_export", lambda _pid, path: removed.append(path), raising=False)
 
     def edit_before_publish(pid, **fields):
         if "exported_docx_fingerprint" in fields.get("state", {}):
@@ -100,6 +112,27 @@ def test_edit_at_publication_keeps_student_text_and_rejects_export(isolated, mon
     current = store.get_project(project_id)
     assert "刚提交" in current["sections"]["letter"]
     assert not current["state"].get("exported_docx_fingerprint")
+    assert not list((store.files_dir / project_id).glob("export-*.docx"))
+    assert len(uploaded) == int(cloud_file) and removed == uploaded
+
+
+def test_lost_export_publish_receipt_keeps_the_committed_word_file(isolated, monkeypatch):
+    _, store, project_id = isolated
+    update = store.update_project
+
+    def publish_then_disconnect(pid, **fields):
+        saved = update(pid, **fields)
+        if "exported_docx_fingerprint" in fields.get("state", {}):
+            raise ConnectionError("lost write response")
+        return saved
+
+    monkeypatch.setattr(store, "update_project", publish_then_disconnect)
+    url = f"/api/projects/{project_id}"
+    with TestClient(app.app, raise_server_exceptions=False) as client:
+        assert client.post(url + "/export").status_code == 500
+        download = client.get(url + "/download")
+    assert download.status_code == 200
+    assert Document(io.BytesIO(download.content))
 
 
 def test_export_metadata_is_not_bound_only_to_project_revision(isolated):
@@ -113,6 +146,18 @@ def test_export_metadata_is_not_bound_only_to_project_revision(isolated):
     # Student instructions affect facts/template filling without a project patch.
     store.add_message(project_id, "user", "请将申请学校更正为另一所学校。")
     assert client.get(url + "/download").status_code == 409
+
+
+def test_export_receipt_and_response_digest_identify_the_downloaded_bytes(isolated):
+    client, _, project_id = isolated
+    url = f"/api/projects/{project_id}"
+    receipt = client.post(url + "/export")
+    receipt.raise_for_status()
+    download = client.get(receipt.json()["download_url"])
+    download.raise_for_status()
+    digest = base64.b64encode(hashlib.sha256(download.content).digest()).decode("ascii")
+    assert download.headers["Repr-Digest"] == receipt.json()["download_digest"] == f"sha-256=:{digest}:"
+    assert download.headers["Content-Type"] == export_api.WORD_CONTENT_TYPE
 
 
 def test_file_replacement_cannot_serve_bytes_from_another_export(isolated):

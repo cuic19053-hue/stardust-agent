@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -420,7 +421,14 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
                 except ValueError as exc:
                     raise HTTPException(409, f"{exc} 请按当前要求重新导出。") from None
         # HTML/SVG source is download-only to prevent active content in origin.
-        return FileResponse(path, filename=name, headers={"Cache-Control": "private, no-store",
-                             "X-Content-Type-Options": "nosniff"})
+        headers = {"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
+        media_type = None
+        if name == "proposal.docx":
+            from .export_api import WORD_CONTENT_TYPE, word_digest
+
+            media_type = WORD_CONTENT_TYPE
+            with path.open("rb") as word:
+                headers["Repr-Digest"] = word_digest(hashlib.file_digest(word, "sha256").digest())
+        return FileResponse(path, filename=name, media_type=media_type, headers=headers)
 
     app.include_router(router)

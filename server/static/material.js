@@ -69,11 +69,16 @@
   async function blobUrl(url) {
     const epoch = artifactEpoch;
     const requestProject = host.state.project?.id;
-    const headers = {};
-    if (host.state.authSession?.access_token) headers.Authorization = `Bearer ${host.state.authSession.access_token}`;
-    const response = await fetch(url, { headers });
-    if (!response.ok) throw new Error("私有产物读取失败，请检查登录状态");
-    const blob = await response.blob();
+    const token = host.state.authSession?.access_token;
+    let blob;
+    if (url.endsWith("/files/proposal.docx")) {
+      blob = await window.WordExport.fetchWordFile(url, { token });
+    } else {
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const response = await fetch(url, { headers });
+      if (!response.ok) throw new Error("私有产物读取失败，请检查登录状态");
+      blob = await response.blob();
+    }
     if (epoch !== artifactEpoch || host.state.project?.id !== requestProject || host.isProjectActive?.(requestProject) === false)
       throw new Error("项目内容已更新，请重新打开文件。");
     const objectUrl = URL.createObjectURL(blob);
@@ -427,7 +432,7 @@
     if (data && configured()) draw();
   }
 
-  async function exportDocument(options = {}, isCurrent = () => true) {
+  async function exportDocument(options = {}, isCurrent = () => true, onWordReady) {
     await waitFor(flushEdits(), 15000, "正文保存结果暂未确认，请先检查项目中的正文再导出。");
     if (!isCurrent()) return;
     await waitFor(refresh(), 15000, "材料状态暂时无法读取，请检查网络后再导出。");
@@ -450,7 +455,9 @@
       if (current.status === "completed") {
         await waitFor(refresh(), 15000, "Word 已生成，但暂时无法刷新任务区，请稍后查看任务并下载。");
         if (host.state.project?.id !== id || !isCurrent()) return;
-        const url = await blobUrl(path(`/jobs/${job.id}/files/proposal.docx`));
+        const filePath = path(`/jobs/${job.id}/files/proposal.docx`);
+        if (onWordReady) return onWordReady(filePath);
+        const url = await blobUrl(filePath);
         if (host.state.project?.id !== id || !isCurrent()) {
           URL.revokeObjectURL(url);
           urls = urls.filter(item => item !== url);
