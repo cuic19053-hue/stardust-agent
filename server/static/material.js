@@ -4,13 +4,15 @@
   let host, data, root, projectId, mountedOwner = "local", urls = [], fillPlan, artifactEpoch = 0;
   let mountVersion = 0, refreshSequence = 0, renderedRefresh = 0;
   let workerReady, mountRefresh;
-  const pendingJobs = new Map();
-  let recoveryOwner = () => "local", recoveryStorage;
+  const pendingJobs = new Map(), formDrafts = new Map(), formSaves = new Map();
+  let recoveryOwner = () => "local", recoveryStorage, formStorage;
+  let visibleForms = [], formStorageWarning = false;
   const jobKey = (id, kind, target) => `${id}\0${kind}\0${target}`;
 
   function configureRecovery(owner) {
     recoveryOwner = owner;
     recoveryStorage = window.DraftRecovery.create("stardust-material-job-v1:", recoveryOwner);
+    formStorage = window.DraftRecovery.create("stardust-material-form-v1:", recoveryOwner);
   }
 
   function pendingJob(id, kind, target) {
@@ -26,10 +28,17 @@
 
   function clearRecovery(id) {
     const prefix = id ? `${id}\0` : "";
-    for (const key of pendingJobs.keys()) {
-      if (key.slice(key.indexOf("\0") + 1).startsWith(prefix)) pendingJobs.delete(key);
+    for (const map of [pendingJobs, formDrafts]) {
+      for (const key of map.keys()) {
+        if (key.slice(key.indexOf("\0") + 1).startsWith(prefix)) map.delete(key);
+      }
+    }
+    for (const key of formSaves.keys()) {
+      if (key.slice(key.indexOf("\0") + 1).startsWith(prefix)) formSaves.delete(key);
     }
     recoveryStorage?.clear(prefix);
+    formStorage?.clear(prefix);
+    if (!id) formStorageWarning = false;
   }
 
   function trackedAction(id, kind, target, isCurrent) {
@@ -133,6 +142,134 @@
     });
     wrap.append(node); parent.append(wrap); return node;
   }
+  function sameValue(left, right) {
+    if (left === right) return true;
+    if (!left || !right || typeof left !== "object" || typeof right !== "object"
+        || Array.isArray(left) !== Array.isArray(right)) return false;
+    const keys = Object.keys(left);
+    return keys.length === Object.keys(right).length
+      && keys.every(key => Object.hasOwn(right, key) && sameValue(left[key], right[key]));
+  }
+
+  function bindForm(kind, box, fields) {
+    const scope = captureWorkspace();
+    const key = `${scope.project.id}\0${kind}`;
+    const owner = recoveryOwner();
+    const memoryKey = `${owner}\0${key}`;
+    const values = () => Object.fromEntries(Object.entries(fields).map(([name, field]) => [name, field.value]));
+    const defaults = values();
+    if (owner && !formDrafts.has(memoryKey)) {
+      const saved = formStorage?.read(key);
+      if (saved?.values && Object.keys(fields).every(name => typeof saved.values[name] === "string"))
+        formDrafts.set(memoryKey, saved);
+    }
+    const read = () => formDrafts.get(memoryKey);
+    const saving = () => formSaves.has(memoryKey);
+    function begin(attempt) {
+      if (saving()) throw new Error("这份表单正在保存，请稍等。");
+      formSaves.set(memoryKey, attempt);
+    }
+    function finish(attempt) {
+      if (formSaves.get(memoryKey) === attempt) formSaves.delete(memoryKey);
+    }
+    function write(draft) {
+      if (!scope.current() || !owner) return;
+      if (draft) formDrafts.set(memoryKey, draft);
+      else formDrafts.delete(memoryKey);
+      if (formStorage?.write(key, draft) === false && draft && !formStorageWarning) {
+        formStorageWarning = true;
+        host.toast("浏览器暂时无法跨刷新保留材料草稿，请先保存。", true);
+      }
+    }
+    function restore(raw = read()?.values ?? defaults) {
+      for (const [name, field] of Object.entries(fields)) {
+        if (typeof raw[name] !== "string") continue;
+        const value = raw[name];
+        if (value && field.options && !Array.from(field.options).some(option => option.value === value)) {
+          const option = el("option", "原选项暂不可用，请核对");
+          option.value = value;
+          field.append(option);
+        }
+        field.value = value;
+      }
+      if (read()) box.open = true;
+    }
+    const note = el("p", "", "inline-hint");
+    note.setAttribute?.("role", "status");
+    note.hidden = true;
+    box.append(note);
+    function status(message) {
+      note.textContent = message || (saving() ? "正在保存，可以继续编辑。"
+        : read()?.submitted ? "上次保存待确认，输入已保留。" : read()?.dirty ? "有修改待保存。" : "");
+      note.hidden = !note.textContent;
+    }
+    function record() {
+      if (!scope.current()) return;
+      const draft = read();
+      const raw = values();
+      if (sameValue(raw, draft?.values ?? defaults)) return;
+      write({ ...draft, values: raw, dirty: true });
+      status();
+    }
+    for (const field of Object.values(fields)) {
+      field.addEventListener?.("input", record);
+      field.addEventListener?.("change", record);
+    }
+    visibleForms.push({ kind, box, fields, current: scope.current });
+    return { read, write, restore, values, status, saving, begin, finish, current: scope.current };
+  }
+
+  function settleForm(form, savedPlan = null) {
+    const draft = form.read();
+    if (!draft?.submitted) return;
+    if (sameValue(draft.values, draft.submitted.values)) form.write(null);
+    else form.write({ ...draft, submitted: null, base: savedPlan, dirty: true });
+  }
+
+  async function saveForm(form, kind, draft, item, items) {
+    const attempt = { item, values: form.values() };
+    form.begin(attempt);
+    form.write({ ...draft, values: attempt.values, dirty: true, submitted: attempt });
+    form.status();
+    try {
+      const receipt = await waitFor(request(`/${kind}`, "PUT", { revision: data.context.revision, items }),
+        30000, "保存结果暂未收到，输入已保留。");
+      if (!form.current() || form.read()?.submitted !== attempt) return;
+      const savedPlan = kind === "plans" ? receipt.plans.find(plan => plan.id === item.id) : null;
+      settleForm(form, savedPlan);
+    } catch (error) {
+      if (form.current() && form.read()?.submitted === attempt && error.status >= 400 && error.status < 500)
+        form.write({ ...form.read(), submitted: null });
+      throw error;
+    } finally {
+      form.finish(attempt);
+      if (form.current()) {
+        form.restore();
+        form.status();
+        await waitFor(refresh(), 15000, "暂时无法刷新材料状态。").catch(() => {});
+      }
+    }
+  }
+
+  function captureFormFocus() {
+    for (const { kind, fields, current } of visibleForms) {
+      if (!current()) continue;
+      const name = Object.keys(fields).find(key => fields[key] === document.activeElement);
+      if (!name) continue;
+      const field = fields[name];
+      return { kind, name, start: field.selectionStart, end: field.selectionEnd };
+    }
+    return null;
+  }
+
+  function restoreFormFocus(focus) {
+    if (!focus) return;
+    const field = visibleForms.find(form => form.kind === focus.kind)?.fields[focus.name];
+    field?.focus({ preventScroll: true });
+    if (Number.isInteger(focus.start) && field?.setSelectionRange)
+      field.setSelectionRange(focus.start, focus.end);
+  }
+
   const terminalJobs = new Set(["completed", "failed", "cancelled", "needs_review"]);
   const jobStatus = { pending: "排队中", running: "执行中", completed: "已完成",
     failed: "失败", cancelled: "已取消", needs_review: "待核对结果与费用" };
@@ -237,6 +374,9 @@
   }
   function draw() {
     if (!data || !configured()) return;
+    const focus = captureFormFocus();
+    const openForms = new Map(visibleForms.filter(form => form.current()).map(form => [form.kind, form.box.open]));
+    visibleForms = [];
     revokeArtifacts();
     root.replaceChildren();
     const details = el("details"); details.open = true;
@@ -349,6 +489,10 @@
       tasks.append(row);
     }
     details.append(tasks); root.append(details);
+    for (const { kind, box } of visibleForms) {
+      if (openForms.has(kind)) box.open = openForms.get(kind);
+    }
+    restoreFormFocus(focus);
   }
   function requirementEditor(parent) {
     const box = el("details"); box.append(el("summary", "适用要求与优先级"));
@@ -366,11 +510,29 @@
     const value = input(box, "具体要求", "", true);
     const source = input(box, "出处／文件名");
     const scope = input(box, "适用学校、年份和范围");
+    const form = bindForm("requirements", box, { kind, key, value, source, scope });
+    if (data.requirements.some(rule => sameValue(rule, form.read()?.submitted?.item))) settleForm(form);
+    form.restore();
+    form.status();
     action("确认这条要求适用并保存", async () => {
-      await request("/requirements", "PUT", { revision: data.context.revision, items: [...data.requirements, {
+      const rule = {
         key: key.value, value: value.value.trim(), source_kind: kind.value, source: source.value.trim(),
         scope: scope.value.trim(), confirmed: true, applicable: true,
-      }] }); await refresh();
+      };
+      if (!rule.value || !rule.source) throw new Error("请填写具体要求和出处。");
+      if (form.saving()) throw new Error("这份表单正在保存，请稍等。");
+      if (data.requirements.some(item => sameValue(item, rule))) {
+        form.write(null);
+        form.restore();
+        form.status("这条要求已保存。");
+        return;
+      }
+      await saveForm(form, "requirements", form.read(), rule, [...data.requirements, rule]);
+    }, box);
+    if (form.read()) action("清空要求草稿", () => {
+      if (form.saving()) throw new Error("这份表单正在保存，请稍等。");
+      form.write(null);
+      draw();
     }, box);
     parent.append(box);
   }
@@ -396,7 +558,6 @@
       }, row);
       box.append(row);
     });
-    let editingId = null;
     const title = input(box, "图题");
     const section = select(box, "所属章节", host.state.outline.map(s => [s.id, s.title]));
     const proposePlan = action("根据已确认资料拟定配图方案", async () => {
@@ -409,7 +570,6 @@
         ? "查看上次配图建议任务" : "根据已确认资料拟定配图方案";
     };
     section.onchange = updatePlanLabel;
-    updatePlanLabel();
     const renderer = select(box, "绘图方式", [["svg", "流程／架构（HTML/SVG）"], ["python", "数据图（Python）"], ["gpt", "概念／场景（GPT Image，付费）"], ["overlay", "已有图片追加准确文字（不调用生图模型）"], ["upload", "真实上传照片／素材（不调用模型）"]]);
     const chart = select(box, "数据图类型", [["bar", "柱状图"], ["line", "折线图"], ["gantt", "甘特图"]]);
     const nodes = input(box, "流程节点：每行一个", "", true);
@@ -425,25 +585,69 @@
     const base = select(box, "局部排字的原图任务", [["", "不使用"], ...data.jobs.filter(j => j.kind === "figure" && j.status === "completed").map(j => [j.id, `${j.target} · ${j.id.slice(0, 8)}`])]);
     const documentId = select(box, "使用的真实上传图片", [["", "不使用"], ...(host.state.documents || [])
       .filter(d => (d.content_type || "").startsWith("image/")).map(d => [d.id, d.original_name])]);
-    function fill(plan) {
+    const form = bindForm("plans", box, {
+      title, section, renderer, chart, nodes, edges, numbers, dataStatus, source, prompt, scene, overlay, base, documentId,
+    });
+    const current = () => data.plans.find(plan => plan.id === form.read()?.planId) ?? null;
+    const sameSubmittedPlan = (saved, submitted) => Boolean(saved && submitted &&
+      Object.entries(submitted).every(([key, value]) => key === "text_confirmed" || sameValue(saved[key], value)));
+    if (sameSubmittedPlan(current(), form.read()?.submitted?.item)) settleForm(form, current());
+    form.restore();
+    updatePlanLabel();
+
+    function loadPlan(plan, saved, allowReplace = false) {
+      if (form.saving()) throw new Error("图表计划正在保存，可以继续编辑。");
+      if (form.read()?.dirty && !allowReplace && !confirm("打开这份计划会替换当前未保存的图表草稿。继续吗？"))
+        return;
+      const values = {
+        title: plan.title, section: plan.section_id, renderer: plan.renderer, chart: plan.chart === "flow" ? "bar" : plan.chart,
+        nodes: plan.nodes.join("\n"), edges: (plan.edges || []).map(e => `${e.source + 1}->${e.target + 1}`).join("\n"),
+        numbers: plan.labels.map((label, i) => [label, ...(plan.chart === "gantt" ? [plan.starts[i]] : []), plan.values[i]].join(",")).join("\n"),
+        source: plan.source, prompt: plan.prompt, scene: plan.scene_text.join("\n"),
+        overlay: plan.overlays.map(o => o.text).join("\n"), base: plan.base_asset_job,
+        dataStatus: plan.data_status, documentId: plan.document_id || "",
+      };
+      form.write({ planId: saved ? plan.id : null, base: saved ? plan : null,
+        inherited: { anchor: plan.anchor, source_ids: plan.source_ids }, values, dirty: !saved });
       box.open = true;
-      editingId = plan.id; title.value = plan.title; section.value = plan.section_id; renderer.value = plan.renderer;
-      chart.value = plan.chart === "flow" ? "bar" : plan.chart; nodes.value = plan.nodes.join("\n");
-      edges.value = (plan.edges || []).map(e => `${e.source+1}->${e.target+1}`).join("\n");
-      numbers.value = plan.labels.map((l, i) => [l, ...(plan.chart === "gantt" ? [plan.starts[i]] : []), plan.values[i]].join(",")).join("\n");
-      source.value = plan.source; prompt.value = plan.prompt; scene.value = plan.scene_text.join("\n");
-      overlay.value = plan.overlays.map(o => o.text).join("\n"); base.value = plan.base_asset_job;
-      dataStatus.value = plan.data_status;
-      documentId.value = plan.document_id || "";
-      title.scrollIntoView({ block: "center", behavior: "smooth" });
+      draw();
+      root.querySelector?.("[data-material-plan-editor]")?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+    function fill(plan) {
+      loadPlan(plan, data.plans.includes(plan));
     }
     fillPlan = fill;
+    box.setAttribute?.("data-material-plan-editor", "");
+    const conflict = () => Boolean(form.read()?.planId && !sameValue(form.read().base ?? null, current()));
+    if (conflict()) {
+      box.append(el("p", current() ? "这份计划已在其他页面更新，请选择要保留的版本。"
+        : "这份计划已在其他页面移除，可将当前输入另存为新计划。", "material-warning"));
+      if (current())
+        action("采用已保存的图表计划", () => loadPlan(current(), true, true), box);
+      action(current() ? "保留本页图表输入" : "另存为新图表计划", () => {
+        if (form.saving()) throw new Error("图表计划正在保存，请稍等。");
+        const saved = current();
+        form.write({ ...form.read(), planId: saved?.id ?? null, base: saved, submitted: null });
+        draw();
+      }, box);
+    }
+    form.status();
+    if (form.read()) action("清空图表编辑器", () => {
+      if (form.saving()) throw new Error("图表计划正在保存，请稍等。");
+      form.write(null);
+      draw();
+    }, box);
+
     const lines = value => value.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
-    action("保存并确认图表计划（不调用模型）", async () => {
+    const savePlan = action("保存并确认图表计划（不调用模型）", async () => {
+      if (conflict()) throw new Error("请先核对其他页面保存的图表计划。");
+      const draft = form.read();
+      const prior = draft?.base ?? draft?.inherited;
       const rows = lines(numbers.value).map(l => l.split(/[,，]/).map(s => s.trim()));
       const spec = {
-        id: editingId || `fig_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`,
+        id: draft?.planId ?? `fig_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`,
         section_id: section.value, title: title.value.trim(), renderer: renderer.value,
+        anchor: prior?.anchor ?? -1, source_ids: prior?.source_ids ?? [],
         chart: renderer.value === "svg" ? "flow" : chart.value, nodes: lines(nodes.value),
         edges: lines(edges.value).map(value => {
           const match = value.match(/^(\d+)\s*->\s*(\d+)$/);
@@ -454,11 +658,13 @@
         starts: chart.value === "gantt" ? rows.map(r => Number(r[1])) : [],
         source: source.value, data_status: dataStatus.value, prompt: prompt.value,
         scene_text: lines(scene.value), overlays: lines(overlay.value).map(text => ({ text })),
-        base_asset_job: base.value, confirmed: true, text_confirmed: false,
+        base_asset_job: base.value, confirmed: true, text_confirmed: draft?.base?.text_confirmed ?? false,
         document_id: documentId.value,
       };
-      await request("/plans", "PUT", { revision: data.context.revision, items: [...data.plans.filter(p => p.id !== spec.id), spec] }); await refresh();
+      await saveForm(form, "plans", { ...draft, planId: spec.id, base: draft?.base ?? null },
+        spec, [...data.plans.filter(p => p.id !== spec.id), spec]);
     }, box);
+    savePlan.disabled = conflict();
     parent.append(box);
   }
   async function submit(kind, target, paid, extra = {}, { onSending, onAccepted, checking = false } = {}) {

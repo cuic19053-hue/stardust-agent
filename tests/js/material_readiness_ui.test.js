@@ -23,10 +23,16 @@ test("material generation stays on the old chain until its worker is ready", () 
 });
 
 
-function workspace() {
+function workspace(shared = new Map(), owner = "local") {
   class Element {
     children = [];
     classList = { toggle() {} };
+    listeners = {};
+    constructor(tag) { this.tag = tag; }
+    get value() { return this.valueSet ?? (this.tag === "select" ? this.children[0]?.value ?? "" : ""); }
+    set value(value) { this.valueSet = value; }
+    get options() { return this.tag === "select" ? this.children : undefined; }
+    addEventListener(event, listener) { this.listeners[event] = listener; }
     append(...children) { this.children.push(...children); }
     replaceChildren(...children) { this.children = children; }
   }
@@ -35,11 +41,19 @@ function workspace() {
   const requests = [], toasts = [];
   const context = vm.createContext({
     window: {}, document: {
-      querySelector: () => panel, createElement: () => new Element(),
-    }, URL: { revokeObjectURL() {} }, setTimeout, clearTimeout,
+      querySelector: () => panel, createElement: tag => new Element(tag),
+    }, URL: { revokeObjectURL() {} }, setTimeout, clearTimeout, confirm: () => true,
+    crypto: { randomUUID: () => "abcdef00-abcd-abcd-abcd-abcdef000000" },
+    sessionStorage: {
+      getItem: key => shared.get(key) ?? null, setItem: (key, value) => shared.set(key, value),
+      removeItem: key => shared.delete(key), get length() { return shared.size; },
+      key: i => [...shared.keys()][i] ?? null,
+    },
   });
+  vm.runInContext(readFileSync(resolve(__dirname, "../../server/static/draft-recovery.js"), "utf8"), context);
   vm.runInContext(readFileSync(resolve(__dirname, "../../server/static/material.js"), "utf8"), context);
   const pilot = context.window.MaterialPilot;
+  pilot.configureRecovery(() => owner);
   const config = { state, toast: text => toasts.push(text),
     api: (url, options) => new Promise((resolve, reject) => requests.push({ url, options, resolve, reject })),
   };
@@ -47,21 +61,23 @@ function workspace() {
     state.project = { id, material_revision: revision, material: { enabled: true, worker_ready: ready } };
     return pilot.mount(config);
   }
-  function reply(request, revision, text, jobs = [], ready = true) {
+  function reply(request, revision, text, jobs = [], ready = true, lists = {}) {
     request.resolve({
       context: { revision, stale: {}, requirements: { priority: [], conflicts: [] } },
       worker_ready: ready, requirements: [], plans: [],
       jobs: jobs.length ? jobs : [{ kind: "section", target: text, status: "running" }],
+      ...lists,
     });
   }
-  function find(value, node = panel) {
-    if (node.textContent?.includes(value)) return node;
+  function find(value, node = panel, exact = false) {
+    if (exact ? node.textContent === value : node.textContent?.includes(value)) return node;
     for (const child of node.children) {
-      const match = find(value, child);
+      const match = find(value, child, exact);
       if (match) return match;
     }
   }
-  return { pilot, config, state, requests, mount, reply, find, toasts };
+  const field = label => find(label, undefined, true).children[0];
+  return { pilot, config, state, requests, mount, reply, find, field, toasts };
 }
 
 test("an older task refresh at the same version cannot rewind the panel or advance the editor version", async () => {
@@ -174,4 +190,105 @@ test("a workspace switch while checking the worker state cannot choose a differe
   await assert.rejects(route, /项目已切换/);
   await old;
   assert.equal(await h.pilot.usesWorker(), false);
+});
+
+
+const eventLoop = () => new Promise(resolve => setImmediate(resolve));
+function type(h, label, value) {
+  const field = h.field(label);
+  field.value = value;
+  field.listeners.input();
+}
+
+test("material form input survives unrelated task refresh, navigation, and same-account reload", async () => {
+  const shared = new Map();
+  const h = workspace(shared, "student-one");
+  const initial = h.mount("p", 4, true);
+  h.reply(h.requests[0], 4, "原任务");
+  await initial;
+  type(h, "图题", "测试中的图题");
+  type(h, "具体要求", "提交前检查图注");
+  const refreshing = h.pilot.refresh();
+  h.reply(h.requests[1], 4, "新的任务");
+  await refreshing;
+  assert.equal(h.field("具体要求").value, "提交前检查图注");
+  assert.equal(h.field("图题").value, "测试中的图题");
+  const otherProject = h.mount("other", 5, true);
+  h.reply(h.requests[2], 5, "另一个项目");
+  await otherProject;
+  assert.equal(h.field("图题").value, "");
+  assert.equal(h.field("具体要求").value, "");
+
+  const reopened = workspace(shared, "student-one");
+  const opened = reopened.mount("p", 4, true);
+  reopened.reply(reopened.requests[0], 4, "刷新成功");
+  await opened;
+  assert.equal(reopened.field("图题").value, "测试中的图题");
+  assert.equal(reopened.field("具体要求").value, "提交前检查图注");
+  const otherAccount = workspace(shared, "student-two");
+  const accountView = otherAccount.mount("p", 4, true);
+  otherAccount.reply(otherAccount.requests[0], 4, "另一个账户");
+  await accountView;
+  assert.equal(otherAccount.field("图题").value, "");
+  assert.equal(otherAccount.field("具体要求").value, "");
+  reopened.pilot.clearRecovery("p");
+  assert.equal(shared.size, 0);
+});
+
+test("a committed requirement with a lost response keeps later typing and avoids a duplicate rule", async () => {
+  const h = workspace();
+  const initial = h.mount("p", 4, true);
+  h.reply(h.requests[0], 4, "任务");
+  await initial;
+  type(h, "具体要求", "提交的第一条");
+  type(h, "出处／文件名", "学校通知");
+  const saving = h.find("确认这条要求适用并保存").onclick();
+  const body = JSON.parse(h.requests[1].options.body);
+  type(h, "具体要求", "保存时写下的第二条");
+  h.requests[1].reject(new Error("网络断开"));
+  await eventLoop();
+  h.reply(h.requests[2], 5, "任务", [], true, { requirements: body.items });
+  await saving;
+  assert.equal(h.field("具体要求").value, "保存时写下的第二条");
+  const next = h.find("确认这条要求适用并保存").onclick();
+  const second = JSON.parse(h.requests[3].options.body);
+  assert.deepEqual(second.items.map(rule => rule.value), ["提交的第一条", "保存时写下的第二条"]);
+  h.requests[3].resolve({ revision: 6 });
+  await eventLoop();
+  h.reply(h.requests[4], 6, "任务", [], true, { requirements: second.items });
+  await next;
+  assert.equal(h.field("具体要求").value, "");
+});
+
+test("editing a plan retains its original version until a concurrent change is explicitly resolved", async () => {
+  const h = workspace();
+  h.state.outline = [{ id: "chapter", title: "章节" }];
+  const plan = { id: "flow", title: "原图题", section_id: "chapter", renderer: "svg", chart: "flow",
+    nodes: ["起点", "终点"], edges: [], labels: [], values: [], starts: [], source: "", prompt: "",
+    scene_text: [], overlays: [], base_asset_job: "", data_status: "planned", document_id: "",
+    anchor: 3, source_ids: ["source-id"], confirmed: true, text_confirmed: false };
+  const initial = h.mount("p", 4, true);
+  h.reply(h.requests[0], 4, "任务", [], true, { plans: [plan] });
+  await initial;
+  await h.find("编辑", undefined, true).onclick();
+  type(h, "图题", "本页编辑");
+  const refreshing = h.pilot.refresh();
+  h.reply(h.requests[1], 5, "任务", [], true, { plans: [{ ...plan, title: "别处保存" }] });
+  await refreshing;
+  assert.equal(h.field("图题").value, "本页编辑");
+  assert.ok(h.find("这份计划已在其他页面更新"));
+  assert.equal(h.find("保存并确认图表计划").disabled, true);
+  await h.find("保留本页图表输入").onclick();
+  const saving = h.find("保存并确认图表计划").onclick();
+  const body = JSON.parse(h.requests[2].options.body);
+  assert.equal(body.revision, 5);
+  assert.equal(body.items[0].id, plan.id);
+  assert.equal(body.items[0].title, "本页编辑");
+  assert.deepEqual(body.items[0].source_ids, plan.source_ids);
+  assert.equal(body.items[0].anchor, plan.anchor);
+  h.requests[2].resolve({ plans: body.items });
+  await eventLoop();
+  h.reply(h.requests[3], 6, "任务", [], true, { plans: body.items });
+  await saving;
+  assert.equal(h.field("图题").value, "");
 });
