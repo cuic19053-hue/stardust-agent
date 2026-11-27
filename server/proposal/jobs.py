@@ -21,13 +21,14 @@ from typing import Any, Callable, Dict, Optional
 
 from . import observability as obs
 from .generation_safety import mark_review_alternative, mark_review_save_uncertain, review_incomplete
+from .materials import MaterialConflict
 
 logger = logging.getLogger("proposal_agent.jobs")
 
 
 def content_hash(text: str) -> str:
     """计算章节文本的稳定指纹。"""
-    return hashlib.sha256((text or "").strip().encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
 
 
 class GenerationJobRunner:
@@ -148,50 +149,49 @@ class GenerationJobRunner:
             generated_content = result.get("content", "")
             review_card = result.get("review_card")
 
-            # 版本保护 (Optimistic Concurrency Control)
-            # 获取当前章节最新正文，比对指纹
             project = self.store.get_project(project_id)
-            current_now = (project.get("sections") or {}).get(section_id, "") if project else ""
-            current_ver_now = content_hash(current_now)
-
-            if review_incomplete(result) or current_ver_now != base_version:
-                # 用户在后台生成期间手动编辑了输入框！绝不强行静默覆盖！
+            if project is None:
+                raise ValueError("找不到这个项目")
+            sections = project["sections"]
+            incomplete = review_incomplete(result)
+            alternative = incomplete or content_hash(sections.get(section_id, "")) != base_version
+            if not alternative:
                 try:
-                    saved_ver = self.store.save_section_version(
-                        project_id=project_id,
-                        section_id=section_id,
-                        content=generated_content,
-                        source="ai_generated_alternative",
-                        review_card=review_card,
+                    saved = self.store.update_project(
+                        project_id, expected_revision=project["material_revision"],
+                        sections={**sections, section_id: generated_content},
                     )
-                except Exception:
-                    if not review_incomplete(result):
-                        raise
-                    # The model result remains available through the job if
-                    # the task store itself is still writable.
-                    mark_review_save_uncertain(result)
+                except MaterialConflict:
+                    # A student or another chapter finished between the read and the write.
+                    alternative = True
                 else:
-                    if review_incomplete(result):
-                        mark_review_alternative(result, saved_ver["id"])
-                    else:
-                        result["conflict_status"] = "user_edit_preserved"
-                        result["alternative_version_id"] = saved_ver["id"]
-                        result["notice"] = (
-                            "检测到您在生成期间手动编辑了该章节，AI 生成的最新版本已安全存入版本历史，未覆盖您的当前编辑。"
-                        )
-            else:
-                # 正常覆盖更新并记录版本
-                if project:
-                    sections = dict(project.get("sections") or {})
-                    sections[section_id] = generated_content
-                    self.store.update_project(project_id, sections=sections)
-                self.store.save_section_version(
+                    if saved is None:
+                        raise ValueError("找不到这个项目")
+                    result.update(material_applied=True, material_revision=saved["material_revision"])
+
+            try:
+                version = self.store.save_section_version(
                     project_id=project_id,
                     section_id=section_id,
                     content=generated_content,
-                    source="ai_generated",
+                    source="ai_generated_alternative" if alternative else "ai_generated",
                     review_card=review_card,
                 )
+            except Exception:
+                logger.warning("Generation job %s could not record its chapter history", job_id)
+                if incomplete:
+                    mark_review_save_uncertain(result)
+                elif alternative:
+                    result.update(conflict_status="user_edit_preserved", result_save_uncertain=True,
+                                  notice="正文已有更新，生成结果保留在本次任务中，请核对后保存。")
+                else:
+                    result["notice"] = "正文已保存，历史版本暂未保存。"
+            else:
+                if incomplete:
+                    mark_review_alternative(result, version["id"])
+                elif alternative:
+                    result.update(conflict_status="user_edit_preserved", alternative_version_id=version["id"],
+                                  notice="项目在生成期间发生变化，生成草稿已保留在历史版本中。")
 
             # 状态转移：completed -> finished
             self.store.update_generation_job(

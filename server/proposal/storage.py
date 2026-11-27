@@ -418,7 +418,8 @@ class Store:
                     f"UPDATE projects SET {','.join(updates)}, material_revision=material_revision+1, updated_at=? WHERE id=?",
                     [*values, utc_now(), project_id],
                 )
-        return self.get_project(project_id)
+                row = db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+        return self._project_row(row)
 
     def add_document(
         self,
