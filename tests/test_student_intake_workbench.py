@@ -361,3 +361,18 @@ def test_detached_income_answer_obeys_scope_across_turns(api, scope, visible_amo
     visible = model._post.call_args.args[1]["messages"][-1]["content"]
     assert ("四万元" in visible) == visible_amount
     assert scope in visible and "3.8" in visible
+
+
+@pytest.mark.parametrize("application,refused,visible_amount", [
+    ("国家奖学金", False, False), ("国家助学金", True, False), ("国家助学金", False, True),
+])
+def test_income_context_survives_spoken_pauses(api, application, refused, visible_amount):
+    client, store, pid, model = api
+    for text in (f"我正在申请{application}。", "家庭年收入这一栏我选择不填。" if refused else "说到家庭年收入。",
+                 "嗯。让我想想。", "大概四万元。", "我去年在设计赛获得市级二等奖。我的GPA是3.8。"):
+        store.add_message(pid, "user", text)
+    model._post.return_value = response()
+    assert client.post(f"/api/projects/{pid}/intake/propose").status_code == 200
+    visible = model._post.call_args.args[1]["messages"][-1]["content"]
+    assert ("四万元" in visible) == visible_amount
+    assert "市级二等奖" in visible and "3.8" in visible

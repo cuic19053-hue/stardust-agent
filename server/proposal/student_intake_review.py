@@ -4,7 +4,8 @@ import re
 from .source_contacts import redact_source_contacts
 from .student_intake import FIELDS, IntakeCandidate, evidence_errors
 from .student_intake_guard import (
-    ECON, IDENTITY_CLAIM, MAJOR_STUDY, MASK, PLANNED_ARTIFACT, PRIVACY_FIELDS, REFUSE, SENTENCE_BREAK,
+    AWARD_CLAIM, ECON, IDENTITY_CLAIM, MAJOR_STUDY, MASK, PLANNED_ARTIFACT, PRIVACY_FIELDS, RANK_CLAIM,
+    REFUSE, SENTENCE_BREAK,
     clauses, contains_disclosed_number, financial_scope, inspect_candidate,
 )
 
@@ -22,7 +23,8 @@ INTAKE_TOPIC = re.compile(
 def starts_intake_topic(text):
     text = text.strip()
     return (INTAKE_TOPIC.match(text) or IDENTITY_CLAIM.fullmatch(text)
-            or MAJOR_STUDY.fullmatch(text) or PLANNED_ARTIFACT.fullmatch(text))
+            or MAJOR_STUDY.fullmatch(text) or PLANNED_ARTIFACT.fullmatch(text)
+            or AWARD_CLAIM.fullmatch(text) or RANK_CLAIM.fullmatch(text))
 
 
 def model_turns(turns):
@@ -56,9 +58,12 @@ def model_turns(turns):
             financial = ECON.search(phrase) or ECONOMIC.search(phrase)
             refused_topic = any(PRIVACY_FIELDS[field].search(phrase) for field in refused)
             has_value = contains_disclosed_number(phrase)
-            # A bare answer can follow the field label after a pause or in the next turn.
-            continuation = withheld_context and has_value and not starts_intake_topic(phrase)
-            withheld_context = (bool(financial) and not allowed) or refused_topic or continuation
+            # A pause may occupy an entire turn. Keep the field in scope until
+            # the student introduces a different topic, even if the pause has no number.
+            if starts_intake_topic(phrase):
+                withheld_context = False
+            continuation = withheld_context and has_value
+            withheld_context = withheld_context or (bool(financial) and not allowed) or refused_topic
             if (financial and not allowed) or (refused_topic and has_value) or continuation:
                 spans.append((group[0].start, group[-1].end))
                 continue
