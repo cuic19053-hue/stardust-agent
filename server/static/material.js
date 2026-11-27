@@ -1,7 +1,8 @@
 /* Material UI: all user/project text uses textContent, never injected HTML. */
 (() => {
   "use strict";
-  let host, data, root, projectId, urls = [], fillPlan, artifactEpoch = 0;
+  let host, data, root, projectId, mountedOwner = "local", urls = [], fillPlan, artifactEpoch = 0;
+  let mountVersion = 0, refreshSequence = 0, renderedRefresh = 0;
   const pendingJobs = new Map();
   let recoveryOwner = () => "local", recoveryStorage;
   const jobKey = (id, kind, target) => `${id}\0${kind}\0${target}`;
@@ -53,7 +54,8 @@
   const configured = () => Boolean(host?.state.project?.material?.enabled);
   // Do not route generation away from the existing chain until the operator
   // has explicitly declared the Worker ready.
-  const active = () => Boolean(configured() && projectId === host.state.project.id && data?.worker_ready);
+  const active = () => Boolean(configured() && projectId === host.state.project.id && data?.worker_ready
+    && mountedOwner === recoveryOwner() && host.isProjectActive?.(projectId) !== false);
   const path = suffix => `/api/projects/${encodeURIComponent(host.state.project.id)}/material${suffix}`;
   const request = (suffix, method = "GET", body) => host.api(path(suffix), {
     method, ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
@@ -69,12 +71,28 @@
   }
   const JOB_STATUS_NOTICE = "暂时无法获取任务状态，任务可能仍在后台运行；请稍后刷新任务列表，不要重复生成。";
   const JOB_SUBMIT_NOTICE = "暂未收到任务提交结果，任务可能已经开始；请先刷新任务列表及费用记录，不要重复提交。";
+  function captureWorkspace() {
+    const version = mountVersion;
+    const project = host?.state.project;
+    const owner = recoveryOwner();
+    const view = host?.captureView?.();
+    return {
+      project,
+      current: () => Boolean(project && project === host?.state.project && version === mountVersion
+        && owner === recoveryOwner() && (view?.active() ?? host.isProjectActive?.(project.id) !== false)),
+    };
+  }
+
   function action(text, fn, parent) {
     const button = el("button", text, "button button-small button-secondary");
     button.type = "button";
+    const scope = captureWorkspace();
+    const rendered = data;
     button.onclick = async () => {
+      if (!scope.current() || rendered !== data) return;
       button.disabled = true;
-      try { await fn(); } catch (e) { host.toast(e.message, true); }
+      try { await fn(scope); }
+      catch (e) { if (scope.current()) host.toast(e.message, true); }
       finally { button.disabled = false; }
     };
     parent.append(button);
@@ -111,7 +129,7 @@
   };
   async function blobUrl(url) {
     const epoch = artifactEpoch;
-    const requestProject = host.state.project?.id;
+    const scope = captureWorkspace();
     const token = host.state.authSession?.access_token;
     let blob;
     if (url.split("?")[0].endsWith("/files/proposal.docx")) {
@@ -122,7 +140,7 @@
       if (!response.ok) throw new Error("私有产物读取失败，请检查登录状态");
       blob = await response.blob();
     }
-    if (epoch !== artifactEpoch || host.state.project?.id !== requestProject || host.isProjectActive?.(requestProject) === false)
+    if (epoch !== artifactEpoch || !scope.current())
       throw new Error("项目内容已更新，请重新打开文件。");
     const objectUrl = URL.createObjectURL(blob);
     urls.push(objectUrl);
@@ -130,34 +148,70 @@
   }
   async function refresh() {
     if (!configured()) return;
-    const id = host.state.project.id;
-    const next = await request("");
-    if (host.state.project?.id !== id) return;
-    data = next;
-    host.state.project.material = data.context;
-    host.state.project.material_revision = data.context.revision;
-    draw();
+    const scope = captureWorkspace();
+    const sequence = ++refreshSequence;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (!scope.current()) return;
+      const next = await request("");
+      if (!scope.current() || !configured()) return;
+      const revision = next?.context?.revision;
+      if (!Number.isSafeInteger(revision) || revision < 0) throw new Error("暂未取得有效的材料版本。");
+      const cachedRevision = data?.context.revision ?? -1;
+      if (revision < (scope.project.material_revision ?? 0)) {
+        if (cachedRevision >= scope.project.material_revision) return;
+        continue;
+      }
+      if (revision < cachedRevision || (revision === cachedRevision && sequence < renderedRefresh)) return;
+      // The material response contains a partial project view; keep the
+      // project editor's revision attached to the data it actually loaded.
+      data = next;
+      renderedRefresh = sequence;
+      draw();
+      return;
+    }
+    throw new Error("材料版本正在同步，请稍后刷新任务。");
   }
+
+  function revokeArtifacts() {
+    artifactEpoch++;
+    urls.forEach(url => URL.revokeObjectURL(url));
+    urls = [];
+  }
+
   async function mount(config) {
     host = config;
+    mountVersion++;
     root = document.querySelector("#materialPilot");
     if (!root) {
       root = el("section", undefined, "material-pilot");
       root.id = "materialPilot";
       document.querySelector("#templateStatus").after(root);
     }
+    const scope = captureWorkspace();
+    const owner = recoveryOwner();
+    if (projectId !== scope.project?.id || mountedOwner !== owner || !configured()) data = null;
+    projectId = scope.project?.id ?? null;
+    mountedOwner = owner;
     root.classList.toggle("hidden", !configured());
-    if (!configured()) { projectId = null; data = null; return; }
-    if (projectId !== host.state.project.id) data = null;
-    projectId = host.state.project.id;
+    revokeArtifacts();
+    if (!configured()) { root.replaceChildren(); return; }
+
+    const ready = data && data.context.revision >= (scope.project.material_revision ?? 0);
+    if (ready) draw();
+    else root.replaceChildren(el("p", "正在读取材料任务…"));
+    const previous = data;
     try { await refresh(); } catch (e) {
-      root.replaceChildren(el("p", `材料链路暂不可用：${e.message}`));
+      if (!scope.current() || data !== previous) return;
+      if (ready) host.toast(e.message, true);
+      else {
+        root.replaceChildren(el("p", `材料链路暂不可用：${e.message}`));
+        action("刷新任务与关联提示", refresh, root);
+      }
     }
   }
   function draw() {
     if (!data || !configured()) return;
-    artifactEpoch++;
-    urls.forEach(u => URL.revokeObjectURL(u)); urls = [];
+    revokeArtifacts();
     root.replaceChildren();
     const details = el("details"); details.open = true;
     details.append(el("summary", "材料工作流 · 信息、要求、配图与交付"));
@@ -197,16 +251,18 @@
             : "草稿中的部分个人数字需要你核对，可在下方查看并决定是否使用。")
           : "本轮检查未完成，草稿可在下方查看并由你决定是否使用。"));
         if (!job.result?.applied && !["export", "outline"].includes(job.kind))
-          action(reviewIncomplete ? "使用此草稿" : "保存结果／保留为备选", async () => {
+          action(reviewIncomplete ? "使用此草稿" : "保存结果／保留为备选", async scope => {
             await flushEdits();
+            if (!scope.current()) return;
             const result = await request(`/jobs/${job.id}/apply`, "POST",
               reviewIncomplete ? { use_unreviewed_draft: true } : undefined);
+            if (!scope.current()) return;
             host.toast(reviewIncomplete && !result.conflict_status
               ? (job.result?.grounding_issues?.length
                 ? (job.result?.grounding_kind === "project" ? "草稿已保存，请核对项目数据、成果和来源。" : "草稿已保存，请核对其中的个人数字。")
                 : "草稿已保存，本轮检查尚未完成。")
               : (result.notice || "结果已保存"));
-            await host.reload(projectId);
+            await host.reload(scope.project.id);
           }, row);
         if (job.result?.conflict_status && !reviewIncomplete) row.append(el("p", "输入已经变化：结果保留为备选，未覆盖当前内容。"));
         if (job.kind === "section" && job.result?.content) {
@@ -254,9 +310,10 @@
             const link = el("a"); link.href = await blobUrl(path(`/jobs/${job.id}/files/proposal.docx`));
             link.download = "申报材料草稿.docx"; link.click();
           }, row);
-          action("查看逐页预览", async () => {
+          action("查看逐页预览", async scope => {
             const pages = el("div", undefined, "material-pages"); row.append(pages);
             for (const name of report.pages || []) {
+              if (!scope.current()) return;
               const image = el("img"); image.alt = name; image.loading = "lazy";
               image.src = await blobUrl(path(`/jobs/${job.id}/files/${name}`)); pages.append(image);
             }
@@ -379,6 +436,7 @@
     parent.append(box);
   }
   async function submit(kind, target, paid, extra = {}, { onSending, onAccepted, checking = false } = {}) {
+    const scope = captureWorkspace();
     if (paid && !confirm((checking ? "暂未查到上次任务。继续会沿用原编号，只有任务尚未登记才会创建。\n" : "") +
         (kind === "section" ? "本章沿用现有撰写与评审流程，最多六次模型请求。" :
         kind === "figure" ? "本次生成一张图片。" : "本次调用一次文字模型拟定候选方案。") +
@@ -398,12 +456,13 @@
       throw error;
     }
     onAccepted?.(job);
+    if (!scope.current()) return job;
     try {
       await waitFor(refresh(), 15000, "任务已提交，但暂时无法刷新任务列表；请稍后查看，不要重复提交。");
     } catch {
       throw new Error("任务已提交，但暂时无法刷新任务列表；请稍后查看，不要重复提交。");
     }
-    host.toast("任务已保存，刷新页面后仍可查询。");
+    if (scope.current()) host.toast("任务已保存，刷新页面后仍可查询。");
     return job;
   }
   async function getTrackedJob(action) {
@@ -483,18 +542,22 @@
     if (!action.read() && editor && original !== (host.state.project.sections?.[sid] || "")) {
       if (loadedRevision !== data.context.revision)
         throw new Error("项目已在其他操作中变化，请先保存并核对当前章节，未覆盖您的编辑");
-      await waitFor(host.api(`/api/projects/${projectId}/sections/${sid}`, {
+      const saved = await waitFor(host.api(`/api/projects/${id}/sections/${sid}`, {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: original, expected_revision: loadedRevision,
           base_content: host.state.project.sections?.[sid] || "" }),
       }), 15000, "暂未收到编辑保存结果，请先刷新项目核对；尚未提交生成任务。");
       if (!isCurrent()) throw new Error("项目已切换，请返回原项目查看已保存的编辑。");
+      if (saved.material_revision < host.state.project.material_revision && host.state.project.sections?.[sid] !== original)
+        throw new Error("已有更新的章节版本，请刷新后核对。");
+      host.state.project.material_revision = Math.max(saved.material_revision, host.state.project.material_revision);
       host.state.project.sections[sid] = original;
       if (editor.value !== original) throw new Error("保存期间正文又有修改，请先保存最新编辑，再生成草稿。");
       await waitFor(refresh(), 15000, "材料状态暂时无法读取，请检查网络后再生成。");
       if (!isCurrent()) throw new Error("项目已切换，未提交该章节任务。");
     }
-    const baseRevision = data?.context.revision ?? loadedRevision;
+    const baseRevision = host.state.project.material_revision;
+    const baseContent = host.state.project.sections?.[sid] || "";
     const job = await getTrackedJob(action);
     if (!job) throw new Error("已取消模型调用");
     if (!isCurrent()) throw new Error("任务可能仍在原项目中执行，请返回原项目查询。");
@@ -522,12 +585,14 @@
         }
         if (editor && editor.value !== original && editor.value !== host.state.project.sections?.[sid]) {
           const latestEdit = editor.value;
-          await waitFor(host.api(`/api/projects/${id}/sections/${sid}`, { method: "PUT",
+          const saved = await waitFor(host.api(`/api/projects/${id}/sections/${sid}`, { method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content: latestEdit, expected_revision: baseRevision,
-              base_content: host.state.project.sections?.[sid] || "" }) }), 15000,
+            body: JSON.stringify({ content: latestEdit, expected_revision: baseRevision, base_content: baseContent }) }), 15000,
             "暂未收到编辑保存结果，生成草稿仍在任务区；请刷新项目核对。");
           if (!isCurrent()) throw new Error("项目已切换，请返回原项目查看已保存的编辑。");
+          if (saved.material_revision < host.state.project.material_revision && host.state.project.sections?.[sid] !== latestEdit)
+            throw new Error("已有更新的章节版本，请刷新后核对。");
+          host.state.project.material_revision = Math.max(saved.material_revision, host.state.project.material_revision);
           host.state.project.sections[sid] = latestEdit;
           if (editor.value !== latestEdit) throw new Error("保存期间正文又有修改，请先保存最新编辑；生成结果仍在任务区。");
         }
@@ -570,10 +635,8 @@
     }
   }
   function invalidateArtifacts() {
-    artifactEpoch++;
-    urls.forEach(url => URL.revokeObjectURL(url));
-    urls = [];
-    if (data && configured()) draw();
+    if (data && configured() && projectId === host.state.project.id && mountedOwner === recoveryOwner()) draw();
+    else revokeArtifacts();
   }
 
   async function exportDocument(options = {}, isCurrent = () => true, onWordReady, onTrack) {

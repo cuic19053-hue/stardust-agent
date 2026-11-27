@@ -2364,7 +2364,31 @@ test("another page changing the same fact requires an explicit decision", async 
   assert.equal(writes.length, 0);
   conflict.children[2].click();
   await h.ui.saveFacts();
-  assert.deepEqual(writes, [{ facts: { college: "我的学院" }, project: {}, expected_revision: 2 }]);
+  assert.deepEqual(writes, [{ facts: { college: "我的学院" }, project: {}, expected_revision: 2,
+    base: { facts: { college: "服务器的新学院" }, project: {} } }]);
+});
+
+test("a field conflict is surfaced even when a partial update already advanced the project revision", async () => {
+  const h = harness();
+  const partial = { id: "p", material_revision: 2, state: { confirmed_facts: { college: "旧学院" } } };
+  const form = factsWorkbench(h, partial);
+  form.type(form.college, "本页改动");
+  const attempts = [];
+  h.ui.setApi(async (_url, options) => {
+    attempts.push(JSON.parse(options.body));
+    throw Object.assign(new Error("部分字段已有更新"), { status: 409 });
+  });
+  h.ui.setLoadProject(async () => {
+    h.ui.state.project = { ...partial, state: { confirmed_facts: { college: "另一页的新学院" } } };
+    h.ui.renderFacts();
+  });
+  await h.ui.saveFacts();
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0].expected_revision, 2);
+  assert.equal(attempts[0].base.facts.college, "旧学院");
+  assert.equal(form.college.value, "本页改动");
+  assert.equal(h.element("#saveFactsBtn").disabled, true);
+  assert.match(h.element("#factConflictList").children[0].children[1].textContent, /另一页的新学院/);
 });
 
 test("an unrelated project revision lets the fact form retry only the original save", async () => {
@@ -2385,8 +2409,8 @@ test("an unrelated project revision lets the fact form retry only the original s
   });
   await h.ui.saveFacts();
   assert.deepEqual(attempts, [
-    { facts: { college: "我的学院" }, project: {}, expected_revision: 1 },
-    { facts: { college: "我的学院" }, project: {}, expected_revision: 2 },
+    { facts: { college: "我的学院" }, project: {}, expected_revision: 1, base: { facts: { college: "旧学院" }, project: {} } },
+    { facts: { college: "我的学院" }, project: {}, expected_revision: 2, base: { facts: { college: "旧学院" }, project: {} } },
   ]);
   assert.equal(form.school.value, "另一页更新的学校");
 });
@@ -2412,7 +2436,8 @@ test("refresh after an unacknowledged fact save preserves edits made during the 
   reopened.ui.setApi(async (_url, options) => { payload = JSON.parse(options.body); return {}; });
   reopened.ui.setLoadProject(async () => {});
   await reopened.ui.saveFacts();
-  assert.deepEqual(payload, { facts: { college: "保存期间继续编辑" }, project: {}, expected_revision: 2 });
+  assert.deepEqual(payload, { facts: { college: "保存期间继续编辑" }, project: {}, expected_revision: 2,
+    base: { facts: { college: "已提交给服务器" }, project: {} } });
 });
 
 test("explicitly reverting an unconfirmed edit sends a fenced fact save", async () => {
@@ -2431,7 +2456,8 @@ test("explicitly reverting an unconfirmed edit sends a fenced fact save", async 
   reopened.ui.setApi(async (_url, options) => { sent = JSON.parse(options.body); return {}; });
   reopened.ui.setLoadProject(async () => {});
   await reopened.ui.saveFacts();
-  assert.deepEqual(sent, { facts: { college: "旧学院" }, project: {}, expected_revision: 1, supersedes_pending_save: true });
+  assert.deepEqual(sent, { facts: { college: "旧学院" }, project: {}, expected_revision: 1, supersedes_pending_save: true,
+    base: { facts: { college: "旧学院" }, project: {} } });
   assert.equal(session.size, 0);
 });
 
@@ -2483,6 +2509,7 @@ test("saving the fact form sends one write to the originating project during nav
   await h.ui.saveFacts();
   assert.deepEqual(writes, [["/api/projects/alpha/facts/form", {
     facts: { college: "甲学院" }, project: { school: "甲大学" }, expected_revision: 7,
+    base: { facts: { college: "" }, project: { school: "" } },
   }]]);
   assert.deepEqual(reloads, []);
   assert.equal(h.element("#factsEditor").classList.contains("hidden"), false);

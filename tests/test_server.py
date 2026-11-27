@@ -1254,6 +1254,44 @@ def test_fact_form_updates_metadata_and_facts_in_one_revision(client):
     assert current["material_revision"] == saved["material_revision"]
 
 
+@pytest.mark.parametrize(
+    ("facts", "fields"),
+    [
+        ({"college": "本页改动"}, {"level": "省级"}),
+        ({"method": "本页改动"}, {"school": "本页学校"}),
+        ({"project_name": "本页标题"}, {}),
+    ],
+)
+def test_fact_form_guards_original_fields_even_with_current_project_revision(client, facts, fields):
+    project = client.post("/api/projects", json={"title": "旧标题", "school": "旧学校"}).json()
+    root = f"/api/projects/{project['id']}"
+    original = client.get(root).json()
+    project_keys = set(fields)
+    if "project_name" in facts:
+        project_keys.add("title")
+
+    def base_from(snapshot):
+        confirmed = snapshot["state"]["confirmed_facts"]
+        return {"project": {key: snapshot.get(key) or "" for key in project_keys},
+                "facts": {key: confirmed.get(key, "") for key in facts}}
+
+    assert client.put(root + "/facts/form", json={
+        "expected_revision": original["material_revision"],
+        "project": {"title": "另一页的标题", "school": "另一页的学校"}, "facts": {"college": "另一页的学院"},
+    }).status_code == 200
+    current = client.get(root).json()
+    form = {"expected_revision": current["material_revision"], "project": fields, "facts": facts}
+    stale = client.put(root + "/facts/form", json={**form, "base": base_from(original)})
+    assert stale.status_code == 409
+    assert "字段" in stale.json()["detail"]
+    unchanged = client.get(root).json()
+    assert unchanged["title"] == current["title"] and unchanged["school"] == current["school"]
+    assert unchanged["state"]["confirmed_facts"] == current["state"]["confirmed_facts"]
+    assert unchanged["material_revision"] == current["material_revision"]
+    saved = client.put(root + "/facts/form", json={**form, "base": base_from(current)})
+    assert saved.status_code == 200, saved.text
+
+
 def test_fact_form_clears_existing_fields_and_keeps_untouched_evidence(client):
     import app as server_app
     project = client.post("/api/projects", json={"title": "已重命名的项目"}).json()

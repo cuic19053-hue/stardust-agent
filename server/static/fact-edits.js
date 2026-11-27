@@ -106,9 +106,12 @@
     function prepare(project, draft) {
       const changes = [...draft.entries.values()].filter(entry => entry.value !== readValue(project, entry.group, entry.key)
         || entry.submitted !== undefined).map(entry => ({ entry, value: entry.value, previous: entry.submitted }));
-      const payload = { facts: {}, project: {}, expected_revision: project.material_revision };
+      const payload = { facts: {}, project: {}, expected_revision: project.material_revision,
+        base: { facts: {}, project: {} } };
       for (const { entry, value, previous } of changes) {
         payload[entry.group][entry.key] = value;
+        payload.base[entry.group][entry.key] = entry.base;
+        if (renamesProject(entry, value)) payload.base.project.title = entry.baseTitle;
         if (previous !== undefined && value === readValue(project, entry.group, entry.key))
           payload.supersedes_pending_save = true;
       }

@@ -203,10 +203,16 @@ class ProjectUpdate(BaseModel):
     school: str | None = Field(default=None, max_length=120)
 
 
+class FactFormBase(BaseModel):
+    facts: dict[str, str] = Field(max_length=100)
+    project: dict[str, str] = Field(max_length=4)
+
+
 class ProjectFactForm(BaseModel):
     project: ProjectUpdate
     facts: dict[str, str]
     expected_revision: int = Field(ge=0)
+    base: FactFormBase | None = None
     supersedes_pending_save: bool = False
 
 
@@ -2919,7 +2925,7 @@ def confirm_reference(project_id: str, payload: ReferenceConfirm) -> dict[str, A
 @app.put("/api/projects/{project_id}/facts/form")
 def save_project_fact_form(project_id: str, form: ProjectFactForm) -> dict[str, Any]:
     return _save_project_facts(project_id, form.facts, form.project.model_dump(exclude_none=True), form.expected_revision,
-                               supersedes_pending_save=form.supersedes_pending_save)
+                               base=form.base, supersedes_pending_save=form.supersedes_pending_save)
 
 
 @app.put("/api/projects/{project_id}/facts")
@@ -2927,13 +2933,34 @@ def update_project_facts(project_id: str, payload: dict[str, Any]) -> dict[str, 
     return _save_project_facts(project_id, payload, {}, None)
 
 
+def _check_fact_form_base(
+    project: dict[str, Any], facts: dict[str, str], fields: dict[str, Any], base: FactFormBase,
+) -> None:
+    confirmed = project["state"].get("confirmed_facts", {})
+    metadata_keys = set(fields)
+    project_name = facts.get("project_name", "").strip()
+    if project_name and project_name != str(confirmed.get("project_name", "")):
+        metadata_keys.add("title")
+    if not set(facts) <= base.facts.keys() or not metadata_keys <= base.project.keys():
+        raise HTTPException(422, "缺少本次编辑的原始值，请重新打开表单。")
+
+    def normalize(value: Any) -> str:
+        return str(value if value is not None else "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    if (any(normalize(confirmed.get(key)) != base.facts[key] for key in facts)
+            or any(normalize(project.get(key)) != base.project[key] for key in metadata_keys)):
+        raise MaterialConflict("部分字段在其他页面有更新，请核对后保存。")
+
+
 def _save_project_facts(
     project_id: str, payload: dict[str, Any], project_fields: dict[str, Any], expected_revision: int | None,
-    *, supersedes_pending_save: bool = False,
+    *, base: FactFormBase | None = None, supersedes_pending_save: bool = False,
 ) -> dict[str, Any]:
     project = _safe_project(project_id)
     if expected_revision is not None and expected_revision != project["material_revision"]:
         raise MaterialConflict("项目已变化，请刷新后重试")
+    if base is not None:
+        _check_fact_form_base(project, payload, project_fields, base)
     if len(payload) > 100:
         raise HTTPException(status_code=413, detail="一次最多保存 100 个信息字段")
     year_value = str(payload.get("application_year", "")).strip()
