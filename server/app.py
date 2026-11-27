@@ -193,6 +193,7 @@ class GenerateImageInput(BaseModel):
 class ConfirmDocument(BaseModel):
     confirmed: bool
     corrected_text: str | None = Field(default=None, max_length=200000)
+    expected_revision: int | None = Field(default=None, ge=0)
 
 
 class ProjectUpdate(BaseModel):
@@ -534,6 +535,7 @@ def _public_document(document: dict[str, Any]) -> dict[str, Any]:
             "extraction_warning",
             "low_confidence_count",
             "confirmed",
+            "review_revision",
             "created_at",
             "storage_path",
         )
@@ -2085,46 +2087,19 @@ def process_cloud_document(document_id: str) -> dict[str, Any]:
 
 @app.patch("/api/documents/{document_id}/confirm")
 def confirm_document(document_id: str, payload: ConfirmDocument) -> dict[str, Any]:
-    document = store.get_document(document_id)
+    document = store.get_document(document_id, download=False)
     if not document:
         raise HTTPException(status_code=404, detail="材料不存在")
-    if document["kind"] == "template":
-        raise HTTPException(status_code=400, detail="Word/PDF 模板不作为项目事实材料索引")
+    from proposal.document_review import DocumentReviewUnavailable, review_document
     text = payload.corrected_text if payload.corrected_text is not None else document["extracted_text"]
-    if payload.confirmed and not text.strip():
-        raise HTTPException(status_code=400, detail="识别文本为空，请补充或取消确认")
-    # Hide and remove the old snapshot before a re-confirmation. A failed
-    # reindex must not make an obsolete chunk visible under new confirmation.
-    if document.get("confirmed"):
-        store.update_document_extraction(
-            document_id, document["extracted_text"], document["extraction_status"],
-            document["extraction_warning"], document["low_confidence_count"], confirmed=False,
-        )
-    store.replace_chunks(document_id, [])
-    store.update_document_extraction(
-        document_id,
-        text,
-        "ready" if payload.confirmed else document["extraction_status"],
-        document["extraction_warning"],
-        document["low_confidence_count"],
-        confirmed=payload.confirmed,
-        confirmed_by_user=payload.confirmed,
-    )
     try:
-        chunks, index_mode = retriever.index_document_result(document_id, text) if payload.confirmed else (0, "not_indexed")
-        if payload.confirmed and not chunks:
-            raise MaterialConflict("材料在索引期间已撤回或不可用，请重新核对。")
+        reviewed, chunks, index_mode = review_document(store, retriever, document, text, payload.confirmed, payload.expected_revision)
     except MaterialConflict:
-        # Another request owns the newer document state. Do not overwrite it.
         raise
-    except Exception:
-        current = store.get_document(document_id)
-        if current and current.get("extracted_text") == text:
-            store.update_document_extraction(
-                document_id, text, "ready", document["extraction_warning"],
-                document["low_confidence_count"], confirmed=False,
-            )
-        raise
+    except DocumentReviewUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if payload.confirmed and document["kind"] == "official":
         match = re.search(r"\[来源链接\]\s*(https://\S+)", text)
         if match:
@@ -2140,9 +2115,14 @@ def confirm_document(document_id: str, payload: ConfirmDocument) -> dict[str, An
                     }
                 )
             state_data["official_sources"] = sources
-            store.update_project(document["project_id"], state=state_data)
+            if project:
+                try:
+                    store.update_project(document["project_id"], state=state_data,
+                                         expected_revision=project["material_revision"])
+                except MaterialConflict:
+                    pass
     return {
-        "document": _public_document(store.get_document(document_id) or document),
+        "document": _public_document(reviewed),
         "indexed_chunks": chunks,
         "index_mode": index_mode,
     }

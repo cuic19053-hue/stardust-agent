@@ -274,3 +274,40 @@ def test_cloud_and_local_history_are_merged_only_for_a_visible_project(monkeypat
     monkeypatch.setattr(store, "_rest", lambda *_args, **_kwargs: [])
     assert store.list_section_versions("p", "intro") == []
     assert store.get_section_version(old["id"]) is None
+
+
+def test_document_review_publishes_text_and_chunks_in_one_authenticated_call(monkeypatch, tmp_path):
+    store = SupabaseStore("https://example.supabase.co", "public-test", tmp_path)
+    monkeypatch.delenv("MATERIAL_PIPELINE_ENABLED", raising=False)
+    writes = []
+    def rest(route, method="GET", *, payload=None):
+        writes.append((route, method, payload))
+        return {"id": "doc", "project_id": "project", "storage_path": "owner/project/file.txt", "kind": "source",
+                "confirmed": True, "confirmation_origin": "user", "review_revision": 5,
+                "extracted_text": payload["p_text"]}
+    monkeypatch.setattr(store, "_rest", rest)
+    result = store.apply_document_review("doc", 4, "用户校对的文字", "ready", True, [
+        {"content": "用户校对的文字", "source_ref": "片段 1"},
+    ])
+    (route, method, payload), = writes
+    assert (route, method) == ("rpc/rag_apply_document_review", "POST")
+    assert payload["p_expected_revision"] == 4
+    assert payload["p_text"] == payload["p_chunks"][0]["content"]
+    assert result["review_revision"] == 5 and result["confirmed"]
+
+
+def test_document_review_refuses_a_missing_cloud_migration_without_falling_back(monkeypatch, tmp_path):
+    import urllib.error
+    from proposal.document_review import DocumentReviewUnavailable
+    store = SupabaseStore("https://example.supabase.co", "public-test", tmp_path)
+    calls = []
+    def missing(route, *args, **kwargs):
+        calls.append(route)
+        try:
+            raise urllib.error.HTTPError("https://example.supabase.co", 404, "missing function", {}, None)
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError("cloud write failed") from exc
+    monkeypatch.setattr(store, "_rest", missing)
+    with pytest.raises(DocumentReviewUnavailable):
+        store.apply_document_review("doc", 0, "试写文本", "ready", True, [])
+    assert calls == ["rpc/rag_apply_document_review"]

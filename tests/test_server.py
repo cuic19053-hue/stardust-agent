@@ -215,7 +215,7 @@ def test_failed_reconfirmation_never_reveals_stale_chunks(client, monkeypatch):
     doc_id = uploaded["id"]
     assert client.patch(f"/api/documents/{doc_id}/confirm", json={"confirmed": True}).status_code == 200
     assert server_app.tools.search_project_materials(project["id"], "珍贵原始数据")["results"]
-    monkeypatch.setattr(server_app.retriever, "index_document_result",
+    monkeypatch.setattr(server_app.retriever, "prepare_document_index",
                         lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("index failure")))
     with pytest.raises(RuntimeError, match="index failure"):
         client.patch(f"/api/documents/{doc_id}/confirm",
@@ -227,7 +227,6 @@ def test_failed_reconfirmation_never_reveals_stale_chunks(client, monkeypatch):
 
 def test_concurrent_newer_confirmation_is_not_overwritten(client, monkeypatch):
     import app as server_app
-    from proposal.materials import MaterialConflict
     project = client.post("/api/projects", json={"title": "并发材料"}).json()
     uploaded = client.post(
         f"/api/projects/{project['id']}/documents?kind=source",
@@ -235,17 +234,55 @@ def test_concurrent_newer_confirmation_is_not_overwritten(client, monkeypatch):
     ).json()["documents"][0]["document"]
     doc_id = uploaded["id"]
     def concurrent_update(*_args, **_kwargs):
-        server_app.store.update_document_extraction(
-            doc_id, "另一个请求更新的文本", "ready", confirmed=True, confirmed_by_user=True
+        server_app.store.apply_document_review(
+            doc_id, uploaded["review_revision"], "另一个请求更新的文本", "ready", True,
+            [{"content": "另一个请求更新的文本", "source_ref": "片段 1"}],
         )
-        raise MaterialConflict("材料已更改")
-    monkeypatch.setattr(server_app.retriever, "index_document_result", concurrent_update)
+        return [{"content": "本次提交的文本", "source_ref": "片段 1"}], "keyword_fallback"
+    monkeypatch.setattr(server_app.retriever, "prepare_document_index", concurrent_update)
     response = client.patch(f"/api/documents/{doc_id}/confirm",
                             json={"confirmed": True, "corrected_text": "本次提交的文本"})
     assert response.status_code == 409
     current = server_app.store.get_document(doc_id)
     assert current["extracted_text"] == "另一个请求更新的文本"
     assert current["confirmed"]
+    assert [c["content"] for c in server_app.store.chunks_for_project(project["id"])] == ["另一个请求更新的文本"]
+
+
+def test_stale_material_review_preserves_the_confirmed_text_and_index(client, monkeypatch):
+    import app as server_app
+    project = client.post("/api/projects", json={"title": "校对版本"}).json()
+    uploaded = client.post(
+        f"/api/projects/{project['id']}/documents", files={"files": ("资料.txt", "初版文字".encode(), "text/plain")},
+    ).json()["documents"][0]["document"]
+    url = f"/api/documents/{uploaded['id']}/confirm"
+    first = client.patch(url, json={"confirmed": True, "corrected_text": "先确认的文字", "expected_revision": uploaded["review_revision"]})
+    assert first.status_code == 200
+    assert first.json()["document"]["review_revision"] > uploaded["review_revision"]
+    monkeypatch.setattr(server_app.retriever, "prepare_document_index", lambda *_: pytest.fail("Stale text must be rejected before embedding"))
+    stale = client.patch(url, json={"confirmed": True, "corrected_text": "旧标签页文字", "expected_revision": uploaded["review_revision"]})
+    assert stale.status_code == 409
+    assert server_app.store.get_document(uploaded["id"])["extracted_text"] == "先确认的文字"
+    assert [c["content"] for c in server_app.store.chunks_for_project(project["id"])] == ["先确认的文字"]
+
+
+def test_document_review_and_index_roll_back_together_on_failed_write(client, monkeypatch):
+    import app as server_app
+    project = client.post("/api/projects", json={"title": "材料写入校验"}).json()
+    uploaded = client.post(
+        f"/api/projects/{project['id']}/documents", files={"files": ("资料.txt", "初版文字".encode(), "text/plain")},
+    ).json()["documents"][0]["document"]
+    url = f"/api/documents/{uploaded['id']}/confirm"
+    first = client.patch(url, json={"confirmed": True, "corrected_text": "初版文字"})
+    assert first.status_code == 200
+    before = first.json()["document"]
+    monkeypatch.setattr(server_app.retriever, "prepare_document_index", lambda *_: ([{"content": "缺少片段位置"}], "keyword_fallback"))
+    with pytest.raises(KeyError, match="source_ref"):
+        client.patch(url, json={"confirmed": True, "corrected_text": "打算换成的新文字", "expected_revision": before["review_revision"]})
+    actual = server_app.store.get_document(uploaded["id"])
+    assert actual["extracted_text"] == "初版文字" and actual["confirmed"]
+    assert actual["review_revision"] == before["review_revision"]
+    assert [c["content"] for c in server_app.store.chunks_for_project(project["id"])] == ["初版文字"]
 
 
 def test_legacy_automatic_confirmations_require_fresh_user_action(client, tmp_path):

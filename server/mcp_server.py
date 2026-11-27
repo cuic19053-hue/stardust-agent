@@ -96,9 +96,10 @@ def confirm_project_material(
     project_id: str,
     document_id: str,
     corrected_text: str = "",
+    expected_revision: int | None = None,
 ) -> dict[str, Any]:
-    """用户确认识别文字后，将材料索引到当前项目 RAG。"""
-    return tools.confirm_project_material(project_id, document_id, corrected_text)
+    """确认材料并建立检索索引。校对已有文字时可传入上次读取的材料版本。"""
+    return tools.confirm_project_material(project_id, document_id, corrected_text, expected_revision)
 
 
 @server.tool()

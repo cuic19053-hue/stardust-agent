@@ -125,6 +125,10 @@
   const outlineRequests = new Map();
   const outlineRecovery = window.DraftRecovery.create("stardust-outline-recovery-v1:", chatRecoveryOwner);
   let outlineRecoveryWarning = false;
+  const documentCorrections = new Map();
+  const documentReviews = new Map();
+  const documentRecovery = window.DraftRecovery.create("stardust-document-recovery-v1:", chatRecoveryOwner);
+  let documentRecoveryWarning = false;
   const factEdits = window.FactEdits.create(chatRecoveryOwner, toast);
   let factFormProjectId = null;
   const sectionEdits = window.SectionEdits.create({
@@ -247,6 +251,10 @@
     outlineRecovery.clear();
     outlineRecoveryWarning = false;
     factEdits.clear();
+    documentCorrections.clear();
+    documentReviews.clear();
+    documentRecovery.clear();
+    documentRecoveryWarning = false;
     factFormProjectId = null;
     deletedProjectEpochs.clear();
     const input = $("#chatInput");
@@ -1382,6 +1390,10 @@
     deletedProjectEpochs.set(projectId, (deletedProjectEpochs.get(projectId) || 0) + 1);
     sectionEdits.removeProject(projectId);
     factEdits.removeProject(projectId);
+    const keyPrefix = `${projectId}\0`;
+    for (const key of documentCorrections.keys()) if (key.startsWith(keyPrefix)) documentCorrections.delete(key);
+    for (const key of documentReviews.keys()) if (key.startsWith(keyPrefix)) documentReviews.delete(key);
+    documentRecovery.clear(keyPrefix);
     if (factFormProjectId === projectId) factFormProjectId = null;
     outlineDrafts.delete(projectId);
     outlinePreviews.delete(projectId);
@@ -2107,12 +2119,43 @@
     }
   }
 
+  function persistDocumentCorrection(key, correction) {
+    if (correction) documentCorrections.set(key, correction);
+    else documentCorrections.delete(key);
+    if (documentRecovery.write(key, correction) || !correction || documentRecoveryWarning) return;
+    documentRecoveryWarning = true;
+    toast("浏览器暂时无法保留材料校对稿，请先确认保存再刷新。", true);
+  }
+
+  function restoreDocumentCorrection(key, doc) {
+    let correction = documentCorrections.get(key);
+    if (!correction) {
+      const cached = documentRecovery.read(key);
+      if (typeof cached?.text !== "string" || !Number.isSafeInteger(cached.revision)) return null;
+      correction = cached;
+    }
+    const latest = doc.extracted_text || "";
+    if (doc.review_revision > correction.revision && latest === correction.submitted) {
+      correction.revision = doc.review_revision;
+      delete correction.submitted;
+      persistDocumentCorrection(key, correction);
+    }
+    if (doc.confirmed && latest === correction.text && !documentReviews.has(key)) {
+      persistDocumentCorrection(key, null);
+      return null;
+    }
+    documentCorrections.set(key, correction);
+    return correction;
+  }
+
   function renderDocuments() {
     const view = currentProjectView();
     const list = $("#documentsList");
     list.replaceChildren();
     if (!state.documents.length) return;
     for (const doc of state.documents) {
+      const correctionKey = `${view.id}\0${doc.id}`;
+      let correction = doc.kind === "template" ? null : restoreDocumentCorrection(correctionKey, doc);
       const card = document.createElement("div");
       card.className = "document-card";
       card.dataset.documentId = doc.id;
@@ -2139,9 +2182,9 @@
       const text = document.createElement("textarea");
       text.className = "doc-text";
       text.rows = Math.min(7, Math.max(3, Math.ceil((doc.extracted_text || "").length / 95)));
-      text.value = doc.extracted_text || "";
+      text.value = correction?.text ?? doc.extracted_text ?? "";
       text.placeholder = doc.extraction_status === "error" ? "识别失败，请重新上传或手动补充内容。" : "暂无识别文字";
-      text.readOnly = doc.kind === "template" || doc.confirmed;
+      text.readOnly = doc.kind === "template" || (doc.confirmed && !correction);
       text.setAttribute("aria-label", `识别文字：${doc.original_name}`);
       card.append(text);
       const actions = document.createElement("div");
@@ -2149,6 +2192,48 @@
       const preview = button("预览文件", "button button-small button-secondary");
       preview.addEventListener("click", () => { if (view.active()) void previewDocument(doc); });
       actions.append(preview);
+      const conflict = document.createElement("div");
+      conflict.className = "section-versions";
+      conflict.hidden = true;
+      const hasConflict = () => Boolean(correction && correction.revision !== doc.review_revision);
+      const syncConflict = () => {
+        conflict.hidden = !hasConflict();
+        conflict.replaceChildren();
+        if (!hasConflict()) return;
+        const label = document.createElement("p");
+        label.textContent = "材料文字已更新，请核对服务器版本后再确认。";
+        const latest = document.createElement("pre");
+        latest.textContent = doc.extracted_text || "（正文为空）";
+        const keep = button("保留本页文字");
+        const use = button("使用服务器文字", "button button-small button-quiet");
+        keep.addEventListener("click", () => {
+          if (!view.active()) return;
+          correction = { text: text.value, revision: doc.review_revision };
+          persistDocumentCorrection(correctionKey, correction);
+          syncConflict();
+        });
+        use.addEventListener("click", () => {
+          if (!view.active()) return;
+          correction = null;
+          persistDocumentCorrection(correctionKey, null);
+          text.value = doc.extracted_text || "";
+          syncConflict();
+        });
+        conflict.append(label, latest, keep, use);
+      };
+      if (doc.kind !== "template") {
+        text.addEventListener("input", () => {
+          if (state.project?.id !== view.id) return;
+          if (!correction) correction = { revision: doc.review_revision };
+          correction.text = text.value;
+          if (!documentReviews.has(correctionKey) && !correction.submitted && !hasConflict()
+              && text.value === (doc.extracted_text || "")) correction = null;
+          persistDocumentCorrection(correctionKey, correction);
+        });
+        card.append(conflict);
+        syncConflict();
+      }
+
       if (state.cloudMode && !doc.confirmed && doc.extraction_status !== "ready") {
         const retry = button("重试文字识别", "button button-small button-secondary");
         retry.addEventListener("click", async () => {
@@ -2166,26 +2251,57 @@
         actions.append(retry);
       }
       if (doc.kind !== "template") {
-        const confirmText = async () => {
-          if (!view.active()) return;
+        const confirmText = async event => {
+          if (!view.active() || documentReviews.has(correctionKey)) return;
+          if (hasConflict()) {
+            toast("请先选择要保留的文字。", true);
+            return;
+          }
           if (!text.value.trim()) {
             toast("请先补充或核对识别文字。", true);
             return;
           }
+          const submitted = text.value;
+          const revision = correction?.revision ?? doc.review_revision;
+          const request = {};
+          documentReviews.set(correctionKey, request);
+          const control = event?.currentTarget;
+          if (control) control.disabled = true;
+          const previousSubmission = correction?.submitted;
+          correction = { text: submitted, revision, submitted };
+          persistDocumentCorrection(correctionKey, correction);
           try {
-            const result = await api(`/api/documents/${doc.id}/confirm`, {
+            const result = await observeMaterialRequest(`/api/documents/${doc.id}/confirm`, {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ confirmed: true, corrected_text: text.value }),
-            });
-            if (!view.active()) return;
-            await loadProject(view.id);
+              body: JSON.stringify({ confirmed: true, corrected_text: submitted, expected_revision: revision }),
+            }, 90000, "材料确认结果待核对，已保留本页文字。");
+            if (documentReviews.get(correctionKey) !== request) return;
+            const latest = documentCorrections.get(correctionKey);
+            if (latest?.text === submitted) persistDocumentCorrection(correctionKey, null);
+            else if (latest && Number.isSafeInteger(result.document?.review_revision))
+              persistDocumentCorrection(correctionKey, { text: latest.text, revision: result.document.review_revision });
+            if (!view.active() && !chatProjectIsActive(view.id)) return;
+            clearExportArtifacts();
+            window.MaterialPilot?.invalidateArtifacts?.();
+            await loadProject(view.id, { refreshList: false });
             if (!view.active()) return;
             toast(result.index_mode === "keyword_fallback" && privateRagConsented()
-              ? "材料已确认，但云向量未建立；当前仅能关键词检索，请核对服务或缩短材料。"
-              : "已确认材料并建立检索索引。", result.index_mode === "keyword_fallback" && privateRagConsented());
+              ? "材料已确认，可用关键词检索；向量索引暂未建立。"
+              : "已确认材料并建立检索索引。");
           } catch (error) {
+            if (documentReviews.get(correctionKey) !== request) return;
+            const latest = documentCorrections.get(correctionKey);
+            if (latest && error.status >= 400 && error.status < 500) {
+              latest.submitted = previousSubmission;
+              persistDocumentCorrection(correctionKey, latest);
+            }
+            if (!view.active()) return;
+            if (error.status === 409 || error.status >= 500) await loadProject(view.id, { refreshList: false });
             if (view.active()) toast(error.message, true);
+          } finally {
+            if (documentReviews.get(correctionKey) === request) documentReviews.delete(correctionKey);
+            if (control) control.disabled = false;
           }
         };
         if (!doc.confirmed) {
@@ -2195,32 +2311,38 @@
         } else {
           if (state.authConfig?.private_embedding_configured) {
             const reindex = button("重新建立向量索引", "button button-small button-secondary");
-            reindex.addEventListener("click", () => {
+            reindex.addEventListener("click", event => {
               if (!privateRagConsented()) {
                 toast("请先阅读并勾选本项目的 Cloudflare 私有检索授权。", true);
                 return;
               }
-              void confirmText();
+              void confirmText(event);
             });
             actions.append(reindex);
           }
+          const save = button("确认修改并重新索引", "button button-small button-primary");
+          save.hidden = !correction;
+          save.addEventListener("click", confirmText);
           const edit = button("修改识别文字", "button button-small button-secondary");
+          edit.hidden = Boolean(correction);
           edit.addEventListener("click", () => {
             text.readOnly = false;
             text.focus();
-            const save = button("确认修改并重新索引", "button button-small button-primary");
-            save.addEventListener("click", confirmText);
-            actions.insertBefore(save, remove);
-            edit.remove();
+            save.hidden = false;
+            edit.hidden = true;
           });
-          actions.append(edit);
+          actions.append(edit, save);
         }
       }
       const remove = button("移除", "button button-small button-quiet");
       remove.addEventListener("click", async () => {
         if (!view.active() || !confirm(`确定从本项目移除“${doc.original_name}”吗？${state.cloudMode ? "历史加密备份可能长期保留已删除的材料。" : ""}`)) return;
+        const epoch = chatRecoveryEpoch;
         try {
           await api(`/api/documents/${doc.id}`, { method: "DELETE" });
+          if (epoch !== chatRecoveryEpoch) return;
+          documentReviews.delete(correctionKey);
+          persistDocumentCorrection(correctionKey, null);
           if (!view.active()) return;
           await loadProject(view.id);
           if (view.active()) toast("材料和对应索引已删除。");
@@ -5705,7 +5827,8 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     window.addEventListener("beforeunload", event => {
-      if (!sectionEdits.hasUnsaved() && !factEdits.hasUnsaved() && !outlineDrafts.size && !outlinePreviews.size && !outlineRecovery.hasEntries()) return;
+      if (!sectionEdits.hasUnsaved() && !factEdits.hasUnsaved() && !documentCorrections.size
+          && !documentRecovery.hasEntries() && !outlineDrafts.size && !outlinePreviews.size && !outlineRecovery.hasEntries()) return;
       event.preventDefault();
       event.returnValue = "";
     });

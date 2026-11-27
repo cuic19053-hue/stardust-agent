@@ -134,6 +134,7 @@ class ProposalTools:
                     "name": d["original_name"],
                     "kind": d["kind"],
                     "confirmed": bool(d["confirmed"]),
+                    "review_revision": d.get("review_revision"),
                     "status": d["extraction_status"],
                     "warning": d["extraction_warning"],
                 }
@@ -189,51 +190,23 @@ class ProposalTools:
         project_id: str,
         document_id: str,
         corrected_text: str = "",
+        expected_revision: int | None = None,
     ) -> dict[str, Any]:
-        document = self.store.get_document(document_id)
+        document = self.store.get_document(document_id, download=False)
         if not document or document["project_id"] != project_id:
             return {"error": "项目材料不存在或不属于当前项目。"}
-        if document["kind"] == "template":
-            return {"error": "学校模板不作为项目事实材料索引。"}
+        from .document_review import DocumentReviewUnavailable, review_document
+        from .materials import MaterialConflict
         text = corrected_text if corrected_text.strip() else document["extracted_text"]
-        if not text.strip():
-            return {"error": "材料文字为空，请重新上传或补充。"}
-        if document.get("confirmed"):
-            self.store.update_document_extraction(
-                document_id, document["extracted_text"], document["extraction_status"],
-                document["extraction_warning"], document["low_confidence_count"], confirmed=False,
-            )
-        self.store.replace_chunks(document_id, [])
-        self.store.update_document_extraction(
-            document_id,
-            text,
-            "ready",
-            document["extraction_warning"],
-            document["low_confidence_count"],
-            confirmed=True,
-            confirmed_by_user=True,
-        )
         try:
-            chunks = self.retriever.index_document(document_id, text)
-            if not chunks:
-                from .materials import MaterialConflict
-                raise MaterialConflict("材料在索引期间已撤回或不可用，请重新核对。")
-        except Exception as exc:
-            from .materials import MaterialConflict
-            if isinstance(exc, MaterialConflict):
-                # A newer version must remain untouched.
-                raise
-            current = self.store.get_document(document_id)
-            if current and current.get("extracted_text") == text:
-                self.store.update_document_extraction(
-                    document_id, text, "ready", document["extraction_warning"],
-                    document["low_confidence_count"], confirmed=False,
-                )
-            raise
+            saved, chunks, _ = review_document(self.store, self.retriever, document, text, True, expected_revision)
+        except (MaterialConflict, ValueError, DocumentReviewUnavailable) as exc:
+            return {"error": str(exc)}
         return {
             "success": True,
             "filename": document["original_name"],
             "indexed_chunks": chunks,
+            "review_revision": saved["review_revision"],
             "source_notice": "该文字已由调用者确认，可作为本项目 RAG 证据；仍不能超出原文推断事实。",
         }
 

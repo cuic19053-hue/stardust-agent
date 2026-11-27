@@ -591,13 +591,8 @@ class SupabaseStore:
     def set_template_document(self, project_id: str, document_id: str | None) -> None:
         self.update_project(project_id, template_document_id=document_id)
 
-    def replace_chunks(self, document_id: str, chunks: list[dict[str, Any]], *, expected_text: str | None = None) -> None:
-        if not chunks:
-            # Revocation must also work while the document is unconfirmed.
-            self._rest("chunks", "DELETE", params=[("document_id", f"eq.{document_id}")])
-            return
-        if expected_text is None:
-            raise ValueError("云端索引需要提供已确认材料的原始文字。")
+    @staticmethod
+    def _review_chunk_rows(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rows = []
         for item in chunks:
             row = {"id": new_id(), "source_ref": item["source_ref"], "content": item["content"]}
@@ -606,12 +601,49 @@ class SupabaseStore:
             if item.get("embedding_model") == "bge-m3" and revision and len(embedding) == 1024:
                 row.update(embedding=embedding, embedding_model="bge-m3", embedding_revision=revision)
             rows.append(row)
+        return rows
+
+    def apply_document_review(self, document_id: str, revision: int, text: str, status: str,
+                              confirmed: bool, chunks: list[dict[str, Any]]) -> dict[str, Any]:
+        from .document_review import DocumentReviewUnavailable
+        from .materials import MaterialConflict, touch_document
+        try:
+            row = self._rest("rpc/rag_apply_document_review", "POST", payload={
+                "p_document_id": document_id, "p_expected_revision": revision,
+                "p_text": text, "p_status": status, "p_confirmed": confirmed,
+                "p_chunks": self._review_chunk_rows(chunks),
+            })
+        except RuntimeError as exc:
+            response = exc.__cause__
+            if isinstance(response, urllib.error.HTTPError):
+                if response.code == 409:
+                    raise MaterialConflict("材料已更新或移除，请重新核对。") from None
+                if response.code == 404:
+                    raise DocumentReviewUnavailable("材料校对暂时不可用，请稍后重试。") from None
+            raise
+        saved = self._document_row(row)
+        if os.environ.get("MATERIAL_PIPELINE_ENABLED", "").lower() == "true":
+            current = self.get_document(document_id, download=False)
+            if current:
+                try:
+                    touch_document(self, current)
+                except MaterialConflict:
+                    pass
+        return saved
+
+    def replace_chunks(self, document_id: str, chunks: list[dict[str, Any]], *, expected_text: str | None = None) -> None:
+        if not chunks:
+            # Revocation must also work while the document is unconfirmed.
+            self._rest("chunks", "DELETE", params=[("document_id", f"eq.{document_id}")])
+            return
+        if expected_text is None:
+            raise ValueError("云端索引需要提供已确认材料的原始文字。")
         try:
             self._rest(
                 "rpc/rag_replace_project_chunks", "POST",
                 payload={"p_document_id": document_id,
                          "p_expected_sha256": hashlib.sha256(expected_text.encode("utf-8")).hexdigest(),
-                         "p_chunks": rows},
+                         "p_chunks": self._review_chunk_rows(chunks)},
             )
         except RuntimeError as exc:
             if isinstance(exc.__cause__, urllib.error.HTTPError) and exc.__cause__.code == 409:

@@ -94,6 +94,7 @@ class Store:
                     low_confidence_count INTEGER NOT NULL DEFAULT 0,
                     confirmed INTEGER NOT NULL DEFAULT 0,
                     confirmation_origin TEXT NOT NULL DEFAULT '',
+                    review_revision INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS chunks (
@@ -299,6 +300,8 @@ class Store:
             doc_columns = {row[1] for row in db.execute("PRAGMA table_info(documents)")}
             if "confirmation_origin" not in doc_columns:
                 db.execute("ALTER TABLE documents ADD COLUMN confirmation_origin TEXT NOT NULL DEFAULT ''")
+            if "review_revision" not in doc_columns:
+                db.execute("ALTER TABLE documents ADD COLUMN review_revision INTEGER NOT NULL DEFAULT 0")
             columns = {row[1] for row in db.execute("PRAGMA table_info(workbench_vouchers)")}
             if "provider_code_ciphertext" not in columns:
                 db.execute("ALTER TABLE workbench_vouchers ADD COLUMN provider_code_ciphertext BLOB")
@@ -441,7 +444,7 @@ class Store:
             db.execute("UPDATE projects SET updated_at=? WHERE id=?", (utc_now(), project_id))
         return self.get_document(document_id)  # type: ignore[return-value]
 
-    def get_document(self, document_id: str) -> dict[str, Any] | None:
+    def get_document(self, document_id: str, download: bool = True) -> dict[str, Any] | None:
         with self.connect() as db:
             row = db.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone()
         return self._document_row(row) if row else None
@@ -476,7 +479,8 @@ class Store:
         with self.connect() as db:
             db.execute(
                 """UPDATE documents SET extracted_text=?, extraction_status=?,
-                extraction_warning=?, low_confidence_count=?, confirmed=?, confirmation_origin=? WHERE id=?""",
+                extraction_warning=?, low_confidence_count=?, confirmed=?, confirmation_origin=?,
+                review_revision=review_revision+1 WHERE id=?""",
                 (text, status, warning, low_confidence_count, int(confirmed),
                  "user" if confirmed and confirmed_by_user else "", document_id),
             )
@@ -488,10 +492,35 @@ class Store:
     def set_template_document(self, project_id: str, document_id: str | None) -> None:
         self.update_project(project_id, template_document_id=document_id)
 
+    def apply_document_review(self, document_id: str, revision: int, text: str, status: str,
+                              confirmed: bool, chunks: list[dict[str, Any]]) -> dict[str, Any]:
+        from .materials import MaterialConflict, touch_document
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            doc = db.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone()
+            if not doc or doc["review_revision"] != revision or doc["kind"] == "template":
+                raise MaterialConflict("材料已更新或移除，请重新核对。")
+            db.execute(
+                """UPDATE documents SET extracted_text=?, extraction_status=?, confirmed=?,
+                confirmation_origin=?, review_revision=review_revision+1 WHERE id=?""",
+                (text, status, int(confirmed), "user" if confirmed else "", document_id),
+            )
+            self._write_document_chunks(db, doc, chunks)
+            saved = self._document_row(db.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone())
+        # Use the latest row for material tracking if another review committed after this transaction.
+        current = self.get_document(document_id)
+        if current:
+            try:
+                touch_document(self, current)
+            except MaterialConflict:
+                pass
+        return saved
+
     def replace_chunks(self, document_id: str, chunks: list[dict[str, Any]], *, expected_text: str | None = None) -> None:
         with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             doc = db.execute(
-                "SELECT project_id,original_name,extracted_text,confirmed,confirmation_origin,kind FROM documents WHERE id=?",
+                "SELECT id,project_id,original_name,extracted_text,confirmed,confirmation_origin,kind FROM documents WHERE id=?",
                 (document_id,),
             ).fetchone()
             if not doc:
@@ -502,25 +531,29 @@ class Store:
             ):
                 from .materials import MaterialConflict
                 raise MaterialConflict("材料已更改或未确认，请重新核对后索引。")
-            db.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
-            for chunk in chunks:
-                db.execute(
-                    """INSERT INTO chunks
-                    (id,project_id,document_id,source_name,source_ref,content,embedding_json,embedding_model,embedding_revision,created_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                    (
-                        new_id(),
-                        doc["project_id"],
-                        document_id,
-                        doc["original_name"],
-                        chunk["source_ref"],
-                        chunk["content"],
-                        json.dumps(chunk.get("embedding", [])),
-                        chunk.get("embedding_model", ""),
-                        chunk.get("embedding_revision", ""),
-                        utc_now(),
-                    ),
-                )
+            self._write_document_chunks(db, doc, chunks)
+
+    @staticmethod
+    def _write_document_chunks(db, doc, chunks):
+        db.execute("DELETE FROM chunks WHERE document_id=?", (doc["id"],))
+        for chunk in chunks:
+            db.execute(
+                """INSERT INTO chunks
+                (id,project_id,document_id,source_name,source_ref,content,embedding_json,embedding_model,embedding_revision,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    new_id(),
+                    doc["project_id"],
+                    doc["id"],
+                    doc["original_name"],
+                    chunk["source_ref"],
+                    chunk["content"],
+                    json.dumps(chunk.get("embedding", [])),
+                    chunk.get("embedding_model", ""),
+                    chunk.get("embedding_revision", ""),
+                    utc_now(),
+                ),
+            )
 
     def chunks_for_project(self, project_id: str) -> list[dict[str, Any]]:
         with self.connect() as db:

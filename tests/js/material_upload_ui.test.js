@@ -2396,6 +2396,42 @@ test("a delayed leader photo cannot replace another project's empty preview", as
   assert.equal(h.created.length, 0);
 });
 
+test("recovered material corrections require review before overwriting a newer version", async () => {
+  const session = new Map();
+  const original = harness(session);
+  original.ui.state.project = { id: "alpha" };
+  original.ui.state.documents = [{ ...doc, review_revision: 3 }];
+  original.ui.renderDocuments();
+  const originalCard = original.element("#documentsList").children[0];
+  const originalText = originalCard.children.find(child => child.tagName === "textarea");
+  originalText.value = "本页还未提交的校对文稿";
+  originalText.listeners.input();
+
+  const h = harness(session);
+  h.ui.state.project = { id: "alpha" };
+  h.ui.state.documents = [{ ...doc, review_revision: 4, confirmed: true, extracted_text: "服务器上的新版校对" }];
+  h.ui.renderDocuments();
+  const card = h.element("#documentsList").children[0];
+  assert.equal(card.children.find(child => child.tagName === "textarea").value, "本页还未提交的校对文稿");
+  const comparison = card.children.find(child => child.className === "section-versions");
+  assert.equal(comparison.children[1].textContent, "服务器上的新版校对");
+  const submit = card.children.at(-1).children.find(child => child.textContent === "确认修改并重新索引");
+  const attempts = [];
+  h.ui.setApi(async (url, options) => {
+    attempts.push([url, JSON.parse(options.body)]);
+    return { document: { review_revision: 5 } };
+  });
+  h.ui.setLoadProject(async () => {});
+  await submit.click();
+  assert.equal(attempts.length, 0);
+  comparison.children[2].click();
+  await submit.click();
+  assert.deepEqual(attempts, [[`/api/documents/${doc.id}/confirm`, {
+    confirmed: true, corrected_text: "本页还未提交的校对文稿", expected_revision: 4,
+  }]]);
+  assert.equal(session.size, 0);
+});
+
 test("removing a material refreshes the project where the card was rendered", async () => {
   const h = harness();
   h.context.confirm = () => true;

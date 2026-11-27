@@ -146,8 +146,14 @@ class ProjectRetriever:
         if extracted_text != document.get("extracted_text", ""):
             from .materials import MaterialConflict
             raise MaterialConflict("材料在索引前已发生变化，请重新核对。")
+        items, mode = self.prepare_document_index(document["project_id"], extracted_text)
+        self.store.replace_chunks(document_id, items, expected_text=extracted_text)
+        return len(items), mode
+
+    def prepare_document_index(self, project_id: str, extracted_text: str) -> tuple[list[dict[str, Any]], str]:
+        """Prepare index rows for a specific version, before publishing them."""
         chunks = split_into_chunks(extracted_text)
-        vectors, embedding_revision = self._embed_verified([chunk for chunk in chunks], document["project_id"])
+        vectors, embedding_revision = self._embed_verified([chunk for chunk in chunks], project_id)
         items = []
         # Preserve page/paragraph references when they are present in extracted text.
         for index, chunk in enumerate(chunks):
@@ -164,8 +170,7 @@ class ProjectRetriever:
                     "embedding_revision": embedding_revision,
                 }
             )
-        self.store.replace_chunks(document_id, items, expected_text=extracted_text)
-        return len(items), "vector" if vectors else "keyword_fallback"
+        return items, "vector" if vectors else "keyword_fallback"
 
     def search(self, project_id: str, query: str, top_k: int = 5) -> dict[str, Any]:
         terms = sorted(_tokens(query), key=lambda term: (-len(term), term))[:80]
