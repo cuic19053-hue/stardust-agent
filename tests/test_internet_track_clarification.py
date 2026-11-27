@@ -59,3 +59,32 @@ def test_asking_about_tracks_is_not_mistaken_for_a_choice(student):
     assert response.status_code == 200
     assert store.get_project(pid)["state"]["skill_id"] == ""
     assert response.json()["message"] != INTERNET_TRACK_QUESTION
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_keyed_clarification_replays_after_track_selection(student, stream):
+    client, store, pid = student
+    url = f"/api/projects/{pid}/chat"
+    payload = {"message": "我想报名中国国际大学生创新大赛，请帮我准备商业计划书。",
+               "idempotency_key": "first-track-request", "stream": stream}
+    before = store.messages(pid)
+    first = client.post(url, json=payload)
+    assert first.status_code == 200 and INTERNET_TRACK_QUESTION in first.text
+    assert len(store.messages(pid)) == len(before) + 2
+    assert client.post(url, json={"message": "高教主赛道"}).status_code == 200
+    history = store.messages(pid)
+    replay = client.post(url, json=payload)
+    assert replay.status_code == 200 and INTERNET_TRACK_QUESTION in replay.text
+    assert store.messages(pid) == history
+
+
+def test_chat_preserves_setup_and_only_fills_explicit_self_reports(student):
+    client, store, pid = student
+    url = f"/api/projects/{pid}/chat"
+    for message in ("我来自杭州。我室友的专业是金融学。", "我的学校是测试大学。我的专业是文物保护。"):
+        assert client.post(url, json={"message": message}).status_code == 200
+    project = store.get_project(pid)
+    assert (project["school"], project["discipline"]) == ("测试大学", "文物保护")
+    assert client.post(url, json={"message": "我来自杭州。我室友的专业是金融学。"}).status_code == 200
+    updated = store.get_project(pid)
+    assert (updated["school"], updated["discipline"]) == ("测试大学", "文物保护")

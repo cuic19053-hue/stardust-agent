@@ -81,7 +81,7 @@ class AgentJournal:
             raise JournalConflict(result["conflict"])
         return result
 
-    def open(self):
+    def open(self, *, save_setup=None):
         if self.cloud:
             known = self.rpc("lookup", **self.request)
         else:
@@ -95,6 +95,8 @@ class AgentJournal:
                     known["result"] = json.loads(known["result"])
         if known and known["status"] == "completed":
             return known
+        if known is None and save_setup is not None:
+            save_setup()
         self.runtime_chunks = []
         snapshot = input_snapshot(self.store, self.project_id, self.runtime_chunks)
         if self.cloud:

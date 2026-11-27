@@ -26,6 +26,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from uuid import uuid4
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -334,7 +335,7 @@ def generate_student_doc(
     if not output_path:
         out_dir = PROJECT_DIR / "outputs"
         out_dir.mkdir(parents=True, exist_ok=True)
-        output_path = str(out_dir / f"{norm_name}_申报书.docx")
+        output_path = str(out_dir / f"{norm_name}_申报书_{uuid4().hex}.docx")
     else:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 

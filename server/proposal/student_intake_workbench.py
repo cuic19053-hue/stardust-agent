@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 
 from pydantic import Field
@@ -16,6 +17,7 @@ from .student_intake import (
     IntakeCandidate, IntakeFact, StrictModel, evidence_errors, extraction_messages,
     follow_up_questions,
 )
+from .student_intake_guard import clauses, explicit_identity
 from .student_intake_review import ARCHIVABLE, model_turns, present, verified, verified_review
 
 MAX_MESSAGES = 40
@@ -55,6 +57,19 @@ def read_sources(store, project_id):
     snapshot = json.dumps([project_id, turns], ensure_ascii=False, separators=(",", ":"))
     revision = hashlib.sha256(snapshot.encode()).hexdigest()
     return turns, revision
+
+
+def initial_project_identity(text, project):
+    """Only fill empty setup fields from unambiguous first-person declarations."""
+    keys = {"identity.school": "school", "identity.major": "discipline"}
+    claims = {"school": set(), "discipline": set()}
+    setup_text = re.sub(r"我(?:目前|现在)?就读于", "我的学校是", text)
+    source = {"u1": setup_text}
+    for part in clauses([{"turn_id": "u1", "role": "user", "content": setup_text}]):
+        identity = explicit_identity(part, source)
+        if identity and identity[0] in keys:
+            claims[keys[identity[0]]].add(identity[1])
+    return {key: next(iter(values)) for key, values in claims.items() if len(values) == 1 and not project.get(key)}
 
 
 def preview(model, turns, revision):
