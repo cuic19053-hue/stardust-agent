@@ -4,7 +4,8 @@ import re
 from .source_contacts import redact_source_contacts
 from .student_intake import FIELDS, IntakeCandidate, evidence_errors
 from .student_intake_guard import (
-    ECON, MASK, PRIVACY_FIELDS, REFUSE, SENTENCE_BREAK, clauses, contains_disclosed_number, financial_scope, inspect_candidate,
+    ECON, IDENTITY_CLAIM, MAJOR_STUDY, MASK, PLANNED_ARTIFACT, PRIVACY_FIELDS, REFUSE, SENTENCE_BREAK,
+    clauses, contains_disclosed_number, financial_scope, inspect_candidate,
 )
 
 ARCHIVABLE = {"stated", "approximate", "planned", "negated"}
@@ -16,6 +17,12 @@ INTAKE_TOPIC = re.compile(
     r"^(?:我(?:本人|自己|们)?(?:的|正在|计划|准备|打算|想|要)?\s*)?"
     r"(?:申请|申报|办理|绩点|GPA|专业|学校|学院|排名|项目|团队|志愿时长)", re.I,
 )
+
+
+def starts_intake_topic(text):
+    text = text.strip()
+    return (INTAKE_TOPIC.match(text) or IDENTITY_CLAIM.fullmatch(text)
+            or MAJOR_STUDY.fullmatch(text) or PLANNED_ARTIFACT.fullmatch(text))
 
 
 def model_turns(turns):
@@ -37,9 +44,8 @@ def model_turns(turns):
         for p in parts:
             if p.turn != turn["turn_id"]:
                 continue
-            starts_topic = INTAKE_TOPIC.match(p.text.strip())
-            if group and (SENTENCE_BREAK.search(content[group[-1].end:p.start]) or starts_topic
-                          or INTAKE_TOPIC.match(group[-1].text.strip())):
+            if group and (SENTENCE_BREAK.search(content[group[-1].end:p.start]) or starts_intake_topic(p.text)
+                          or starts_intake_topic(group[-1].text)):
                 groups.append(group)
                 group = []
             group.append(p)
@@ -51,7 +57,7 @@ def model_turns(turns):
             refused_topic = any(PRIVACY_FIELDS[field].search(phrase) for field in refused)
             has_value = contains_disclosed_number(phrase)
             # A bare answer can follow the field label after a pause or in the next turn.
-            continuation = withheld_context and has_value and not INTAKE_TOPIC.match(phrase.strip())
+            continuation = withheld_context and has_value and not starts_intake_topic(phrase)
             withheld_context = (bool(financial) and not allowed) or refused_topic or continuation
             if (financial and not allowed) or (refused_topic and has_value) or continuation:
                 spans.append((group[0].start, group[-1].end))
