@@ -1841,6 +1841,34 @@ async def upload_documents(
     return {"documents": results, "note": "材料已保存；非模板文字须由你核对确认后才能用于检索。"}
 
 
+def _set_leader_photo(project, document_id):
+    state = dict(project["state"])
+    if state.get("leader_photo") == document_id:
+        return
+    state["leader_photo"] = document_id
+    state["confirmed_facts"] = {**state.get("confirmed_facts", {}), "leader_photo": document_id}
+    state["fact_sources"] = {**state.get("fact_sources", {}), "leader_photo": "用户在网页中上传负责人照片"}
+    try:
+        updated = store.update_project(project["id"], state=state, expected_revision=project["material_revision"])
+    except (RuntimeError, OSError):
+        # A remote write may have committed before its response was lost.
+        current = store.get_project(project["id"])
+        if current and current["state"].get("leader_photo") == document_id:
+            return
+        raise
+    if not updated:
+        raise MaterialConflict("项目已变更，请刷新后重试。")
+
+
+def _discard_photo(project_id: str, document_id: str) -> None:
+    # Only remove a photo owned by this project. IDs in older project state
+    # may refer to missing or unrelated documents.
+    document = store.get_document(document_id)
+    if document and document["project_id"] == project_id and document["kind"] == "photo":
+        store.delete_document(document_id)
+        (store.files_dir / project_id / Path(document["stored_path"]).name).unlink(missing_ok=True)
+
+
 @app.post("/api/projects/{project_id}/leader-photo")
 async def upload_leader_photo(
     project_id: str,
@@ -1858,46 +1886,43 @@ async def upload_leader_photo(
     project_folder.mkdir(parents=True, exist_ok=True)
     document_id = os.urandom(16).hex()
     stored_path = project_folder / f"{document_id}{ext}"
-    stored_path.write_bytes(content)
-
     old_photo_id = project.get("state", {}).get("leader_photo")
+    publishing = False
+    try:
+        stored_path.write_bytes(content)
+        store.add_document(
+            project_id, name, str(stored_path), "photo",
+            mimetypes.guess_type(name)[0] or "image/png", document_id=document_id,
+        )
+        store.update_document_extraction(document_id, "", "ready", "", 0, confirmed=True, confirmed_by_user=True)
+        document = store.get_document(document_id)
+        if not document or not document.get("confirmed"):
+            raise MaterialConflict("新照片未完成登记，请刷新后重试。")
+        # Confirmation itself may advance the material revision.
+        current = _safe_project(project_id)
+        if current["state"].get("leader_photo") != old_photo_id:
+            raise MaterialConflict("负责人照片已变更，请刷新后重试。")
+        publishing = True
+        _set_leader_photo(current, document_id)
+    except Exception as exc:
+        # A lost response after a committed remote update can leave the new
+        # photo live. Only discard it when publication definitely failed.
+        if not publishing or isinstance(exc, MaterialConflict):
+            try:
+                _discard_photo(project_id, document_id)
+                stored_path.unlink(missing_ok=True)
+            except Exception:
+                logger.exception("清理未使用的负责人照片失败")
+        raise
     if old_photo_id:
         try:
-            store.delete_document(old_photo_id)
-            for old_f in project_folder.glob(f"{old_photo_id}.*"):
-                old_f.unlink(missing_ok=True)
+            _discard_photo(project_id, old_photo_id)
         except Exception:
-            pass
-
-    document = store.add_document(
-        project_id,
-        name,
-        str(stored_path),
-        "photo",
-        mimetypes.guess_type(name)[0] or "image/png",
-        document_id=document_id,
-    )
-    store.update_document_extraction(
-        document_id,
-        "",
-        "ready",
-        "",
-        0,
-        confirmed=True,
-        confirmed_by_user=True,
-    )
-    state = dict(project["state"])
-    state["leader_photo"] = document_id
-    confirmed = dict(state.get("confirmed_facts", {}))
-    confirmed["leader_photo"] = document_id
-    state["confirmed_facts"] = confirmed
-    state.setdefault("fact_sources", {})
-    state["fact_sources"]["leader_photo"] = "用户在网页中上传负责人照片"
-    store.update_project(project_id, state=state)
+            logger.exception("清理已替换的负责人照片失败")
     return {
         "success": True,
         "document_id": document_id,
-        "document": _public_document(store.get_document(document_id) or document),
+        "document": _public_document(document),
         "url": f"/api/documents/{document_id}/file",
     }
 
@@ -1907,22 +1932,23 @@ def delete_leader_photo(project_id: str) -> dict[str, Any]:
     project = _safe_project(project_id)
     photo_id = project.get("state", {}).get("leader_photo")
     if photo_id:
-        store.delete_document(photo_id)
-        project_folder = store.files_dir / project_id
-        for old_f in project_folder.glob(f"{photo_id}.*"):
-            old_f.unlink(missing_ok=True)
         state = dict(project["state"])
         state.pop("leader_photo", None)
         confirmed = dict(state.get("confirmed_facts", {}))
         confirmed.pop("leader_photo", None)
         state["confirmed_facts"] = confirmed
-        store.update_project(project_id, state=state)
+        state.get("fact_sources", {}).pop("leader_photo", None)
+        if not store.update_project(project_id, state=state, expected_revision=project["material_revision"]):
+            raise MaterialConflict("项目已变更，请刷新后重试。")
+        _discard_photo(project_id, photo_id)
     return {"success": True}
 
 
 @app.post("/api/projects/{project_id}/documents/from-storage")
 def register_cloud_upload(project_id: str, payload: StorageDocumentInput) -> dict[str, Any]:
-    _safe_project(project_id)
+    project = _safe_project(project_id)
+    if payload.is_leader and payload.kind != "photo":
+        raise HTTPException(422, "负责人照片须使用照片类型登记。")
     owner = request_identity.get() or {}
     observability.bind(trace_id=observability.correlated("upload", owner.get("user_id", "local"), payload.document_id))
     if not hasattr(store, "register_document"):
@@ -1938,19 +1964,18 @@ def register_cloud_upload(project_id: str, payload: StorageDocumentInput) -> dic
             download=False,
         )
         if payload.is_leader:
-            current_project = store.get_project(project_id)
-            current_state = dict(current_project["state"])
-            current_state["leader_photo"] = document["id"]
-            confirmed_facts = dict(current_state.get("confirmed_facts", {}))
-            confirmed_facts["leader_photo"] = document["id"]
-            current_state["confirmed_facts"] = confirmed_facts
-            store.update_project(project_id, state=current_state)
+            current = _safe_project(project_id)
+            if current["state"].get("leader_photo") not in (project["state"].get("leader_photo"), document["id"]):
+                raise MaterialConflict("负责人照片已变更，请刷新后重试。")
+            _set_leader_photo(current, document["id"])
         if not payload.process_now:
             return {
                 "documents": [{"document": _public_document(document), "chunk_count": 0}],
                 "note": "原文件已保存，文字识别单独进行；识别失败不会删除原文件。",
             }
         return _process_cloud_document(document)
+    except MaterialConflict:
+        raise
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
@@ -2205,15 +2230,7 @@ def chat(project_id: str, payload: ChatInput, request: Request) -> dict[str, Any
         level = match.group(1) if match else None
     if level:
         fields["level"] = level
-    discipline_match = re.search(
-        r"(?:我的专业是|专业是|专业为|学科方向是|学科是|研究方向是|方向是)\s*([^，,。；;\n]{2,40})",
-        text,
-    )
-    if discipline_match:
-        fields["discipline"] = discipline_match.group(1).strip()
-    school_match = re.search(r"(?:学校是|就读于|来自)\s*([^，,。；;\n]{2,50})", text)
-    if school_match:
-        fields["school"] = school_match.group(1).strip()
+    fields.update(intake.initial_project_identity(text, project))
     if payload.llm_config:
         cfg = payload.llm_config
         key_hint = f"sk-...{cfg.api_key[-4:]}" if len(cfg.api_key) > 6 else "—"
@@ -2225,12 +2242,29 @@ def chat(project_id: str, payload: ChatInput, request: Request) -> dict[str, Any
         }
     if state != project["state"]:
         fields["state"] = state
-    if fields:
-        store.update_project(project_id, **fields)
+
+    def save_setup():
+        if fields:
+            store.update_project(project_id, expected_revision=project["material_revision"], **fields)
+
+    def reply():
+        return _chat_reply(project_id, payload, request, project, state, fields, previous_assistant, ask_internet_track)
+
+    if payload.idempotency_key:
+        from proposal.agent_chat_api import durable_chat
+        return durable_chat(store, project_id, payload, request, reply, save_setup=save_setup)
+    save_setup()
+    return reply()
+
+
+def _chat_reply(project_id, payload, request, project, state, fields, previous_assistant, ask_internet_track):
+    text = payload.message.strip()
     if ask_internet_track:
-        # A track question is a local clarification, not a model invocation.
-        store.add_message(project_id, "user", text)
-        store.add_message(project_id, "assistant", INTERNET_TRACK_QUESTION)
+        from proposal.track_clarification import INTERNET_TRACK_QUESTION
+        # Keyed turns persist both messages in the journal's open/complete operations.
+        if not payload.idempotency_key:
+            store.add_message(project_id, "user", text)
+            store.add_message(project_id, "assistant", INTERNET_TRACK_QUESTION)
         stream = bool(payload.stream or (request.headers.get("accept") == "text/event-stream")
                       or (request.query_params.get("stream") == "true"))
         result = {"message": INTERNET_TRACK_QUESTION, "tool_calls": [], "model": "evidence-only",
@@ -2280,10 +2314,6 @@ def chat(project_id: str, payload: ChatInput, request: Request) -> dict[str, Any
         result = agent.chat(project_id, text)
         result.update(setup_updated=bool(fields), free_chat=False)
         return result
-    if payload.idempotency_key:
-        from proposal.agent_chat_api import durable_chat
-        return durable_chat(store, project_id, payload, request,
-                            lambda: _chat_model_response(project_id, payload, request, fields))
     return _chat_model_response(project_id, payload, request, fields)
 
 

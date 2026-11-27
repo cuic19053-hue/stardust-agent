@@ -33,3 +33,19 @@ def test_mcp_rejects_unindexed_skill_paths():
     assert mcp_server.get_skill_requirements("../../outside").get("error")
     assert mcp_server.generate_student_doc("../../outside", demo=True).get("error")
     assert mcp_server.search_student_knowledge("../../outside", "项目").get("error")
+
+
+def test_default_doc_paths_preserve_each_applicant(tmp_path, monkeypatch):
+    from docx import Document
+
+    (tmp_path / "subskills").symlink_to(ROOT / "subskills", target_is_directory=True)
+    monkeypatch.setattr(mcp_server, "PROJECT_DIR", tmp_path)
+    paths = []
+    for name in ("模拟甲", "模拟乙"):
+        result = mcp_server.generate_student_doc("national-scholarship", data={
+            "applicant_name": name, "paragraphs": ["申请正文"],
+        })
+        assert result["success"]
+        paths.append(Path(result["output_path"]))
+    assert paths[0] != paths[1]
+    assert [Document(path).paragraphs[-1].text.splitlines()[0] for path in paths] == ["模拟甲", "模拟乙"]

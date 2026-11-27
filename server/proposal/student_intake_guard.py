@@ -13,7 +13,7 @@ from .student_intake import Evidence, FIELDS, MAX_FACTS, MAX_QUOTE_CHARS, Intake
 
 MASK = "【已略去】"
 ECON = re.compile(r"年收[入益]|年入|(?:我家|家里|家中)(?:的)?收入|家庭(?:经济|收入|人口|人数)|困难(?:认定|户)|家(?:里|庭|中)?.{0,7}[零一二两三四五六七八九十\d]+[口人]")
-EXTERNAL = re.compile(r"范文|样表|示例|示范|范本|台词|角色|举例|通知说|政策|校规|手册|海报上|助手说|机器人说|"
+EXTERNAL = re.compile(r"范文|样表|示例|示范|范本|台词|角色|举例|通知说|政策|校规|海报上|助手说|机器人说|"
                       r"室友|同桌|同学(?:的|说|家|绩点)|队友(?:的|以前)|学姐|学长|别人|另[一个名]+(?:人|位)|"
                       r"我(?:妈|爸|朋友|同伴)|如果|假[如设]|听说")
 OWN = re.compile(r"(?:我自己|我本人|而我|但我|我的(?:绩点|成绩单|部分)|我这次|我们(?:的)?(?:团队|项目))")
@@ -152,7 +152,9 @@ def clauses(turns):
             s = m.group()
             if example_continues and re.match(r"(?:回到|再说)?我(?:自己|本人)", s.strip()):
                 example_continues = False
-            if closing_quote or example_continues or EXTERNAL.search(s) or FAB.search(s):
+            continues_source = external and turn["content"][m.start() - 1:m.start()] in {"，", ","}
+            handbook_source = "手册" in s and (continues_source or not PLANNED_ARTIFACT.fullmatch(s.strip()))
+            if closing_quote or example_continues or handbook_source or EXTERNAL.search(s) or FAB.search(s):
                 external = True
             elif OWN.search(s) or (s.startswith(("我", "我们")) and "“" not in s and "”" not in s):
                 external = False

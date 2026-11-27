@@ -327,3 +327,37 @@ def test_financial_refusal_keeps_form_reference_and_masks_actual_amount(api):
     row, = result["facts"]
     assert row["fact"] == fact("financial.annual_income_yuan", "withheld", None, "家庭年收入这一栏我选择不填", "u3")
     assert not row["can_confirm"] and not result["questions"]
+
+
+@pytest.mark.parametrize("separator", ["，", ",", "，说起来，"])
+def test_income_amount_in_next_clause_is_removed_before_transport(api, separator):
+    client, store, pid, model = api
+    store.add_message(pid, "user", f"我申请国家奖学金。说到家庭年收入{separator}大约四万元，我的绩点是3.8。")
+    model._post.return_value = response()
+    assert client.post(f"/api/projects/{pid}/intake/propose").status_code == 200
+    visible = model._post.call_args.args[1]["messages"][-1]["content"]
+    assert "四万" not in visible and "家庭年收入" not in visible
+    assert "国家奖学金" in visible and "3.8" in visible
+
+
+def test_student_handbook_plan_remains_visible_but_quoted_handbook_does_not(api):
+    client, store, pid, model = api
+    plan = "我准备做一本校园植物手册"
+    store.add_message(pid, "user", f"学生手册规定绩点达到3.9。范文里说，我准备做一本航海手册。{plan}。")
+    model._post.return_value = response(fact("project.expected_output", "planned", "一本校园植物手册", plan))
+    result = client.post(f"/api/projects/{pid}/intake/propose").json()
+    visible = model._post.call_args.args[1]["messages"][-1]["content"]
+    assert "3.9" not in visible and "航海" not in visible and plan in visible
+    assert [row["fact"]["value"] for row in result["facts"]] == ["一本校园植物手册"]
+
+
+@pytest.mark.parametrize("scope,visible_amount", [("国家助学金", True), ("国家奖学金", False)])
+def test_detached_income_answer_obeys_scope_across_turns(api, scope, visible_amount):
+    client, store, pid, model = api
+    store.add_message(pid, "user", f"我正在申请{scope}，说到家庭年收入。")
+    store.add_message(pid, "user", "是四万元左右。我的绩点是3.8。")
+    model._post.return_value = response()
+    assert client.post(f"/api/projects/{pid}/intake/propose").status_code == 200
+    visible = model._post.call_args.args[1]["messages"][-1]["content"]
+    assert ("四万元" in visible) == visible_amount
+    assert scope in visible and "3.8" in visible

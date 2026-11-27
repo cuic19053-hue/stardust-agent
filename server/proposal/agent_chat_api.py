@@ -24,14 +24,14 @@ def refund_legacy_trial(store, user_id):
         store.refund_free_chat(user_id)
 
 
-def durable_chat(store, project_id, payload, request, invoke):
+def durable_chat(store, project_id, payload, request, invoke, *, save_setup=None):
     cfg = payload.llm_config.model_dump() if payload.llm_config else {"provider": "default"}
     # Only a hash of the configuration is retained; the original key is supplied
     # again by the authenticated client when recovering the same request.
     profile = digest({"config": cfg, "private_rag": request.headers.get("x-private-rag-consent", "")})
     try:
         journal = AgentJournal(store, project_id, payload.idempotency_key, profile, payload.message.strip())
-        task = journal.open()
+        task = journal.open(save_setup=save_setup)
     except JournalConflict as exc:
         raise HTTPException(409, str(exc)) from None
     except RuntimeError:

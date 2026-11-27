@@ -1107,3 +1107,85 @@ def test_only_matching_content_hashed_assets_receive_immutable_cache(client, nam
     bad = client.get(f'/static/{name}?v=old-release')
     assert 'immutable' not in bad.headers['cache-control']
     assert 'must-revalidate' in bad.headers['cache-control']
+
+
+@pytest.mark.parametrize("failure_at", ["add_document", "update_document_extraction", "update_project"])
+def test_failed_leader_photo_replacement_preserves_previous_photo(client, monkeypatch, failure_at):
+    import app as server_app
+    from proposal.materials import MaterialConflict
+
+    pid = server_app.store.create_project()["id"]
+    url = f"/api/projects/{pid}/leader-photo"
+    files = {"file": ("photo.png", b"original image bytes", "image/png")}
+    original = client.post(url, files=files).json()["document_id"]
+
+    def fail(*args, **kwargs):
+        raise MaterialConflict("模拟写入冲突")
+
+    monkeypatch.setattr(server_app.store, failure_at, fail)
+    result = client.post(url, files={"file": ("new.png", b"replacement", "image/png")})
+    assert result.status_code == 409
+    project = server_app.store.get_project(pid)
+    assert project["state"]["confirmed_facts"]["leader_photo"] == project["state"]["leader_photo"] == original
+    doc, = server_app.store.list_documents(pid)
+    assert doc["id"] == original
+    assert Path(doc["stored_path"]).read_bytes() == b"original image bytes"
+    assert list(Path(doc["stored_path"]).parent.glob("*.png")) == [Path(doc["stored_path"])]
+
+
+def test_cloud_leader_photo_registration_retries_and_conflicts(client, monkeypatch):
+    import app as server_app
+    from proposal.materials import MaterialConflict
+
+    store = server_app.store
+    pid = store.create_project()["id"]
+    old, new, other = ("a" * 32, "b" * 32, "c" * 32)
+    store.update_project(pid, state={"leader_photo": old, "confirmed_facts": {"leader_photo": old}})
+    def register(**kwargs):
+        return {"id": kwargs["document_id"], "kind": "photo", "project_id": pid}
+
+    monkeypatch.setattr(store, "register_document", register, raising=False)
+
+    def upload(doc_id):
+        return client.post(f"/api/projects/{pid}/documents/from-storage", json={
+            "document_id": doc_id, "original_name": "portrait.png", "kind": "photo", "is_leader": True,
+            "storage_path": f"owner/{pid}/{doc_id}.png", "process_now": False,
+        })
+
+    assert upload(new).status_code == 200
+    revision = store.get_project(pid)["material_revision"]
+    assert upload(new).status_code == 200
+    assert store.get_project(pid)["material_revision"] == revision
+
+    def conflict(project_id, *, expected_revision, state):
+        assert expected_revision == revision
+        raise MaterialConflict("项目照片同时发生了修改")
+
+    monkeypatch.setattr(store, "update_project", conflict)
+    assert upload(other).status_code == 409
+    state = store.get_project(pid)["state"]
+    assert state["leader_photo"] == state["confirmed_facts"]["leader_photo"] == new
+
+
+def test_replacement_with_lost_commit_response_keeps_new_photo(client, monkeypatch):
+    import app as server_app
+
+    store = server_app.store
+    pid = store.create_project()["id"]
+    url = f"/api/projects/{pid}/leader-photo"
+    files = {"file": ("portrait.png", b"test image", "image/png")}
+    old = client.post(url, files=files).json()["document_id"]
+    old_path = Path(store.get_document(old)["stored_path"])
+    update = store.update_project
+
+    def lose_response(*args, **kwargs):
+        update(*args, **kwargs)
+        raise TimeoutError("response lost after committing")
+
+    monkeypatch.setattr(store, "update_project", lose_response)
+    response = client.post(url, files=files)
+    assert response.status_code == 200
+    new = response.json()["document_id"]
+    assert new != old and store.get_project(pid)["state"]["leader_photo"] == new
+    assert store.get_document(new)["confirmed"]
+    assert store.get_document(old) is None and not old_path.exists()
