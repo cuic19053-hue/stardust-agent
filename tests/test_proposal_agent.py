@@ -396,7 +396,7 @@ def test_outline_confirmation_section_edit_and_export(workspace):
     proposed = client.post(f"/api/projects/{project_id}/outline/generate")
     assert proposed.status_code == 200
     assert proposed.json()["confirmed"] is False
-    assert store.get_project(project_id)["state"].get("outline_confirmed") is False
+    assert not store.get_project(project_id)["state"].get("outline_confirmed")
 
     rejected_generation = client.post(f"/api/projects/{project_id}/sections/background/generate")
     assert rejected_generation.status_code == 400

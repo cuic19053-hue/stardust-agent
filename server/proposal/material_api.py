@@ -334,6 +334,8 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
         raw = queue.call("raw", project_id=project_id, id=identifier)
         if not raw or raw["status"] != "completed":
             raise HTTPException(409, "任务未完成")
+        if raw["kind"] == "outline":
+            return {**raw["result"], "applied": False, "confirmed": False}
         if raw["result"].get("applied"):
             return raw["result"]
         result = dict(raw["result"])
@@ -350,9 +352,6 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
                 "blocks_version": digest(result["content"]),
             }
             fields["state"] = {**project["state"], "_material_output_inputs": inputs}
-        elif raw["kind"] == "outline":
-            fields["outline"] = result["outline"]
-            fields["state"] = {**project["state"], "outline_confirmed": False}
         elif raw["kind"] == "plan":
             plan = FigureSpec.model_validate(result["plan"]).model_dump()
             fields["state"] = {**project["state"], "_material_plans": [

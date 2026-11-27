@@ -21,6 +21,7 @@ from docx.shared import Cm, Pt
 from utils.docx_common import harden_table
 
 from .markdown_tables import is_header_separator, pipe_cells
+from .sections import visible_section_text
 from .storage import Store
 
 LABEL_FIELDS = {
@@ -186,7 +187,7 @@ def ensure_grant_income_export_safe(store: Store, project: dict[str, Any], docum
     if not _grant_income_omitted(store, project, documents):
         return
     amounts = _income_amounts(store, project)
-    if any(_contains_omitted_income(str(value or ""), amounts) for value in (project.get("sections") or {}).values()):
+    if any(_contains_omitted_income(str(value or ""), amounts) for value in visible_section_text(project).values()):
         raise ValueError("已保存正文仍含收入信息，请先选择更新后的草稿或编辑正文，再导出。")
     template_id = project.get("template_document_id")
     if not template_id:
@@ -869,6 +870,7 @@ def export_project(store: Store, project_id: str, output_path: str | Path) -> di
     # Report the snapshot actually used by the renderer. The HTTP caller may
     # have read a different version before attachment materialization began.
     source_fingerprint = export_input_fingerprint(store, project.pop("_export_source_project", project))
+    project = {**project, "sections": visible_section_text(project)}
     if not project["outline"]:
         skill_id = str(project.get("state", {}).get("skill_id", "innovation-research"))
         if skill_id == "innovation-research":

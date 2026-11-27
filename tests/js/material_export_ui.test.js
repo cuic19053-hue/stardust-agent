@@ -16,7 +16,7 @@ function harness(statuses, switchProject = false, onFetch = () => {}, { stallPol
     return statuses.length > 1 ? statuses.shift() : statuses[0];
   } };
   const context = vm.createContext({
-    window: {}, console, Blob, AbortController, crypto: { randomUUID: () => "one-export-only" },
+    window: {}, console, Blob, AbortController, confirm: () => true, crypto: { randomUUID: () => "one-export-only" },
     setTimeout: (callback, delay) => { if (delay < 15000 || pollPending) callback(); return 1; }, clearTimeout() {},
     document: { querySelectorAll: () => draftAreas, body: { append() {} },
       createElement: () => ({ click() { downloads.push({ href: this.href, name: this.download }); }, remove() {} }) },
@@ -38,10 +38,20 @@ function harness(statuses, switchProject = false, onFetch = () => {}, { stallPol
   vm.runInContext(source, context);
   context.init(host);
   return { export: isCurrent => context.window.MaterialPilot.exportDocument({}, isCurrent),
+    outline: () => context.window.MaterialPilot.outline(),
     flushEdits: () => context.window.MaterialPilot.flushEdits(),
     setDraftAreas: areas => { draftAreas = areas; }, host,
     invalidate: () => context.window.MaterialPilot.invalidateArtifacts(), calls, downloads, fetches, notices, revoked };
 }
+
+test("background outline generation returns the completed preview without applying it", async () => {
+  const outline = [{ id: "new", title: "候选章节" }];
+  const h = harness([{ status: "completed", result: { outline } }]);
+  const candidate = await h.outline();
+  assert.deepEqual(candidate.outline, outline);
+  assert.equal(h.calls.filter(call => call.options.method === "POST").length, 1);
+  assert.equal(h.calls.some(call => call.url.endsWith("/apply")), false);
+});
 
 test("material export waits for its one durable job then downloads with JWT", async () => {
   const h = harness([{ status: "running", step: "saving_artifacts" }, { status: "completed" }]);

@@ -262,6 +262,7 @@
       open, record, detachEditors, removeProject, clear, flushDraftEdits, confirmGeneratedSection, applyGeneratedSection,
       isAttached: (key, editor) => sectionEdits.get(key)?.display?.editor === editor,
       hasUnsaved,
+      hasLocalContent: (id, sid) => Boolean(sectionEdits.get(`${id}\0${sid}`)?.content.trim()),
     };
   }
   window.SectionEdits = { create };

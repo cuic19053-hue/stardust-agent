@@ -210,7 +210,8 @@ class ProjectFactForm(BaseModel):
 
 class OutlineUpdate(BaseModel):
     outline: list[dict[str, str]]
-    expected_revision: int | None = None
+    base_outline: list[dict[str, str]] | None = None
+    expected_revision: int | None = Field(default=None, ge=0)
 
 
 class SectionPrecondition(BaseModel):
@@ -2497,10 +2498,6 @@ def generate_outline(project_id: str, payload: LLMRequest | None = None, request
         if not outline:
             raise HTTPException(status_code=409, detail=notice) from exc
         warning = f"模型暂不可用，先提供可编辑的起始目录。{notice}"
-    store.update_project(project_id, outline=outline)
-    state_data = dict(project["state"])
-    state_data["outline_confirmed"] = False
-    store.update_project(project_id, state=state_data)
     return {"outline": outline, "warning": warning, "confirmed": False}
 
 
@@ -2615,7 +2612,7 @@ def generate_section(
 
 @app.put("/api/projects/{project_id}/outline")
 def update_outline(project_id: str, payload: OutlineUpdate) -> dict[str, Any]:
-    _safe_project(project_id)
+    project = _safe_project(project_id)
     if not 1 <= len(payload.outline) <= 20:
         raise HTTPException(status_code=400, detail="章节数须为 1–20")
     outline = []
@@ -2629,10 +2626,24 @@ def update_outline(project_id: str, payload: OutlineUpdate) -> dict[str, Any]:
         if not title:
             raise HTTPException(status_code=400, detail="章节标题不能为空")
         outline.append({"id": section_id, "title": title[:100]})
-    project = _safe_project(project_id)
+    if payload.base_outline is not None:
+        current = [{"id": item["id"], "title": item["title"]} for item in project["outline"]]
+        if payload.base_outline != current and outline != current:
+            raise HTTPException(409, "目录已在其他页面修改，请核对两个版本后再保存。")
     existing_sections = dict(project["sections"])
     confirmed_state = dict(project["state"])
     confirmed_state["outline_confirmed"] = True
+    archived = {
+        item["id"]: item for item in confirmed_state.get("_archived_outline", [])
+        if item["id"] not in seen
+    }
+    archived.update({item["id"]: item for item in project["outline"]
+                     if item["id"] not in seen})
+    if archived or "_archived_outline" in confirmed_state:
+        confirmed_state["_archived_outline"] = list(archived.values())
+    if outline == project["outline"] and confirmed_state == project["state"] and payload.expected_revision is None:
+        return {"outline": outline, "material_revision": project["material_revision"],
+                "archived_outline": list(archived.values())}
     for item in outline:
         existing_sections.setdefault(item["id"], "")
     updated = store.update_project(
@@ -2645,7 +2656,8 @@ def update_outline(project_id: str, payload: OutlineUpdate) -> dict[str, Any]:
     )
     if not updated:
         raise HTTPException(status_code=404, detail="找不到这个项目。")
-    return {"outline": outline, "material_revision": updated.get("material_revision", 0)}
+    return {"outline": outline, "material_revision": updated.get("material_revision", 0),
+            "archived_outline": list(archived.values())}
 
 
 @app.put("/api/projects/{project_id}/sections/{section_id}")

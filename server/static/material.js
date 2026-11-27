@@ -153,7 +153,7 @@
             ? "草稿中的项目数据、成果或来源需要你核对，可在下方查看并决定是否使用。"
             : "草稿中的部分个人数字需要你核对，可在下方查看并决定是否使用。")
           : "本轮检查未完成，草稿可在下方查看并由你决定是否使用。"));
-        if (!job.result?.applied && job.kind !== "export")
+        if (!job.result?.applied && !["export", "outline"].includes(job.kind))
           action(reviewIncomplete ? "使用此草稿" : "保存结果／保留为备选", async () => {
             await flushEdits();
             const result = await request(`/jobs/${job.id}/apply`, "POST",
@@ -177,6 +177,11 @@
         }
         if (job.kind === "outline" && job.result?.outline) {
           row.append(el("p", job.result.outline.map(s => s.title).join("；")));
+          const ownerProject = projectId;
+          action("在目录编辑器中查看", () => {
+            if (host.state.project?.id === ownerProject && host.isProjectActive?.(ownerProject) !== false)
+              host.previewOutline?.(job.result);
+          }, row);
         }
         if (job.kind === "figure") {
           action("查看生成图片", async () => {
@@ -483,20 +488,19 @@
     host.toast("导出仍在后台执行，请稍后刷新任务区，不必重复生成正文。");
   }
   async function outline() {
-    await flushEdits();
-    await refresh();
+    const id = host.state.project?.id;
+    const activeProject = () => host.state.project?.id === id && host.isProjectActive?.(id) !== false;
+    await waitFor(refresh(), 15000, "暂时无法读取项目材料，请稍后再拟目录。");
+    if (!activeProject()) throw new Error("项目已切换");
     const job = await submit("outline", "", true);
     if (!job) throw new Error("已取消目录模型调用");
-    const id = projectId;
     for (let i = 0; i < 120; i++) {
       await new Promise(resolve => setTimeout(resolve, 2500));
-      if (host.state.project?.id !== id) throw new Error("任务继续执行，请返回项目查询");
-      const current = await request(`/jobs/${job.id}`);
+      if (!activeProject()) throw new Error("任务继续执行，请返回项目查询");
+      const current = await waitFor(request(`/jobs/${job.id}`), 15000, JOB_STATUS_NOTICE);
       if (current.status === "completed") {
-        await flushEdits();
-        const result = await request(`/jobs/${job.id}/apply`, "POST");
-        await refresh();
-        return { ...result, warning: result.notice || "目录为候选方案，请核对后确认" };
+        void refresh().catch(() => {});
+        return { ...current.result, warning: current.result?.notice || "目录为候选方案，请核对后确认" };
       }
       if (["failed", "cancelled", "needs_review"].includes(current.status)) throw new Error(current.error || current.status);
     }

@@ -122,7 +122,7 @@ function harness(sharedSession = new Map()) {
       renderPrivacyNotice, showModelStatus, updateTemplateQuickActions,
       syncAuthControls, initializeCloudAuth, submitAuthForm,
       readPublicCache, writePublicCache, sameOriginAuthFetch, storeLlmConfig, loadCloudModelConfig, saveSelectedLlmConfig,
-      sendChat, syncChatControls, clearInterruptedChatMessages, loadProject, refreshProjects, closeDeletedProject, startApplication, deleteCurrentProject, startGeneralChat, selectConversationSkill, configureSkillWorkspace, renderFacts, saveFacts, renderSections, recommendOutline, saveOutline, validate, restoreInterruptedChatMessage, updateRecoveredChatInput, startBatchGeneration, cancelBatchGeneration,
+      sendChat, syncChatControls, clearInterruptedChatMessages, loadProject, refreshProjects, closeDeletedProject, startApplication, deleteCurrentProject, startGeneralChat, selectConversationSkill, configureSkillWorkspace, renderFacts, saveFacts, renderSections, restoreOutlineEditor, renderOutline, generateOutline, recommendOutline, saveOutline, validate, restoreInterruptedChatMessage, updateRecoveredChatInput, startBatchGeneration, cancelBatchGeneration,
       exportDoc, fetchExportBlob, flushDraftEdits, showChatDrafts, clearExportArtifacts, focusDraftSection,
       setApi(fn) { api = fn; },
       setLoadProject(fn) { loadProject = fn; },
@@ -231,6 +231,81 @@ test("confirming an outline updates the current project for subsequent edits", a
   assert.equal(h.ui.state.project.outline[0].id, "abstract");
   assert.equal(h.ui.state.project.sections.abstract, "");
   assert.equal(h.ui.state.project.state.outline_confirmed, true);
+});
+
+test("valid directory keys that share object property names create normal blank editors", async () => {
+  const h = harness(); exportingProject(h);
+  h.ui.state.project.outline = [];
+  h.ui.state.outline = [{ id: "constructor", title: "第一节" }, { id: "__proto__", title: "第二节" }];
+  h.ui.setApi(async () => ({ outline: h.ui.state.outline, material_revision: 3 }));
+  await h.ui.saveOutline();
+  assert.equal(h.ui.state.project.sections.constructor, "");
+  assert.equal(h.ui.state.project.sections["__proto__"], "");
+  assert.equal(h.element("#draftSections").children.length, 2);
+});
+
+test("a generated preview never reuses an existing chapter ID for another topic", async () => {
+  const h = harness(); exportingProject(h);
+  h.ui.restoreOutlineEditor(h.ui.state.project);
+  h.ui.setApi(async () => ({ outline: [
+    { id: "purpose", title: "不同的研究方法" }, { id: "purpose", title: "重复标识的新栏目" },
+  ] }));
+  await h.ui.generateOutline();
+  const draft = h.ui.state.outline;
+  assert.deepEqual(Array.from(draft, row => row.title), ["不同的研究方法", "重复标识的新栏目", "项目目的"]);
+  assert.equal(new Set(Array.from(draft, row => row.id)).size, 3);
+  assert.equal(draft[2].id, "purpose");
+  h.ui.renderSections();
+  assert.equal(h.element("#draftSections").children.length, 1);
+  assert.equal(h.element("#draftSections").children[0].id, "draft-sec-purpose");
+});
+
+test("typing while a candidate is being generated keeps both the editor text and the preview", async () => {
+  const h = harness(); exportingProject(h);
+  h.ui.restoreOutlineEditor(h.ui.state.project);
+  h.ui.renderOutline();
+  let finish;
+  h.ui.setApi(() => new Promise(resolve => { finish = resolve; }));
+  const pending = h.ui.generateOutline();
+  const input = h.element("#outlineList").children[0].children[1];
+  input.value = "继续写的栏目";
+  input.listeners.input();
+  finish({ outline: [{ id: "candidate", title: "模型候选" }] });
+  await pending;
+  assert.equal(h.ui.state.outline[0].title, "继续写的栏目");
+  assert.ok(h.element("#outlineList").children.some(child => child.textContent === "查看已生成的候选目录"));
+});
+
+test("a refreshed outline keeps local edits and exposes the competing saved version", () => {
+  const h = harness(); exportingProject(h);
+  h.ui.restoreOutlineEditor(h.ui.state.project);
+  h.ui.renderOutline();
+  const input = h.element("#outlineList").children[0].children[1];
+  input.value = "本页准备确认的标题";
+  input.listeners.input();
+  assert.equal(h.ui.state.project.outline[0].title, "项目目的");
+  h.ui.state.project.outline = [{ id: "purpose", title: "服务器上的新标题" }];
+  h.ui.restoreOutlineEditor(h.ui.state.project);
+  h.ui.renderOutline();
+  assert.equal(h.ui.state.outline[0].title, "本页准备确认的标题");
+  assert.match(h.element("#outlineWarning").textContent, /其他页面/);
+  assert.equal(h.element("#saveOutlineBtn").disabled, true);
+  const comparison = h.element("#outlineList").children.at(-1);
+  assert.match(comparison.children[0].textContent, /服务器上的新标题/);
+  comparison.children[1].click();
+  assert.equal(h.element("#saveOutlineBtn").disabled, false);
+});
+
+test("removing the only directory row still leaves manual addition available", () => {
+  const h = harness(); exportingProject(h);
+  h.ui.restoreOutlineEditor(h.ui.state.project);
+  h.ui.renderOutline();
+  h.element("#outlineList").children[0].children[4].click();
+  const add = h.element("#outlineList").children.find(child => child.textContent === "＋ 添加章节");
+  assert.ok(add);
+  add.click();
+  assert.equal(h.ui.state.outline.length, 1);
+  assert.equal(h.ui.state.project.outline[0].id, "purpose");
 });
 
 test("student validation displays the limited scope of the check", async () => {
@@ -367,7 +442,7 @@ function exportingProject(h) {
 test("batch generation stops on project switch without writing into another project", async () => {
   const h = harness(); exportingProject(h);
   const firstProject = h.ui.state.project;
-  h.ui.state.outline = [{ id: "one", title: "第一章" }, { id: "two", title: "第二章" }];
+  h.ui.state.project.outline = [{ id: "one", title: "第一章" }, { id: "two", title: "第二章" }];
   const calls = [];
   let finish;
   h.ui.setApi((url, options) => { calls.push({ url, options }); return new Promise(resolve => { finish = resolve; }); });
@@ -383,7 +458,7 @@ test("batch generation stops on project switch without writing into another proj
 
 test("batch stops after an uncertain result rather than generating further chapters", async () => {
   const h = harness(); exportingProject(h);
-  h.ui.state.outline = [{ id: "one", title: "第一章" }, { id: "two", title: "第二章" }];
+  h.ui.state.project.outline = [{ id: "one", title: "第一章" }, { id: "two", title: "第二章" }];
   const calls = [];
   h.ui.setApi(async (url, options) => { calls.push({ url, options }); return { status: "processing", job_id: "job" }; });
   await h.ui.startBatchGeneration();
@@ -395,7 +470,7 @@ test("batch stops after an uncertain result rather than generating further chapt
 
 test("batch stops when a draft requires review", async () => {
   const h = harness(); exportingProject(h);
-  h.ui.state.outline = [{ id: "one", title: "第一章" }, { id: "two", title: "第二章" }];
+  h.ui.state.project.outline = [{ id: "one", title: "第一章" }, { id: "two", title: "第二章" }];
   const calls = [];
   h.ui.setApi(async (url, options) => { calls.push({ url, options });
     return { conflict_status: "user_edit_preserved", notice: "请核对草稿" }; });
@@ -406,7 +481,7 @@ test("batch stops when a draft requires review", async () => {
 
 test("batch cancellation does not send subsequent model requests", async () => {
   const h = harness(); exportingProject(h);
-  h.ui.state.outline = [{ id: "one", title: "第一章" }, { id: "two", title: "第二章" }];
+  h.ui.state.project.outline = [{ id: "one", title: "第一章" }, { id: "two", title: "第二章" }];
   const calls = [];
   let finish;
   h.ui.setApi((url, options) => { calls.push({ url, options }); return new Promise(resolve => { finish = resolve; }); });
@@ -420,7 +495,7 @@ test("batch cancellation does not send subsequent model requests", async () => {
 
 test("batch preserves a student's edit made while a chapter is generating", async () => {
   const h = harness(); exportingProject(h);
-  h.ui.state.outline = [{ id: "purpose", title: "第一章" }, { id: "two", title: "第二章" }];
+  h.ui.state.project.outline = [{ id: "purpose", title: "第一章" }, { id: "two", title: "第二章" }];
   const area = new Element("textarea"); area.value = "已保存正文";
   area.closest = () => ({ id: "draft-sec-purpose" });
   h.setDraftAreas([area]);
@@ -1212,7 +1287,8 @@ test("an uncertain generated draft stays scoped to its original project", async 
   h.ui.renderSections();
   const first = h.element("#draftSections").children[0];
   const generating = first.children[0].children[1].children[1].click();
-  h.ui.state.project = { id: "second", sections: { purpose: "另一个项目" } };
+  h.ui.state.project = { id: "second", outline: [{ id: "purpose", title: "新项目正文" }],
+    sections: { purpose: "另一个项目" } };
   h.ui.renderSections();
   complete({ conflict_status: "user_edit_preserved", result_save_uncertain: true, content: "项目一私有草稿" });
   await generating;

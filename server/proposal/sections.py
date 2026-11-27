@@ -39,3 +39,13 @@ def save_manual_section(store, project: dict[str, Any], section_id: str, content
     revision = write_section(store, project, section_id, content)
     return {"success": True, "section_id": section_id, "character_count": len(content),
             "material_revision": revision}
+
+
+def visible_section_text(project: dict[str, Any]) -> dict[str, str]:
+    """Exclude chapters deliberately retired from the directory, while preserving legacy direct saves."""
+    sections = project.get("sections") or {}
+    archived = {item["id"] for item in project.get("state", {}).get("_archived_outline", [])}
+    if not archived:
+        return sections
+    active = {item["id"] for item in project.get("outline", [])}
+    return {key: text for key, text in sections.items() if key not in archived or key in active}

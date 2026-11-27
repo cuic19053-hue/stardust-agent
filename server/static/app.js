@@ -120,6 +120,9 @@
   // A completed model call can outlive a failed history write. Keep its
   // returned text only in this page, scoped to the originating project.
   const uncertainSectionDrafts = new Map();
+  const outlineDrafts = new Map();
+  const outlinePreviews = new Map();
+  const outlineRequests = new Map();
   const sectionEdits = window.SectionEdits.create({
     state, api: (...args) => api(...args), currentProjectView, recoveryOwner: chatRecoveryOwner,
     setDraftSaveStatus, updateDraftStats, toast,
@@ -234,6 +237,9 @@
     try { sessionStorage.removeItem(chatRecoveryStorageKey); } catch {}
     uncertainSectionDrafts.clear();
     sectionEdits.clear();
+    outlineDrafts.clear();
+    outlinePreviews.clear();
+    outlineRequests.clear();
     deletedProjectEpochs.clear();
     const input = $("#chatInput");
     if (input) {
@@ -1367,6 +1373,9 @@
     persistInterruptedChatMessages();
     deletedProjectEpochs.set(projectId, (deletedProjectEpochs.get(projectId) || 0) + 1);
     sectionEdits.removeProject(projectId);
+    outlineDrafts.delete(projectId);
+    outlinePreviews.delete(projectId);
+    outlineRequests.delete(projectId);
     for (const key of uncertainSectionDrafts.keys()) {
       if (key.startsWith(`${projectId}\0`)) uncertainSectionDrafts.delete(key);
     }
@@ -1419,7 +1428,7 @@
       try { localStorage.setItem(activeProjectKey, projectId); } catch {}
       state.documents = project.documents || [];
       state.messages = project.messages || [];
-      state.outline = project.outline || [];
+      restoreOutlineEditor(project);
       state.diagrams = project.diagrams || [];
       showProject();
       configureSkillWorkspace(project);
@@ -1435,7 +1444,7 @@
       renderConfirmedSources();
       renderOutline();
       renderSections();
-      if (window.MaterialPilot) await window.MaterialPilot.mount({ api, state, toast, reload: loadProject, flushEdits: flushDraftEdits, isProjectActive: chatProjectIsActive });
+      if (window.MaterialPilot) await window.MaterialPilot.mount({ api, state, toast, reload: loadProject, flushEdits: flushDraftEdits, previewOutline: showOutlineFromTask, isProjectActive: chatProjectIsActive });
       if (revision !== projectLoadRevision) return;
       if (window.DraftReview) void window.DraftReview.mount({ api, state, toast,
         focusSection: focusDraftSection,
@@ -2927,92 +2936,146 @@
     }
   }
 
-  async function generateOutline() {
-    const btn = $("#generateOutlineBtn");
-    const projectId = state.project?.id;
-    if (!projectId) return;
-    btn.disabled = true;
-    btn.textContent = "正在整理…";
-    try {
-      const result = window.MaterialPilot?.active()
-        ? await window.MaterialPilot.outline()
-        : await api(`/api/projects/${projectId}/outline/generate`, { method: "POST" });
-      if (state.project?.id !== projectId) return;
-      state.outline = result.outline;
-      renderOutline();
-      $("#outlineActions").classList.remove("hidden");
-      $("#outlineWarning").textContent = result.warning || "";
-    } catch (error) {
-      toast(error.message, true);
-      if ((error.message || "").includes("积分不足") || (error.message || "").includes("402")) {
-        openRechargeDialog();
+  function copyOutline(rows) {
+    return (rows || []).map(({ id, title }) => ({ id, title }));
+  }
+
+  function sameOutline(a, b) {
+    return a.length === b.length && a.every((row, index) => row.id === b[index].id && row.title === b[index].title);
+  }
+
+  function restoreOutlineEditor(project) {
+    const draft = outlineDrafts.get(project.id);
+    const saved = copyOutline(project.outline);
+    if (draft && !draft.saving && sameOutline(saved, draft.rows)) outlineDrafts.delete(project.id);
+    state.outline = outlineDrafts.get(project.id)?.rows || saved;
+  }
+
+  function editOutline(rows, warning = "") {
+    const project = state.project;
+    // Keep a stable copy of the directory on which this edit started.
+    const draft = outlineDrafts.get(project.id) || { base: copyOutline(project.outline) };
+    draft.rows = rows;
+    draft.warning = warning;
+    outlineDrafts.set(project.id, draft);
+    state.outline = rows;
+    clearExportArtifacts();
+  }
+
+  function applyOutlinePreview(result) {
+    const project = state.project;
+    const current = copyOutline(project.outline);
+    const remaining = new Map(current.map(row => [row.id, row]));
+    const reserved = new Set([...remaining.keys(), ...Object.keys(project.sections || {})]);
+    const used = new Set();
+    const next = result.outline.map((item, index) => {
+      const title = String(item.title || "").trim().slice(0, 100);
+      if (!title) return null;
+      const requested = String(item.id || "").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || `section_${index + 1}`;
+      const sameId = remaining.get(requested);
+      const matched = sameId?.title.trim() === title ? sameId
+        : [...remaining.values()].find(row => row.title.trim() === title);
+      let id = matched?.id || requested;
+      if (matched) remaining.delete(matched.id);
+      else if (reserved.has(id) || used.has(id)) {
+        const prefix = id.slice(0, 65) + "_suggested";
+        id = prefix;
+        for (let number = 2; reserved.has(id) || used.has(id); number++) id = `${prefix}_${number}`;
       }
+      used.add(id);
+      return { id, title };
+    }).filter(Boolean);
+    if (!next.length) {
+      toast(result.warning || "没有可用的候选章节。", true);
+      return;
+    }
+    const preserved = [...remaining.values()].filter(row => String(project.sections?.[row.id] || "").trim()
+      || sectionEdits.hasLocalContent(project.id, row.id));
+    if (next.length + preserved.length > 20) {
+      toast("已有正文的章节和候选章节合计超过 20 个，请先调整目录。", true);
+      return;
+    }
+    outlinePreviews.delete(project.id);
+    editOutline([...next, ...preserved], (result.warning || "请核对候选目录后保存。")
+      + (preserved.length ? " 已保留含正文的原章节。" : ""));
+    renderOutline();
+    toast("候选目录已就绪，请核对后保存。");
+  }
+
+  function showOutlineFromTask(result) {
+    if (!state.project || !result.outline?.length) return;
+    outlinePreviews.set(state.project.id, result);
+    if (!outlineDrafts.has(state.project.id)) applyOutlinePreview(result);
+    else renderOutline();
+    handleTabNavigation("outline-panel");
+  }
+
+  async function suggestOutline(generate) {
+    const view = currentProjectView();
+    const btn = $(generate ? "#generateOutlineBtn" : "#resetOutlineBtn");
+    if (!view.active() || !btn || outlineRequests.has(view.id)) return;
+    const current = copyOutline(state.outline);
+    const request = {};
+    outlineRequests.set(view.id, request);
+    btn.disabled = true;
+    if (generate) btn.textContent = "正在整理…";
+    try {
+      const result = generate
+        ? (window.MaterialPilot?.active()
+          ? await window.MaterialPilot.outline()
+          : await observeMaterialRequest(`/api/projects/${view.id}/outline/generate`, { method: "POST" }, 180000,
+            "目录生成结果暂未收到，请稍后查看，避免重复提交。"))
+        : await api(`/api/projects/${view.id}/outline/recommend`);
+      if (outlineRequests.get(view.id) !== request) return;
+      if (!result.outline?.length) {
+        if (view.active()) toast(result.warning || "暂未取得候选目录。", true);
+        return;
+      }
+      if (view.active() && sameOutline(current, state.outline) && !outlineDrafts.has(view.id)) {
+        applyOutlinePreview(result);
+      } else {
+        outlinePreviews.set(view.id, result);
+        if (view.active()) {
+          renderOutline();
+          toast("候选目录已就绪，可在目录编辑器中查看。");
+        }
+      }
+    } catch (error) {
+      if (!view.active()) return;
+      toast(error.message, true);
+      if ((error.message || "").includes("积分不足") || (error.message || "").includes("402")) openRechargeDialog();
     } finally {
+      if (outlineRequests.get(view.id) === request) outlineRequests.delete(view.id);
       btn.disabled = false;
-      btn.textContent = "拟一份目录";
+      if (generate) btn.textContent = "拟一份目录";
     }
   }
 
-  async function recommendOutline() {
-    const projectId = state.project?.id;
-    const btn = $("#resetOutlineBtn");
-    if (!projectId || !btn) return;
-    btn.disabled = true;
-    try {
-      await flushDraftEdits();
-      if (state.project?.id !== projectId) return;
-      const result = await api(`/api/projects/${projectId}/outline/recommend`);
-      if (state.project?.id !== projectId) return;
-      if (!result.outline?.length) {
-        toast(result.warning || "请先确定申报类型", true);
-        return;
-      }
-      // This is a preview. The existing saved directory and sections are not
-      // changed until the student explicitly confirms the displayed outline.
-      const current = state.project.outline || [];
-      const saved = state.project.sections || {};
-      const existingByTitle = new Map(current.map(item => [String(item.title || "").trim(), item]));
-      const reserved = new Set(current.map(item => item.id));
-      const used = new Set();
-      const next = result.outline.map(item => {
-        const sameTitle = existingByTitle.get(String(item.title || "").trim());
-        let id = sameTitle?.id || item.id;
-        if (!sameTitle && reserved.has(id)) {
-          const prefix = String(id).slice(0, 65) + "_recommended";
-          id = prefix;
-          let number = 2;
-          while (reserved.has(id) || used.has(id)) id = `${prefix}_${number++}`;
-        }
-        used.add(id);
-        return { ...item, id };
-      });
-      const preserved = current.filter(item => String(saved[item.id] || "").trim() && !used.has(item.id));
-      if (next.length + preserved.length > 20) {
-        toast("为保留已有正文，暂不能自动替换目录；请先调整现有章节。", true);
-        return;
-      }
-      state.outline = [...next, ...preserved];
-      renderOutline();
-      $("#outlineWarning").textContent = (result.warning || "请核对并保存目录。")
-        + (preserved.length ? " 已保留含正文的原章节。" : "");
-      toast("已整理推荐目录，请核对后保存。");
-    } catch (error) {
-      toast(error.message, true);
-    } finally {
-      btn.disabled = false;
-    }
-  }
+  const generateOutline = () => suggestOutline(true);
+  const recommendOutline = () => suggestOutline(false);
 
   function renderOutline() {
     const list = $("#outlineList");
     list.replaceChildren();
-    if (!state.outline?.length) {
-      list.className = "outline-list empty-note";
-      list.textContent = "还没有目录。点击“拟一份目录”或“赛道推荐目录”开始。";
-      $("#outlineActions").classList.add("hidden");
-      return;
-    }
+    const view = currentProjectView();
+    const saved = copyOutline(state.project?.outline);
+    const draft = outlineDrafts.get(view.id);
+    const conflict = draft && !sameOutline(draft.base, saved);
+    const warning = $("#outlineWarning");
+    warning.textContent = conflict ? "其他页面已修改目录，请核对后选择要保留的版本。"
+      : draft?.warning || (draft ? "目录有待保存的修改。" : "");
     list.className = "outline-list";
+    if (!state.outline.length) {
+      const note = document.createElement("p");
+      note.className = "empty-note";
+      note.textContent = "还没有目录。可手动添加章节、使用赛道推荐目录或请 Agent 拟一份。";
+      list.append(note);
+    }
+    const change = rows => {
+      if (!view.active()) return;
+      editOutline(rows);
+      renderOutline();
+    };
     state.outline.forEach((section, index) => {
       const row = document.createElement("div");
       row.className = "outline-row";
@@ -3021,87 +3084,152 @@
       mark.textContent = String(index + 1).padStart(2, "0");
       const input = document.createElement("input");
       input.value = section.title;
-      input.addEventListener("input", () => { clearExportArtifacts(); section.title = input.value; });
-      const up = button("↑", "remove-outline");
-      up.title = "上移";
-      up.disabled = index === 0;
-      up.addEventListener("click", () => {
-        if (index === 0) return;
-        clearExportArtifacts();
-        [state.outline[index - 1], state.outline[index]] = [state.outline[index], state.outline[index - 1]];
-        renderOutline();
+      input.maxLength = 100;
+      input.addEventListener("input", () => {
+        if (!view.active()) return;
+        editOutline(state.outline.map((item, i) => i === index ? { ...item, title: input.value } : item));
+        if (!conflict) warning.textContent = "目录有待保存的修改。";
+        discard.classList.remove("hidden");
       });
-      const down = button("↓", "remove-outline down-outline");
-      down.title = "下移";
-      down.disabled = index === state.outline.length - 1;
-      down.addEventListener("click", () => {
-        if (index === state.outline.length - 1) return;
-        clearExportArtifacts();
-        [state.outline[index + 1], state.outline[index]] = [state.outline[index], state.outline[index + 1]];
-        renderOutline();
-      });
+      const move = (offset, label, title) => {
+        const control = button(label, offset > 0 ? "remove-outline down-outline" : "remove-outline");
+        control.title = title;
+        const next = index + offset;
+        control.disabled = next < 0 || next >= state.outline.length;
+        control.addEventListener("click", () => {
+          if (control.disabled || !view.active()) return;
+          const rows = [...state.outline];
+          [rows[index], rows[next]] = [rows[next], rows[index]];
+          change(rows);
+        });
+        return control;
+      };
       const remove = button("×", "remove-outline");
-      remove.title = "删除章节";
-      remove.addEventListener("click", () => {
-        clearExportArtifacts();
-        state.outline.splice(index, 1);
-        renderOutline();
-      });
-      row.append(mark, input, up, down, remove);
+      remove.title = "移出目录";
+      remove.addEventListener("click", () => change(state.outline.filter((_, i) => i !== index)));
+      row.append(mark, input, move(-1, "↑", "上移"), move(1, "↓", "下移"), remove);
       list.append(row);
     });
+    const full = state.outline.length >= 20;
     const add = button("＋ 添加章节", "button button-small button-quiet");
+    add.disabled = full;
     add.addEventListener("click", () => {
-      clearExportArtifacts();
-      const newId = `section_${Date.now()}`;
-      state.outline.push({ id: newId, title: "新章节" });
-      renderOutline();
+      if (add.disabled || !view.active()) return;
+      const suffix = globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      change([...state.outline, { id: `section_${suffix}`, title: "新章节" }]);
       const allInputs = $$("#outlineList .outline-row input");
-      const last = allInputs[allInputs.length - 1];
-      if (last) {
-        last.focus();
-        last.select();
-      }
+      allInputs.at(-1)?.focus();
+      allInputs.at(-1)?.select();
     });
     list.append(add);
+    const discard = button("恢复已保存目录", "button button-small button-quiet");
+    discard.classList.toggle("hidden", !draft);
+    discard.addEventListener("click", () => {
+      if (!view.active() || outlineDrafts.get(view.id)?.saving) return;
+      if (!confirm("放弃本页目录修改，恢复已保存的目录吗？")) return;
+      outlineDrafts.delete(view.id);
+      restoreOutlineEditor(state.project);
+      renderOutline();
+    });
+    list.append(discard);
+    const preview = outlinePreviews.get(view.id);
+    if (preview) {
+      const use = button("查看已生成的候选目录", "button button-small button-secondary");
+      use.addEventListener("click", () => {
+        if (!view.active()) return;
+        if (!outlineDrafts.has(view.id) || confirm("用候选目录替换本页正在编辑的目录吗？")) applyOutlinePreview(preview);
+      });
+      list.append(use);
+    }
+    if (conflict) {
+      const comparison = document.createElement("div");
+      const caption = document.createElement("p");
+      caption.textContent = saved.length ? `服务器目录：${saved.map(item => item.title).join("、")}` : "服务器当前目录为空。";
+      const keep = button("保留本页目录", "button button-small button-secondary");
+      keep.addEventListener("click", () => {
+        if (!view.active() || outlineDrafts.get(view.id) !== draft || draft.saving) return;
+        draft.base = saved;
+        renderOutline();
+      });
+      comparison.append(caption, keep);
+      list.append(comparison);
+    }
+    const inEditor = new Set(state.outline.map(row => row.id));
+    const archived = (state.project?.state?._archived_outline || []).filter(row => !inEditor.has(row.id));
+    if (archived.length) {
+      const history = document.createElement("details");
+      const label = document.createElement("summary");
+      label.textContent = "已移出的章节";
+      history.append(label);
+      for (const row of archived) {
+        const restore = button(`恢复「${row.title}」`, "button button-small button-secondary");
+        restore.disabled = full;
+        restore.addEventListener("click", () => {
+          if (!restore.disabled && view.active()) change([...state.outline, { ...row }]);
+        });
+        history.append(restore);
+      }
+      list.append(history);
+    }
     $("#outlineActions").classList.remove("hidden");
+    $("#saveOutlineBtn").disabled = !state.outline.length || Boolean(conflict || draft?.saving);
   }
 
   async function saveOutline() {
-    const projectId = state.project?.id;
-    if (!projectId) return;
+    const view = currentProjectView();
+    if (!view.active() || !state.outline.length) return;
+    const draft = outlineDrafts.get(view.id) || { base: copyOutline(state.project.outline), rows: state.outline };
+    if (draft.saving || !sameOutline(draft.base, copyOutline(state.project.outline))) return;
+    const rows = draft.rows;
+    const removed = draft.base.filter(row => !rows.some(item => item.id === row.id)
+      && (String(state.project.sections?.[row.id] || "").trim() || sectionEdits.hasLocalContent(view.id, row.id)));
+    if (removed.length && !confirm("移出的章节将从后续 Word 导出中排除，正文可从「已移出的章节」恢复。继续保存吗？")) return;
+    outlineDrafts.set(view.id, draft);
+    draft.saving = true;
+    $("#saveOutlineBtn").disabled = true;
     clearExportArtifacts();
     window.MaterialPilot?.invalidateArtifacts?.();
     try {
       await flushDraftEdits();
-      if (state.project?.id !== projectId) return;
-      const result = await api(`/api/projects/${projectId}/outline`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ outline: state.outline, expected_revision: state.project.material_revision }),
+      if (!view.active()) return;
+      const result = await api(`/api/projects/${view.id}/outline`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ outline: rows, base_outline: draft.base }),
       });
-      if (state.project?.id !== projectId) return;
-      state.outline = result.outline;
-      state.project.outline = result.outline.map(item => ({ ...item }));
-      state.project.sections ||= {};
-      for (const item of result.outline) state.project.sections[item.id] ??= "";
+      if (outlineDrafts.get(view.id) === draft) {
+        draft.base = copyOutline(result.outline);
+        if (draft.rows === rows) outlineDrafts.delete(view.id);
+      }
+      if (!view.active()) return;
+      if (result.material_revision < state.project.material_revision) {
+        await loadProject(view.id, { refreshList: false });
+        return;
+      }
+      state.project.outline = copyOutline(result.outline);
+      const emptySections = Object.fromEntries(result.outline.map(item => [item.id, ""]));
+      state.project.sections = { ...emptySections, ...state.project.sections };
       state.project.state ||= {};
       state.project.state.outline_confirmed = true;
+      if (result.archived_outline) state.project.state._archived_outline = result.archived_outline;
       if (result.material_revision !== undefined) state.project.material_revision = result.material_revision;
-      $("#outlineActions").classList.add("hidden");
-      renderOutline();
+      restoreOutlineEditor(state.project);
       renderSections();
-      if (window.MaterialPilot?.active()) await window.MaterialPilot.refresh();
-      toast("目录已确认。现在可以逐章生成或编辑。");
+      if (window.MaterialPilot?.active()) void window.MaterialPilot.refresh().catch(() => {});
+      toast(draft.rows === rows ? "目录已确认。现在可以逐章生成或编辑。" : "已保存提交时的目录，本页还有新修改待保存。");
     } catch (error) {
-      toast(error.message, true);
+      if (!view.active()) return;
+      if (error.status === 409) await loadProject(view.id, { refreshList: false });
+      if (view.active()) toast(error.message, true);
+    } finally {
+      draft.saving = false;
+      if (view.active()) renderOutline();
     }
   }
 
   function updateDraftStats() {
     const badge = $("#draftStatsBadge");
     if (!badge) return;
-    const outline = state.outline || [];
+    const outline = state.project?.outline || [];
     const sections = state.project?.sections || {};
     const totalWords = outline.reduce((sum, s) => sum + countWords(sections[s.id] || ""), 0);
     const completed = outline.filter(s => (sections[s.id] || "").trim().length > 0).length;
@@ -3159,7 +3287,7 @@
   }
 
   async function startBatchGeneration() {
-    if (!state.project || !state.outline?.length) {
+    if (!state.project?.outline?.length) {
       toast("请先拟定并确认目录", true);
       return;
     }
@@ -3204,7 +3332,7 @@
       batchBtn.textContent = "批量生成中…";
     }
 
-    const outline = [...state.outline];
+    const outline = copyOutline(state.project.outline);
     let completedCount = 0;
     const total = outline.length;
     let stopped = "";
@@ -3358,14 +3486,14 @@
       $("#toggleAllSectionsBtn").textContent = "折叠全部";
     }
     updateDraftStats();
-    if (!state.outline?.length) {
+    if (!state.project?.outline?.length) {
       const note = document.createElement("div");
       note.className = "empty-note";
       note.textContent = "确认目录后，这里会出现章节编辑器。";
       root.append(note);
       return;
     }
-    for (const section of state.outline) {
+    for (const section of state.project.outline) {
       const boundProjectId = state.project?.id;
       const uncertainKey = `${boundProjectId}\0${section.id}`;
       const wrapper = document.createElement("div");
@@ -5376,7 +5504,7 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     window.addEventListener("beforeunload", event => {
-      if (!sectionEdits.hasUnsaved()) return;
+      if (!sectionEdits.hasUnsaved() && !outlineDrafts.size && !outlinePreviews.size) return;
       event.preventDefault();
       event.returnValue = "";
     });

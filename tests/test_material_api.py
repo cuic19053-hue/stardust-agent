@@ -306,3 +306,21 @@ def test_direct_section_generation_reports_atomic_persistence_when_worker_unread
     assert result["material_applied"] is True
     assert result["material_revision"] == store.get_project(project["id"])["material_revision"]
     assert store.get_project(project["id"])["sections"]["method"] == "新的生成草稿"
+
+
+def test_importing_a_completed_outline_job_returns_a_preview_without_replacing_saved_directory(api):
+    client, store, project = api
+    queue = MaterialJobs(store)
+    identifier = "a" * 32
+    queue.submit(project["id"], "outline", "", {"job_id": identifier,
+        "base_revision": project["material_revision"], "input_snapshot": "snapshot"}, "outline-preview")
+    job = queue.claim_local()
+    candidate = [{"id": "different", "title": "候选目录"}]
+    queue.worker_local(job, "finish", status="completed", result={"outline": candidate})
+    url = f"/api/projects/{project['id']}/material/jobs/{identifier}/apply"
+    response = client.post(url)
+    assert response.status_code == 200 and response.json()["outline"] == candidate
+    assert response.json()["applied"] is False
+    current = store.get_project(project["id"])
+    assert current["material_revision"] == project["material_revision"]
+    assert current["outline"] == project["outline"] and current["state"]["outline_confirmed"] is True
