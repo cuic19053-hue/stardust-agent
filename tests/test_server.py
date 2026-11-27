@@ -215,7 +215,7 @@ def test_failed_reconfirmation_never_reveals_stale_chunks(client, monkeypatch):
     doc_id = uploaded["id"]
     assert client.patch(f"/api/documents/{doc_id}/confirm", json={"confirmed": True}).status_code == 200
     assert server_app.tools.search_project_materials(project["id"], "珍贵原始数据")["results"]
-    monkeypatch.setattr(server_app.retriever, "index_document_result",
+    monkeypatch.setattr(server_app.retriever, "prepare_document_index",
                         lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("index failure")))
     with pytest.raises(RuntimeError, match="index failure"):
         client.patch(f"/api/documents/{doc_id}/confirm",
@@ -227,7 +227,6 @@ def test_failed_reconfirmation_never_reveals_stale_chunks(client, monkeypatch):
 
 def test_concurrent_newer_confirmation_is_not_overwritten(client, monkeypatch):
     import app as server_app
-    from proposal.materials import MaterialConflict
     project = client.post("/api/projects", json={"title": "并发材料"}).json()
     uploaded = client.post(
         f"/api/projects/{project['id']}/documents?kind=source",
@@ -235,17 +234,55 @@ def test_concurrent_newer_confirmation_is_not_overwritten(client, monkeypatch):
     ).json()["documents"][0]["document"]
     doc_id = uploaded["id"]
     def concurrent_update(*_args, **_kwargs):
-        server_app.store.update_document_extraction(
-            doc_id, "另一个请求更新的文本", "ready", confirmed=True, confirmed_by_user=True
+        server_app.store.apply_document_review(
+            doc_id, uploaded["review_revision"], "另一个请求更新的文本", "ready", True,
+            [{"content": "另一个请求更新的文本", "source_ref": "片段 1"}],
         )
-        raise MaterialConflict("材料已更改")
-    monkeypatch.setattr(server_app.retriever, "index_document_result", concurrent_update)
+        return [{"content": "本次提交的文本", "source_ref": "片段 1"}], "keyword_fallback"
+    monkeypatch.setattr(server_app.retriever, "prepare_document_index", concurrent_update)
     response = client.patch(f"/api/documents/{doc_id}/confirm",
                             json={"confirmed": True, "corrected_text": "本次提交的文本"})
     assert response.status_code == 409
     current = server_app.store.get_document(doc_id)
     assert current["extracted_text"] == "另一个请求更新的文本"
     assert current["confirmed"]
+    assert [c["content"] for c in server_app.store.chunks_for_project(project["id"])] == ["另一个请求更新的文本"]
+
+
+def test_stale_material_review_preserves_the_confirmed_text_and_index(client, monkeypatch):
+    import app as server_app
+    project = client.post("/api/projects", json={"title": "校对版本"}).json()
+    uploaded = client.post(
+        f"/api/projects/{project['id']}/documents", files={"files": ("资料.txt", "初版文字".encode(), "text/plain")},
+    ).json()["documents"][0]["document"]
+    url = f"/api/documents/{uploaded['id']}/confirm"
+    first = client.patch(url, json={"confirmed": True, "corrected_text": "先确认的文字", "expected_revision": uploaded["review_revision"]})
+    assert first.status_code == 200
+    assert first.json()["document"]["review_revision"] > uploaded["review_revision"]
+    monkeypatch.setattr(server_app.retriever, "prepare_document_index", lambda *_: pytest.fail("Stale text must be rejected before embedding"))
+    stale = client.patch(url, json={"confirmed": True, "corrected_text": "旧标签页文字", "expected_revision": uploaded["review_revision"]})
+    assert stale.status_code == 409
+    assert server_app.store.get_document(uploaded["id"])["extracted_text"] == "先确认的文字"
+    assert [c["content"] for c in server_app.store.chunks_for_project(project["id"])] == ["先确认的文字"]
+
+
+def test_document_review_and_index_roll_back_together_on_failed_write(client, monkeypatch):
+    import app as server_app
+    project = client.post("/api/projects", json={"title": "材料写入校验"}).json()
+    uploaded = client.post(
+        f"/api/projects/{project['id']}/documents", files={"files": ("资料.txt", "初版文字".encode(), "text/plain")},
+    ).json()["documents"][0]["document"]
+    url = f"/api/documents/{uploaded['id']}/confirm"
+    first = client.patch(url, json={"confirmed": True, "corrected_text": "初版文字"})
+    assert first.status_code == 200
+    before = first.json()["document"]
+    monkeypatch.setattr(server_app.retriever, "prepare_document_index", lambda *_: ([{"content": "缺少片段位置"}], "keyword_fallback"))
+    with pytest.raises(KeyError, match="source_ref"):
+        client.patch(url, json={"confirmed": True, "corrected_text": "打算换成的新文字", "expected_revision": before["review_revision"]})
+    actual = server_app.store.get_document(uploaded["id"])
+    assert actual["extracted_text"] == "初版文字" and actual["confirmed"]
+    assert actual["review_revision"] == before["review_revision"]
+    assert [c["content"] for c in server_app.store.chunks_for_project(project["id"])] == ["初版文字"]
 
 
 def test_legacy_automatic_confirmations_require_fresh_user_action(client, tmp_path):
@@ -473,8 +510,10 @@ def test_cloud_registration_does_not_download_or_parse_and_processing_can_retry(
         if download:
             downloads.append(_id)
         return dict(document)
-    def update(_id, text, status, warning, low, confirmed):
+    def update(_id, text, status, warning, low, confirmed, *, only_unprocessed):
+        assert only_unprocessed
         document.update(extracted_text=text, extraction_status=status, extraction_warning=warning, confirmed=confirmed)
+        return True
     fake_store = SimpleNamespace(
         register_document=register_document, get_document=get_document,
         get_project=lambda _: {"id": project_id, "state": {}}, update_document_extraction=update,
@@ -1033,7 +1072,7 @@ def test_sensitive_endpoints_are_never_cached_or_echo_invalid_secrets(client, mo
     assert 'no-cache' in response.headers['cache-control']
     assert '/static/app.js?v=' in response.text
     assert '/static/app.css?v=' in response.text
-    for script in ('material-upload.js', 'word-export.js'):
+    for script in ('material-upload.js', 'draft-recovery.js', 'section-edits.js', 'fact-edits.js', 'word-export.js'):
         assert '/static/' + script + '?v=' in response.text
         assert response.text.index('/static/' + script) < response.text.index('/static/app.js')
     body = client.get('/api/ping').json()
@@ -1097,7 +1136,7 @@ def test_model_config_cloud_crud_and_no_secret_in_save_response(client, monkeypa
     assert client.post('/api/user/llm-config', json=config, headers=headers).status_code == 422
 
 
-@pytest.mark.parametrize('name', ['app.js', 'material-upload.js', 'word-export.js'])
+@pytest.mark.parametrize('name', ['app.js', 'material-upload.js', 'draft-recovery.js', 'section-edits.js', 'fact-edits.js', 'word-export.js'])
 def test_only_matching_content_hashed_assets_receive_immutable_cache(client, name):
     import app as server_app
     version = server_app.ASSET_VERSIONS[name]
@@ -1189,3 +1228,190 @@ def test_replacement_with_lost_commit_response_keeps_new_photo(client, monkeypat
     assert new != old and store.get_project(pid)["state"]["leader_photo"] == new
     assert store.get_document(new)["confirmed"]
     assert store.get_document(old) is None and not old_path.exists()
+
+
+def test_fact_form_updates_metadata_and_facts_in_one_revision(client):
+    project = client.post("/api/projects", json={"title": "表单测试"}).json()
+    root = f"/api/projects/{project['id']}"
+    revision = client.get(root).json()["material_revision"]
+    form = {"facts": {"college": "甲学院"}, "project": {"school": "甲大学"}, "expected_revision": revision}
+    receipt = client.put(root + "/facts/form", json=form)
+    assert receipt.status_code == 200
+    assert receipt.json()["project"]["school"] == "甲大学"
+    assert receipt.json()["confirmed_facts"]["college"] == "甲学院"
+    assert receipt.json()["material_revision"] == revision + 1
+    saved = client.get(root).json()
+    assert saved["school"] == "甲大学" and saved["state"]["confirmed_facts"]["college"] == "甲学院"
+    assert saved["material_revision"] == revision + 1
+    form["project"]["school"] = "乙大学"
+    form["facts"]["college"] = "乙学院"
+    assert client.put(root + "/facts/form", json=form).status_code == 409
+    form["expected_revision"] = saved["material_revision"]
+    form["facts"]["application_year"] = "错误年份"
+    assert client.put(root + "/facts/form", json=form).status_code == 422
+    current = client.get(root).json()
+    assert current["school"] == "甲大学" and current["state"]["confirmed_facts"]["college"] == "甲学院"
+    assert current["material_revision"] == saved["material_revision"]
+
+
+@pytest.mark.parametrize(
+    ("facts", "fields"),
+    [
+        ({"college": "本页改动"}, {"level": "省级"}),
+        ({"method": "本页改动"}, {"school": "本页学校"}),
+        ({"project_name": "本页标题"}, {}),
+    ],
+)
+def test_fact_form_guards_original_fields_even_with_current_project_revision(client, facts, fields):
+    project = client.post("/api/projects", json={"title": "旧标题", "school": "旧学校"}).json()
+    root = f"/api/projects/{project['id']}"
+    original = client.get(root).json()
+    project_keys = set(fields)
+    if "project_name" in facts:
+        project_keys.add("title")
+
+    def base_from(snapshot):
+        confirmed = snapshot["state"]["confirmed_facts"]
+        return {"project": {key: snapshot.get(key) or "" for key in project_keys},
+                "facts": {key: confirmed.get(key, "") for key in facts}}
+
+    assert client.put(root + "/facts/form", json={
+        "expected_revision": original["material_revision"],
+        "project": {"title": "另一页的标题", "school": "另一页的学校"}, "facts": {"college": "另一页的学院"},
+    }).status_code == 200
+    current = client.get(root).json()
+    form = {"expected_revision": current["material_revision"], "project": fields, "facts": facts}
+    stale = client.put(root + "/facts/form", json={**form, "base": base_from(original)})
+    assert stale.status_code == 409
+    assert "字段" in stale.json()["detail"]
+    unchanged = client.get(root).json()
+    assert unchanged["title"] == current["title"] and unchanged["school"] == current["school"]
+    assert unchanged["state"]["confirmed_facts"] == current["state"]["confirmed_facts"]
+    assert unchanged["material_revision"] == current["material_revision"]
+    saved = client.put(root + "/facts/form", json={**form, "base": base_from(current)})
+    assert saved.status_code == 200, saved.text
+
+
+def test_fact_form_clears_existing_fields_and_keeps_untouched_evidence(client):
+    import app as server_app
+    project = client.post("/api/projects", json={"title": "已重命名的项目"}).json()
+    root = f"/api/projects/{project['id']}"
+    original = {"budget": "三千元", "custom_field_1": "旧记录", "project_name": "最初的名称", "college": "甲学院"}
+    state = {**project["state"], **original, "confirmed_facts": original,
+             "fact_sources": {key: "学生口述原话" for key in original}}
+    server_app.store.update_project(project["id"], state=state)
+    current = client.get(root).json()
+    form = {"expected_revision": current["material_revision"], "project": {},
+            "facts": {**original, "budget": "", "custom_field_1": "  "}}
+    assert client.put(root + "/facts/form", json=form).status_code == 200
+    saved = client.get(root).json()
+    assert saved["title"] == "已重命名的项目"
+    for field in ("budget", "custom_field_1"):
+        assert all(field not in group for group in (saved["state"], saved["state"]["confirmed_facts"], saved["state"]["fact_sources"]))
+    assert saved["state"]["fact_sources"]["college"] == "学生口述原话"
+    form["expected_revision"] = saved["material_revision"]
+    assert client.put(root + "/facts/form", json=form).status_code == 200
+    assert client.get(root).json()["material_revision"] == saved["material_revision"]
+
+
+def test_fact_form_rejects_invalid_fields_without_saving_valid_ones(client):
+    project = client.post("/api/projects", json={"title": "字段校验", "school": "原学校"}).json()
+    root = f"/api/projects/{project['id']}"
+    response = client.put(root + "/facts/form", json={
+        "expected_revision": project["material_revision"], "project": {"school": "新学校"},
+        "facts": {"college": "新学院", "template_preference": "不允许的字段"},
+    })
+    assert response.status_code == 422
+    current = client.get(root).json()
+    assert current["school"] == "原学校" and current["material_revision"] == project["material_revision"]
+
+
+def test_reverting_a_pending_fact_save_advances_the_revision_without_changing_facts(client):
+    project = client.post("/api/projects", json={"title": "保存状态验证", "school": "原学校"}).json()
+    url = f"/api/projects/{project['id']}/facts/form"
+    first_revision = project["material_revision"]
+    override = client.put(url, json={"facts": {}, "project": {"school": "原学校"},
+        "expected_revision": first_revision, "supersedes_pending_save": True})
+    override.raise_for_status()
+    late = client.put(url, json={"facts": {}, "project": {"school": "迟到的修改"}, "expected_revision": first_revision})
+    assert late.status_code == 409
+    current = client.get(f"/api/projects/{project['id']}").json()
+    assert current["material_revision"] == first_revision + 1 and current["school"] == "原学校"
+
+
+def test_oversized_fact_form_keeps_all_original_fields(client):
+    project = client.post("/api/projects", json={"title": "长度验证", "school": "甲校"}).json()
+    root = f"/api/projects/{project['id']}"
+    form = {"expected_revision": project["material_revision"], "project": {"school": "乙校"},
+            "facts": {"method": "字" * 2001}}
+    assert client.put(root + "/facts/form", json=form).status_code == 422
+    assert client.get(root).json()["school"] == "甲校"
+
+
+@pytest.mark.parametrize("late_failure", [False, True])
+def test_ocr_finishing_after_student_confirmation_preserves_review(client, monkeypatch, tmp_path, late_failure):
+    import app as server_app
+    from types import SimpleNamespace
+    path = tmp_path / "note.txt"
+    path.write_text("原材料文字")
+    doc = {"id": "doc", "project_id": "one", "kind": "source", "original_name": "note.txt",
+           "stored_path": str(path), "confirmed": False, "extraction_status": "pending", "extracted_text": ""}
+    downloads = []
+    def get_document(_id, download=True):
+        if download:
+            downloads.append(_id)
+        return dict(doc)
+
+    def update(_id, text, status, warning, low, confirmed, *, only_unprocessed=False):
+        if only_unprocessed and (doc["confirmed"] or doc["extraction_status"] == "ready"):
+            return False
+        doc.update(extracted_text=text, confirmed=confirmed, extraction_status=status)
+        return True
+
+    def extract(*_):
+        doc.update(extracted_text="学生已校对的版本", confirmed=True, extraction_status="ready")
+        if late_failure:
+            raise ValueError("识别失败")
+        return server_app.Extraction(text="第二次机器识别的结果")
+
+    monkeypatch.setattr(server_app, "store", SimpleNamespace(get_document=get_document, update_document_extraction=update))
+    monkeypatch.setattr(server_app, "_extract_uploaded_document", extract)
+    for _ in range(2):
+        result = server_app._process_cloud_document(get_document("doc", download=False))["documents"][0]
+        assert result["document"]["extracted_text"] == "学生已校对的版本"
+        assert result["document"]["confirmed"] and not result["needs_confirmation"] and "error" not in result
+    assert downloads == ["doc"]
+
+
+def test_template_processing_respects_another_choice_and_ready_replays(monkeypatch, tmp_path):
+    import app as server_app
+    from types import SimpleNamespace
+    path = tmp_path / "template.txt"
+    path.write_text("模板")
+    project = {"id": "one", "state": {}, "template_document_id": "first", "material_revision": 1}
+    doc = {"id": "slow", "project_id": "one", "kind": "template", "original_name": path.name,
+           "stored_path": str(path), "extraction_status": "pending", "confirmed": False}
+    parses = []
+
+    def extract(*_):
+        parses.append(True)
+        project.update(template_document_id="another", material_revision=2)
+        return server_app.Extraction(text="模板")
+
+    def update_document(_id, text, status, warning, low, confirmed, **kwargs):
+        doc.update(extraction_status=status, confirmed=confirmed, extracted_text=text)
+        return True
+
+    def update_project(_id, **fields):
+        project.update(fields)
+        return project
+
+    store = SimpleNamespace(get_document=lambda *a, **kw: dict(doc), get_project=lambda _: dict(project),
+                            update_project=update_project, update_document_extraction=update_document)
+    monkeypatch.setattr(server_app, "store", store)
+    monkeypatch.setattr(server_app, "_extract_uploaded_document", extract)
+    for _ in range(2):
+        result = server_app._process_cloud_document(dict(doc))
+        assert result["documents"][0]["document"]["extraction_status"] == "ready"
+        assert project["template_document_id"] == "another"
+    assert len(parses) == 1

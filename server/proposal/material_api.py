@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -10,15 +11,15 @@ import urllib.request
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Path as PathParam
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from .material_figures import FigureSpec
+from .material_figures import FigureSpec, figure_sha256
 from .material_jobs import MaterialJobs, MaterialSecurityUnavailable, checked_bundle, job_id
 from .material_release_gate import platform_material_jobs_ready
 from .materials import (
-    MaterialConflict, Requirement, RULES, TRACKING, enabled, material_view, digest, prepare_update,
+    MaterialConflict, Requirement, RULES, TRACKING, enabled, material_view, digest, prepare_update, worker_ready,
 )
 from .model_config_security import encrypt_config
 from .chat_drafts import require_export_content
@@ -34,6 +35,12 @@ class AcknowledgeInput(BaseModel):
     revision: int
     snapshot: str
     nodes: list[str] = Field(max_length=100)
+
+
+class FigureTextConfirmation(BaseModel):
+    revision: int = Field(ge=0)
+    job_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    image_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
 class PlansInput(BaseModel):
@@ -116,7 +123,7 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
                 "requirements": project["state"].get(RULES, []),
                 "plans": project["state"].get("_material_plans", []),
                 "jobs": MaterialJobs(store).call("list", project_id=project_id),
-                "worker_ready": os.environ.get("MATERIAL_WORKER_READY", "").lower() == "true"}
+                "worker_ready": worker_ready()}
 
     @router.put("/requirements")
     def update_requirements(project_id: str, payload: RequirementsInput):
@@ -159,7 +166,7 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
     @router.post("/jobs", status_code=202)
     def submit(project_id: str, payload: JobInput):
         store, project = project_for(project_id)
-        if os.environ.get("MATERIAL_WORKER_READY", "").lower() != "true":
+        if not worker_ready():
             raise HTTPException(503, "材料 Worker 尚未启用，不能提交长任务")
         if payload.kind == "export":
             from .exporter import ensure_grant_income_export_safe
@@ -305,6 +312,22 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
             raise HTTPException(413, "本次上下文过大，请拆分项目资料后再提交；尚未调用模型")
         return queue.submit(project_id, payload.kind, payload.target, job_payload, payload.idempotency_key)
 
+    @router.get("/jobs/by-request/{request_id}")
+    def job_by_request(project_id: str, request_id: str = PathParam(pattern=r"^[a-f0-9]{32}$")):
+        store, _ = project_for(project_id)
+        job = MaterialJobs(store).find(project_id, request_id)
+        if not job:
+            raise HTTPException(404, "未找到这次任务。")
+        return job
+
+    @router.get("/exports/by-request/{request_id}")
+    def export_by_request(project_id: str, request_id: str = PathParam(pattern=r"^[a-f0-9]{32}$")):
+        store, _ = project_for(project_id)
+        job = MaterialJobs(store).find(project_id, request_id)
+        if not job or job["kind"] != "export":
+            raise HTTPException(404, "未找到这次后台导出。可查看任务区或重新导出。")
+        return job
+
     @router.get("/jobs/{identifier}")
     def status(project_id: str, identifier: str):
         store, _ = project_for(project_id)
@@ -321,6 +344,18 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
             raise HTTPException(404, "任务不存在")
         return result
 
+    def section_apply_receipt(store, project_id, section_id, result):
+        if result.get("conflict_status") or not result.get("applied"):
+            return result
+        latest = store.get_project(project_id)
+        if not latest:
+            raise HTTPException(404, "项目不存在")
+        if (not any(section.get("id") == section_id for section in latest["outline"])
+                or latest["sections"].get(section_id) != result.get("content")):
+            return {**result, "conflict_status": "user_edit_preserved",
+                    "notice": "该任务已经保存过，项目正文随后有更新。可在任务区查看生成稿。"}
+        return {**result, "material_revision": latest["material_revision"]}
+
     @router.post("/jobs/{identifier}/apply")
     def apply(project_id: str, identifier: str, payload: ApplyInput | None = None):
         store, project = project_for(project_id)
@@ -333,8 +368,11 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
         raw = queue.call("raw", project_id=project_id, id=identifier)
         if not raw or raw["status"] != "completed":
             raise HTTPException(409, "任务未完成")
+        if raw["kind"] == "outline":
+            return {**raw["result"], "applied": False, "confirmed": False}
         if raw["result"].get("applied"):
-            return raw["result"]
+            return (section_apply_receipt(store, project_id, raw["target"], raw["result"])
+                    if raw["kind"] == "section" else raw["result"])
         result = dict(raw["result"])
         from .generation_safety import review_incomplete
         if raw["kind"] == "section" and review_incomplete(result) and not (payload and payload.use_unreviewed_draft):
@@ -349,9 +387,6 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
                 "blocks_version": digest(result["content"]),
             }
             fields["state"] = {**project["state"], "_material_output_inputs": inputs}
-        elif raw["kind"] == "outline":
-            fields["outline"] = result["outline"]
-            fields["state"] = {**project["state"], "outline_confirmed": False}
         elif raw["kind"] == "plan":
             plan = FigureSpec.model_validate(result["plan"]).model_dump()
             fields["state"] = {**project["state"], "_material_plans": [
@@ -359,30 +394,51 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
             ] + [plan]}
         elif raw["kind"] == "figure":
             folder = artifact_folder(store, project_id, raw)
-            asset = {**result["asset"], "preview": str(folder / "figure.png"), "material_job_id": identifier}
+            asset = {**result["asset"], "preview": str(folder / "figure.png"),
+                     "material_job_id": identifier, "text_confirmed": False}
+            asset.pop("text_confirmation", None)
             fields["diagrams"] = [d for d in project["diagrams"] if d["id"] != asset["id"]] + [asset]
         fields = prepare_update(project, fields) if fields else {}
         applied = queue.apply(raw, fields)
         if raw["kind"] == "section" and applied.get("applied"):
             from .review_workflow import after_draft_saved
             applied["review"] = after_draft_saved(store, project_id, "section_generation")
+            return section_apply_receipt(store, project_id, raw["target"], applied)
         return applied
 
     @router.post("/figures/{figure_id}/confirm-text")
-    def confirm_text(project_id: str, figure_id: str, payload: AcknowledgeInput):
+    def confirm_text(project_id: str, figure_id: str, payload: FigureTextConfirmation):
         store, project = project_for(project_id)
-        if payload.snapshot != material_view(project)["snapshot"]:
-            raise HTTPException(409, "图片已变化，请重新核对")
         diagrams = copy.deepcopy(project["diagrams"])
         asset = next((d for d in diagrams if d["id"] == figure_id), None)
         if not asset or not asset.get("material_job_id"):
-            raise HTTPException(404, "图片不存在")
+            raise HTTPException(404, "请先将图表保存到项目。")
+        if asset["material_job_id"] != payload.job_id:
+            raise HTTPException(409, "项目中已换用另一张图，请打开当前图片重新核对。")
+        if not asset.get("scene_text"):
+            raise HTTPException(422, "此图表没有待核对的场景文字。")
+        raw = MaterialJobs(store).call("raw", project_id=project_id, id=payload.job_id)
+        if not raw or raw["kind"] != "figure" or raw["target"] != figure_id or raw["status"] != "completed":
+            raise HTTPException(409, "无法确认当前图表的生成任务，请刷新后核对。")
+        if raw["result"].get("asset", {}).get("scene_text") != asset["scene_text"]:
+            raise HTTPException(409, "场景文字已变化，请确认当前任务的图片。")
+        image = artifact_folder(store, project_id, raw) / "figure.png"
+        try:
+            current_sha256 = figure_sha256(image)
+        except FileNotFoundError:
+            raise HTTPException(404, "找不到待核对的图片。") from None
+        if current_sha256 != payload.image_sha256:
+            raise HTTPException(409, "图片内容已变化，请重新打开并核对。")
+        receipt = {"job_id": payload.job_id, "sha256": current_sha256, "scene_text": asset["scene_text"]}
+        if asset.get("text_confirmed") and asset.get("text_confirmation") == receipt:
+            return material_view(project)
         asset["text_confirmed"] = True
+        asset["text_confirmation"] = receipt
         return save(store, project, payload.revision, diagrams=diagrams)
 
     @router.get("/jobs/{identifier}/files/{name}")
-    def download(project_id: str, identifier: str, name: str):
-        store, project = project_for(project_id)
+    def download(project_id: str, identifier: str, name: str, current: bool = False):
+        store, _ = project_for(project_id)
         owner = store._identity()["user_id"] if hasattr(store, "_identity") else "local_user"
         obs.bind(owner_id=owner, project_id=project_id, job_id=identifier,
                  trace_id=obs.correlated("job", owner, identifier))
@@ -400,13 +456,33 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
         path = artifact_folder(store, project_id, raw) / name
         if not path.is_file():
             raise HTTPException(404, "文件不存在")
+        # HTML/SVG source is download-only to prevent active content in origin.
+        headers = {"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
+        media_type = None
+        if name == "proposal.docx":
+            from .export_api import WORD_CONTENT_TYPE, word_digest
+
+            media_type = WORD_CONTENT_TYPE
+            with path.open("rb") as word:
+                headers["Repr-Digest"] = word_digest(hashlib.file_digest(word, "sha256").digest())
+        if name == "figure.png" and raw["kind"] == "figure":
+            headers["X-Figure-SHA256"] = figure_sha256(path)
         if raw.get("kind") == "export":
             from .chat_context import scholarship_student_facts
-            from .exporter import _grant_income_omitted, ensure_grant_income_artifact_safe
-            if _grant_income_omitted(store, project, store.list_documents(project_id)):
+            from .exporter import _grant_income_omitted, ensure_grant_income_artifact_safe, export_snapshot_fingerprint
+
+            snapshot = raw["payload"]
+            # Storage fetch can finish after another tab saves a new project version.
+            _, project = project_for(project_id)
+            documents = store.list_documents(project_id)
+            if current and name == "proposal.docx":
+                submitted = export_snapshot_fingerprint(snapshot["project"], snapshot["documents"], snapshot["messages"])
+                live = export_snapshot_fingerprint(project, documents, store.messages(project_id, limit=200))
+                if submitted != live:
+                    raise HTTPException(409, "后台导出使用的项目内容已更新，请重新导出 Word 草稿。")
+            if _grant_income_omitted(store, project, documents):
                 if name not in {"proposal.docx", "proposal.pdf"} and not re.fullmatch(r"page-\d{3}\.png", name):
                     raise HTTPException(409, "当前收入使用偏好下，请查看 Word 草稿或页面预览。")
-                snapshot = raw.get("payload") or {}
                 facts, _ = scholarship_student_facts(snapshot.get("messages") or [], "",
                                                       snapshot.get("documents") or [], include_family_income=True,
                                                       project_id=project_id)
@@ -419,8 +495,6 @@ def register_material_api(app, get_store, validate_config, get_retriever=None):
                     ensure_grant_income_artifact_safe(store, project, word)
                 except ValueError as exc:
                     raise HTTPException(409, f"{exc} 请按当前要求重新导出。") from None
-        # HTML/SVG source is download-only to prevent active content in origin.
-        return FileResponse(path, filename=name, headers={"Cache-Control": "private, no-store",
-                             "X-Content-Type-Options": "nosniff"})
+        return FileResponse(path, filename=name, media_type=media_type, headers=headers)
 
     app.include_router(router)

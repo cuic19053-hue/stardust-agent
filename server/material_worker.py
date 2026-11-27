@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -21,6 +22,11 @@ import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
+
+# Direct script execution puts only server/ on the module path.
+repo_root = str(Path(__file__).resolve().parents[1])
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
 
 from proposal.material_jobs import MaterialJobs, checked_bundle
 from proposal.material_figures import FigureSpec, render_svg, render_python, compose_text, check_scene_text, image_prompt

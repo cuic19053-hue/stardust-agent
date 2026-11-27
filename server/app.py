@@ -30,7 +30,7 @@ SERVER_DIR = Path(__file__).resolve().parent
 STATIC_DIR = SERVER_DIR / "static"
 ASSET_VERSIONS = {
     name: hashlib.sha256((STATIC_DIR / name).read_bytes()).hexdigest()[:16]
-    for name in ("app.js", "app.css", "material.js", "review.js", "material-upload.js", "word-export.js",
+    for name in ("app.js", "app.css", "material.js", "review.js", "material-upload.js", "draft-recovery.js", "section-edits.js", "fact-edits.js", "word-export.js",
                  "student-intake-demo.js", "student-intake-demo.css", "student-intake-demo.json",
                  "student-intake-local.js", "student-intake-worker.js", "student-intake-local.css",
                  "intake-0p5b-v1/model.json")
@@ -74,7 +74,11 @@ from proposal.wopally_transport import wopally_urlopen
 from proposal.tools import ProposalTools
 from proposal.jobs import GenerationJobRunner
 from proposal.local_chat_api import LocalChatAPI, register_local_chat_api
-from proposal.materials import MaterialConflict, enabled as material_enabled
+from proposal.sections import (
+    MAX_MANUAL_SECTION_LENGTH, SECTION_LENGTH_NOTICE, SectionProjectMissing,
+    check_section_revision, save_manual_section, write_section,
+)
+from proposal.materials import MaterialConflict, enabled as material_enabled, worker_ready as material_worker_ready
 from proposal.skills import normalize_skill_id, registry as skill_registry, valid_fact_key
 from proposal.wopally_client import WopallyCardRejected, WopallyClient, WopallyUnavailable
 from proposal.material_worker_proxy import (
@@ -189,6 +193,7 @@ class GenerateImageInput(BaseModel):
 class ConfirmDocument(BaseModel):
     confirmed: bool
     corrected_text: str | None = Field(default=None, max_length=200000)
+    expected_revision: int | None = Field(default=None, ge=0)
 
 
 class ProjectUpdate(BaseModel):
@@ -198,15 +203,33 @@ class ProjectUpdate(BaseModel):
     school: str | None = Field(default=None, max_length=120)
 
 
+class FactFormBase(BaseModel):
+    facts: dict[str, str] = Field(max_length=100)
+    project: dict[str, str] = Field(max_length=4)
+
+
+class ProjectFactForm(BaseModel):
+    project: ProjectUpdate
+    facts: dict[str, str]
+    expected_revision: int = Field(ge=0)
+    base: FactFormBase | None = None
+    supersedes_pending_save: bool = False
+
+
 class OutlineUpdate(BaseModel):
     outline: list[dict[str, str]]
-    expected_revision: int | None = None
+    base_outline: list[dict[str, str]] | None = None
+    expected_revision: int | None = Field(default=None, ge=0)
 
 
-class SectionUpdate(BaseModel):
-    content: str = Field(max_length=30000)
-    expected_revision: int | None = None
-    base_content: str | None = Field(default=None, max_length=30000)
+class SectionPrecondition(BaseModel):
+    expected_revision: int | None = Field(default=None, ge=0)
+    # Older generated chapters can exceed the current limit for new edits.
+    base_content: str | None = None
+
+
+class SectionUpdate(SectionPrecondition):
+    content: str = Field(max_length=MAX_MANUAL_SECTION_LENGTH)
 
 
 class CreateJobInput(BaseModel):
@@ -317,7 +340,12 @@ register_review_api(app, lambda: store, lambda: CLOUD_MODE, lambda: _platform_bu
 @app.exception_handler(RequestValidationError)
 async def validation_error(request: Request, exc: RequestValidationError):
     # Pydantic 默认把 input 回显；凭据接口不能回显 Key、密码或 token。
-    return JSONResponse({"detail": "请求字段格式不正确，请检查输入。"}, status_code=422,
+    detail = "请求字段格式不正确，请检查输入。"
+    if getattr(request.scope.get("route"), "name", None) == "update_section" and any(
+        e["loc"] == ("body", "content") and e["type"] == "string_too_long" for e in exc.errors()
+    ):
+        detail = SECTION_LENGTH_NOTICE
+    return JSONResponse({"detail": detail}, status_code=422,
                         headers={"Cache-Control": "no-store"})
 
 
@@ -513,6 +541,7 @@ def _public_document(document: dict[str, Any]) -> dict[str, Any]:
             "extraction_warning",
             "low_confidence_count",
             "confirmed",
+            "review_revision",
             "created_at",
             "storage_path",
         )
@@ -1986,60 +2015,69 @@ def register_cloud_upload(project_id: str, payload: StorageDocumentInput) -> dic
         ) from exc
 
 
+def _cloud_processing_result(document: dict[str, Any]) -> dict[str, Any]:
+    item = {"document": _public_document(document), "chunk_count": 0,
+            "needs_confirmation": document["kind"] != "template" and not document.get("confirmed")}
+    if document.get("extraction_status") == "error":
+        item["error"] = document.get("extraction_warning") or "识别失败，请重试。"
+        return {"documents": [item], "note": "原文件已保存，识别失败可单独重试。"}
+    return {"documents": [item], "note": "材料已保存；非模板文字须由你核对确认后才能用于检索。"}
+
+
 def _process_cloud_document(document: dict[str, Any]) -> dict[str, Any]:
     """Processing is separate from upload/registration, and can be retried by ID."""
     document_id = document["id"]
-    owner = request_identity.get() or {}
-    observability.bind(project_id=document["project_id"],
-                       trace_id=observability.correlated("upload", owner.get("user_id", "local"), document_id))
     project_id = document["project_id"]
+    template = document["kind"] == "template"
+    if document.get("confirmed") or document.get("extraction_status") == "ready":
+        return _cloud_processing_result(document)
+    previous_template = _safe_project(project_id).get("template_document_id") if template else None
+
+    owner = request_identity.get() or {}
+    observability.bind(project_id=project_id,
+                       trace_id=observability.correlated("upload", owner.get("user_id", "local"), document_id))
     try:
         loaded = store.get_document(document_id)
+        if not loaded:
+            raise HTTPException(404, "材料不存在")
         path = Path(loaded["stored_path"])
         if path.stat().st_size > MAX_UPLOAD_BYTES:
             raise ValueError("单个文件最大支持 50 MB。")
         file_bytes = path.read_bytes()
         observability.emit("upload.parsing", stage="extract", status="started", metadata={"file_bytes": len(file_bytes)})
         extraction = _extract_uploaded_document(document["original_name"], file_bytes, document["kind"])
-        observability.emit("upload.parsing", stage="extract", status="failed" if extraction.status == "error" else "completed",
-                           code="MATERIAL_PARSE_FAILED" if extraction.status == "error" else None)
-        confirmed = document["kind"] == "template"
-        store.update_document_extraction(
-            document["id"],
-            extraction.text,
-            extraction.status,
-            extraction.warning,
-            extraction.low_confidence_count,
-            confirmed=confirmed,
-        )
-        chunks = 0
-        if document["kind"] == "template":
-            store.set_template_document(project_id, document["id"])
-            current_project = store.get_project(project_id)
-            if current_project:
-                current_state = dict(current_project["state"])
-                current_state["template_preference"] = "has_template"
-                current_state["template_answer"] = f"已上传模板：{document['original_name']}"
-                store.update_project(project_id, state=current_state)
-        updated = store.get_document(document["id"])
-        return {
-            "documents": [
-                {
-                    "document": _public_document(updated or document),
-                    "chunk_count": chunks,
-                    "needs_confirmation": document["kind"] != "template",
-                }
-            ],
-            "note": "材料已保存；非模板文字须由你核对确认后才能用于检索。",
-        }
+    except HTTPException:
+        raise
     except Exception as exc:
         observability.emit("upload.parsing", stage="extract", status="failed", level="error", error=exc)
-        warning = _document_extraction_error(exc)
-        store.update_document_extraction(document_id, "", "error", warning, 0, confirmed=False)
-        return {"documents": [{
-            "document": _public_document(store.get_document(document_id, download=False) or document),
-            "error": warning, "chunk_count": 0,
-        }], "note": "原文件已保存，识别失败可单独重试。"}
+        extraction = Extraction(text="", warning=_document_extraction_error(exc), status="error")
+    else:
+        observability.emit("upload.parsing", stage="extract", status="failed" if extraction.status == "error" else "completed",
+                           code="MATERIAL_PARSE_FAILED" if extraction.status == "error" else None)
+
+    if template and extraction.status != "error":
+        project = _safe_project(project_id)
+        active_template = project.get("template_document_id")
+        if active_template == previous_template and active_template != document_id:
+            # Publish the selection before marking processing complete. A failed
+            # project write leaves the material retryable; a lost success response
+            # can resume with the selection already in place.
+            state = {**project["state"], "template_preference": "has_template",
+                     "template_answer": f"已上传模板：{document['original_name']}"}
+            if not store.update_project(project_id, template_document_id=document_id, state=state,
+                                        expected_revision=project["material_revision"]):
+                raise HTTPException(404, "项目不存在")
+
+    # Both a result and a parsing error can arrive after a student's correction.
+    # The database evaluates these conditions within the write itself.
+    store.update_document_extraction(
+        document_id, extraction.text, extraction.status, extraction.warning, extraction.low_confidence_count,
+        confirmed=template and extraction.status != "error", only_unprocessed=True,
+    )
+    current = store.get_document(document_id, download=False)
+    if not current:
+        raise HTTPException(404, "材料不存在")
+    return _cloud_processing_result(current)
 
 
 @app.post("/api/documents/{document_id}/process")
@@ -2055,46 +2093,19 @@ def process_cloud_document(document_id: str) -> dict[str, Any]:
 
 @app.patch("/api/documents/{document_id}/confirm")
 def confirm_document(document_id: str, payload: ConfirmDocument) -> dict[str, Any]:
-    document = store.get_document(document_id)
+    document = store.get_document(document_id, download=False)
     if not document:
         raise HTTPException(status_code=404, detail="材料不存在")
-    if document["kind"] == "template":
-        raise HTTPException(status_code=400, detail="Word/PDF 模板不作为项目事实材料索引")
+    from proposal.document_review import DocumentReviewUnavailable, review_document
     text = payload.corrected_text if payload.corrected_text is not None else document["extracted_text"]
-    if payload.confirmed and not text.strip():
-        raise HTTPException(status_code=400, detail="识别文本为空，请补充或取消确认")
-    # Hide and remove the old snapshot before a re-confirmation. A failed
-    # reindex must not make an obsolete chunk visible under new confirmation.
-    if document.get("confirmed"):
-        store.update_document_extraction(
-            document_id, document["extracted_text"], document["extraction_status"],
-            document["extraction_warning"], document["low_confidence_count"], confirmed=False,
-        )
-    store.replace_chunks(document_id, [])
-    store.update_document_extraction(
-        document_id,
-        text,
-        "ready" if payload.confirmed else document["extraction_status"],
-        document["extraction_warning"],
-        document["low_confidence_count"],
-        confirmed=payload.confirmed,
-        confirmed_by_user=payload.confirmed,
-    )
     try:
-        chunks, index_mode = retriever.index_document_result(document_id, text) if payload.confirmed else (0, "not_indexed")
-        if payload.confirmed and not chunks:
-            raise MaterialConflict("材料在索引期间已撤回或不可用，请重新核对。")
+        reviewed, chunks, index_mode = review_document(store, retriever, document, text, payload.confirmed, payload.expected_revision)
     except MaterialConflict:
-        # Another request owns the newer document state. Do not overwrite it.
         raise
-    except Exception:
-        current = store.get_document(document_id)
-        if current and current.get("extracted_text") == text:
-            store.update_document_extraction(
-                document_id, text, "ready", document["extraction_warning"],
-                document["low_confidence_count"], confirmed=False,
-            )
-        raise
+    except DocumentReviewUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if payload.confirmed and document["kind"] == "official":
         match = re.search(r"\[来源链接\]\s*(https://\S+)", text)
         if match:
@@ -2110,9 +2121,14 @@ def confirm_document(document_id: str, payload: ConfirmDocument) -> dict[str, An
                     }
                 )
             state_data["official_sources"] = sources
-            store.update_project(document["project_id"], state=state_data)
+            if project:
+                try:
+                    store.update_project(document["project_id"], state=state_data,
+                                         expected_revision=project["material_revision"])
+                except MaterialConflict:
+                    pass
     return {
-        "document": _public_document(store.get_document(document_id) or document),
+        "document": _public_document(reviewed),
         "indexed_chunks": chunks,
         "index_mode": index_mode,
     }
@@ -2469,10 +2485,6 @@ def generate_outline(project_id: str, payload: LLMRequest | None = None, request
         if not outline:
             raise HTTPException(status_code=409, detail=notice) from exc
         warning = f"模型暂不可用，先提供可编辑的起始目录。{notice}"
-    store.update_project(project_id, outline=outline)
-    state_data = dict(project["state"])
-    state_data["outline_confirmed"] = False
-    store.update_project(project_id, state=state_data)
     return {"outline": outline, "warning": warning, "confirmed": False}
 
 
@@ -2534,15 +2546,34 @@ def list_section_versions(project_id: str, section_id: str, limit: int = 10) -> 
 
 
 @app.post("/api/projects/{project_id}/sections/{section_id}/versions/{version_id}/restore")
-def restore_section_version(project_id: str, section_id: str, version_id: str) -> dict[str, Any]:
+def restore_section_version(project_id: str, section_id: str, version_id: str,
+                            payload: SectionPrecondition | None = None) -> dict[str, Any]:
     project = _safe_project(project_id)
     ver = store.get_section_version(version_id)
     if not ver or ver.get("project_id") != project_id or ver.get("section_id") != section_id:
         raise HTTPException(status_code=404, detail="版本不存在")
-    content = ver.get("content", "")
-    tools.save_section(project_id, section_id, content)
-    store.save_section_version(project_id, section_id, content, source="restore")
-    return {"restored": True, "version_id": version_id, "content": content}
+    content = ver["content"]
+    current = project["sections"].get(section_id)
+    result = {"restored": True, "version_id": version_id, "content": content,
+              "material_revision": project["material_revision"]}
+    if current == content:
+        return result
+    if payload:
+        check_section_revision(project, section_id, payload.expected_revision, payload.base_content)
+    if current is not None:
+        try:
+            store.save_section_version(project_id, section_id, current, source="before_restore")
+        except Exception as exc:
+            raise HTTPException(503, "当前正文暂时无法备份，请稍后重试恢复。") from exc
+    try:
+        result["material_revision"] = write_section(store, project, section_id, content)
+    except SectionProjectMissing as exc:
+        raise HTTPException(404, str(exc)) from exc
+    try:
+        store.save_section_version(project_id, section_id, content, source="restore")
+    except Exception:
+        result["notice"] = "正文已恢复，恢复记录暂未写入历史版本。"
+    return result
 
 
 @app.post("/api/projects/{project_id}/sections/{section_id}/generate")
@@ -2554,43 +2585,11 @@ def generate_section(
         result = _metered_invoke(
             payload.llm_config if payload else None, request, f"section:{section_id}", project_id,
             lambda model: model.generate_section(project_id, section_id, persist=False))
-        if result.get("requires_student_input") and str(project.get("sections", {}).get(section_id) or "").strip():
-            return result
-        from proposal.generation_safety import mark_review_alternative, mark_review_save_uncertain, review_incomplete
-        if review_incomplete(result):
-            try:
-                version = store.save_section_version(project_id, section_id, result["content"],
-                                                     source="ai_generated_alternative", review_card=result.get("review_card"))
-                mark_review_alternative(result, str(version["id"]))
-            except Exception:
-                mark_review_save_uncertain(result)
-            return result
-        # The legacy path needs the same optimistic revision check: a slow
-        # generation must not overwrite text the student saved meanwhile.
-        try:
-            updated = store.update_project(project_id, expected_revision=project["material_revision"],
-                sections={**project["sections"], section_id: result["content"]})
-            if not updated:
-                raise MaterialConflict("项目已变化")
-            result.update(material_applied=True, material_revision=updated["material_revision"])
+        from proposal.generation_safety import persist_generated_section
+        persist_generated_section(store, project, section_id, result)
+        if result.get("material_applied"):
             from proposal.review_workflow import after_draft_saved
             result["review"] = after_draft_saved(store, project_id, "section_generation")
-            source = "ai_generated"
-        except MaterialConflict:
-            source = "ai_generated_alternative"
-            result.update(conflict_status="user_edit_preserved",
-                          notice="项目在生成期间发生变化，正文未覆盖，结果已存为备选版本")
-        try:
-            store.save_section_version(project_id, section_id, result["content"],
-                                       source=source, review_card=result.get("review_card"))
-        except Exception:
-            # Never turn a finished, potentially billed generation into a
-            # generic HTTP failure solely because its extra version failed.
-            if source == "ai_generated_alternative":
-                result.update(result_save_uncertain=True,
-                              notice="项目在生成期间发生变化，正文未覆盖；备选版本保存状态不明，请先复制当前草稿。")
-            else:
-                result["notice"] = "正文已保存，历史版本暂未保存。"
         return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2600,7 +2599,7 @@ def generate_section(
 
 @app.put("/api/projects/{project_id}/outline")
 def update_outline(project_id: str, payload: OutlineUpdate) -> dict[str, Any]:
-    _safe_project(project_id)
+    project = _safe_project(project_id)
     if not 1 <= len(payload.outline) <= 20:
         raise HTTPException(status_code=400, detail="章节数须为 1–20")
     outline = []
@@ -2614,10 +2613,24 @@ def update_outline(project_id: str, payload: OutlineUpdate) -> dict[str, Any]:
         if not title:
             raise HTTPException(status_code=400, detail="章节标题不能为空")
         outline.append({"id": section_id, "title": title[:100]})
-    project = _safe_project(project_id)
+    if payload.base_outline is not None:
+        current = [{"id": item["id"], "title": item["title"]} for item in project["outline"]]
+        if payload.base_outline != current and outline != current:
+            raise HTTPException(409, "目录已在其他页面修改，请核对两个版本后再保存。")
     existing_sections = dict(project["sections"])
     confirmed_state = dict(project["state"])
     confirmed_state["outline_confirmed"] = True
+    archived = {
+        item["id"]: item for item in confirmed_state.get("_archived_outline", [])
+        if item["id"] not in seen
+    }
+    archived.update({item["id"]: item for item in project["outline"]
+                     if item["id"] not in seen})
+    if archived or "_archived_outline" in confirmed_state:
+        confirmed_state["_archived_outline"] = list(archived.values())
+    if outline == project["outline"] and confirmed_state == project["state"] and payload.expected_revision is None:
+        return {"outline": outline, "material_revision": project["material_revision"],
+                "archived_outline": list(archived.values())}
     for item in outline:
         existing_sections.setdefault(item["id"], "")
     updated = store.update_project(
@@ -2630,25 +2643,25 @@ def update_outline(project_id: str, payload: OutlineUpdate) -> dict[str, Any]:
     )
     if not updated:
         raise HTTPException(status_code=404, detail="找不到这个项目。")
-    return {"outline": outline, "material_revision": updated.get("material_revision", 0)}
+    return {"outline": outline, "material_revision": updated.get("material_revision", 0),
+            "archived_outline": list(archived.values())}
 
 
 @app.put("/api/projects/{project_id}/sections/{section_id}")
 def update_section(project_id: str, section_id: str, payload: SectionUpdate) -> dict[str, Any]:
     project = _safe_project(project_id)
-    if payload.expected_revision is not None:
-        if payload.base_content is not None and project["sections"].get(section_id, "") != payload.base_content:
-            raise HTTPException(409, "该章节已在其他页面修改，请核对版本，未覆盖您的输入")
+    if payload.expected_revision is not None or payload.base_content is not None:
         if section_id not in {s["id"] for s in project["outline"]}:
             raise HTTPException(422, "章节不存在")
-        updated = store.update_project(project_id, expected_revision=payload.expected_revision,
-            sections={**project["sections"], section_id: payload.content})
-        return {"success": True, "section_id": section_id, "character_count": len(payload.content),
-                "material_revision": updated["material_revision"]}
-    result = tools.save_section(project_id, section_id, payload.content)
-    if result.get("error"):
-        raise HTTPException(status_code=400, detail=result["error"])
-    return result
+    try:
+        return save_manual_section(store, project, section_id, payload.content,
+                                   payload.expected_revision, payload.base_content)
+    except MaterialConflict:
+        raise
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except SectionProjectMissing as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @app.delete("/api/projects/{project_id}/diagrams/{diagram_id}")
@@ -2909,9 +2922,45 @@ def confirm_reference(project_id: str, payload: ReferenceConfirm) -> dict[str, A
     return {"references": refs, "confirmed": True, "source_type": ref["source_type"]}
 
 
+@app.put("/api/projects/{project_id}/facts/form")
+def save_project_fact_form(project_id: str, form: ProjectFactForm) -> dict[str, Any]:
+    return _save_project_facts(project_id, form.facts, form.project.model_dump(exclude_none=True), form.expected_revision,
+                               base=form.base, supersedes_pending_save=form.supersedes_pending_save)
+
+
 @app.put("/api/projects/{project_id}/facts")
 def update_project_facts(project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return _save_project_facts(project_id, payload, {}, None)
+
+
+def _check_fact_form_base(
+    project: dict[str, Any], facts: dict[str, str], fields: dict[str, Any], base: FactFormBase,
+) -> None:
+    confirmed = project["state"].get("confirmed_facts", {})
+    metadata_keys = set(fields)
+    project_name = facts.get("project_name", "").strip()
+    if project_name and project_name != str(confirmed.get("project_name", "")):
+        metadata_keys.add("title")
+    if not set(facts) <= base.facts.keys() or not metadata_keys <= base.project.keys():
+        raise HTTPException(422, "缺少本次编辑的原始值，请重新打开表单。")
+
+    def normalize(value: Any) -> str:
+        return str(value if value is not None else "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    if (any(normalize(confirmed.get(key)) != base.facts[key] for key in facts)
+            or any(normalize(project.get(key)) != base.project[key] for key in metadata_keys)):
+        raise MaterialConflict("部分字段在其他页面有更新，请核对后保存。")
+
+
+def _save_project_facts(
+    project_id: str, payload: dict[str, Any], project_fields: dict[str, Any], expected_revision: int | None,
+    *, base: FactFormBase | None = None, supersedes_pending_save: bool = False,
+) -> dict[str, Any]:
     project = _safe_project(project_id)
+    if expected_revision is not None and expected_revision != project["material_revision"]:
+        raise MaterialConflict("项目已变化，请刷新后重试")
+    if base is not None:
+        _check_fact_form_base(project, payload, project_fields, base)
     if len(payload) > 100:
         raise HTTPException(status_code=413, detail="一次最多保存 100 个信息字段")
     year_value = str(payload.get("application_year", "")).strip()
@@ -2923,30 +2972,50 @@ def update_project_facts(project_id: str, payload: dict[str, Any]) -> dict[str, 
     political_stage = str(payload.get("political_stage", "")).strip()
     if "political_stage" in payload and political_stage not in {"", "入党积极分子", "预备党员"}:
         raise HTTPException(status_code=422, detail="党组织考察阶段无效。")
-    facts = {
-        key: str(value).strip()[:2000]
-        for key, value in payload.items()
-        if valid_fact_key(key) and str(value).strip()
-    }
+    form_save = expected_revision is not None
     state = dict(project["state"])
     confirmed = dict(state.get("confirmed_facts", {}))
-    for optional_key in ("application_year", "education_level", "college", "political_stage"):
-        if optional_key in payload and not str(payload[optional_key]).strip():
-            confirmed.pop(optional_key, None)
-            state.pop(optional_key, None)
-            if isinstance(state.get("fact_sources"), dict):
-                state["fact_sources"].pop(optional_key, None)
-    confirmed.update(facts)
-    state["confirmed_facts"] = confirmed
-    state.update(facts)
-    state.setdefault("fact_sources", {})
-    for key in facts:
-        state["fact_sources"][key] = "学生在网页中手动确认"
-    update_fields: dict[str, Any] = {"state": state}
-    if facts.get("project_name"):
-        update_fields["title"] = facts["project_name"]
-    store.update_project(project_id, **update_fields)
-    return {"confirmed_facts": confirmed}
+    sources = dict(state.get("fact_sources", {}))
+    fields = {k: v for k, v in project_fields.items() if v != project.get(k)}
+    changed = False
+    for key, raw in payload.items():
+        if not valid_fact_key(key):
+            if form_save:
+                raise HTTPException(422, "表单含无效字段，请核对后重新保存。")
+            continue
+        value = str(raw).strip()
+        if form_save and value == str(confirmed.get(key, "")):
+            continue
+        if value:
+            if form_save and len(value) > 2000:
+                raise HTTPException(422, "单项事实最多可保存 2000 字，请缩短后再保存。")
+            confirmed[key] = state[key] = value[:2000]
+            sources[key] = "学生在网页中手动确认"
+            if key == "project_name":
+                fields["title"] = confirmed[key]
+        elif (form_save and key in confirmed) or key in ("application_year", "education_level", "college", "political_stage"):
+            confirmed.pop(key, None)
+            state.pop(key, None)
+            sources.pop(key, None)
+        else:
+            continue
+        changed = True
+    if changed:
+        state["confirmed_facts"] = confirmed
+        state["fact_sources"] = sources
+        fields["state"] = state
+    if supersedes_pending_save and not fields:
+        # Advance the revision even when the chosen values are unchanged, so an earlier save cannot land later.
+        fields["state"] = state
+    saved = store.update_project(project_id, expected_revision=project["material_revision"], **fields) if fields else project
+    if not saved:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return {
+        "confirmed_facts": confirmed,
+        "fact_sources": sources,
+        "material_revision": saved["material_revision"],
+        "project": {key: saved.get(key) for key in ("title", "level", "discipline", "school")},
+    }
 
 
 @app.post("/api/projects/{project_id}/intake/propose")
@@ -3157,7 +3226,7 @@ def _material_worker_bridge(request: Request, job_id: str, lease: str):
         raise HTTPException(404, "Worker 内部接口不可用")
     if (
         os.environ.get("MATERIAL_PIPELINE_ENABLED", "").lower() != "true"
-        or os.environ.get("MATERIAL_WORKER_READY", "").lower() != "true"
+        or not material_worker_ready()
     ):
         raise HTTPException(503, "材料 Worker 尚未启用")
     scheme, _, secret = request.headers.get("authorization", "").partition(" ")

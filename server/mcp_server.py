@@ -96,9 +96,10 @@ def confirm_project_material(
     project_id: str,
     document_id: str,
     corrected_text: str = "",
+    expected_revision: int | None = None,
 ) -> dict[str, Any]:
-    """用户确认识别文字后，将材料索引到当前项目 RAG。"""
-    return tools.confirm_project_material(project_id, document_id, corrected_text)
+    """确认材料并建立检索索引。校对已有文字时可传入上次读取的材料版本。"""
+    return tools.confirm_project_material(project_id, document_id, corrected_text, expected_revision)
 
 
 @server.tool()
@@ -151,9 +152,10 @@ def save_project_fact(
 
 
 @server.tool()
-def save_section(project_id: str, section_id: str, content: str) -> dict[str, Any]:
-    """保存一章草稿，供网页预览和修改。"""
-    return tools.save_section(project_id, section_id, content)
+def save_section(project_id: str, section_id: str, content: str,
+                 expected_revision: int | None = None, base_content: str | None = None) -> dict[str, Any]:
+    """保存完整章节（最多 30,000 字符）。编辑已有正文时传入 get_project_state 读到的 project.material_revision 或原正文。"""
+    return tools.save_section(project_id, section_id, content, expected_revision, base_content)
 
 
 @server.tool()

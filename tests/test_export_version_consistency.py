@@ -1,5 +1,9 @@
 """A downloaded Word file must still represent the current saved inputs."""
+import base64
+import hashlib
 import io
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 from docx import Document
 from fastapi.testclient import TestClient
@@ -85,9 +89,19 @@ def test_edit_then_undo_during_render_cannot_publish_the_intermediate_body(isola
     assert not store.get_project(project_id)["state"].get("exported_docx_fingerprint")
 
 
-def test_edit_at_publication_keeps_student_text_and_rejects_export(isolated, monkeypatch):
+@pytest.mark.parametrize("cloud_file", [False, True])
+def test_edit_at_publication_keeps_student_text_and_rejects_export(isolated, monkeypatch, cloud_file):
     client, store, project_id = isolated
     update = store.update_project
+    uploaded, removed = [], []
+    if cloud_file:
+        def upload(_pid, name, path, _mime):
+            assert path.is_file()
+            uploaded.append(f"owner/project/_generated/{name}")
+            return uploaded[-1]
+
+        monkeypatch.setattr(store, "persist_generated_file", upload, raising=False)
+        monkeypatch.setattr(store, "discard_generated_export", lambda _pid, path: removed.append(path), raising=False)
 
     def edit_before_publish(pid, **fields):
         if "exported_docx_fingerprint" in fields.get("state", {}):
@@ -100,6 +114,117 @@ def test_edit_at_publication_keeps_student_text_and_rejects_export(isolated, mon
     current = store.get_project(project_id)
     assert "刚提交" in current["sections"]["letter"]
     assert not current["state"].get("exported_docx_fingerprint")
+    assert not list((store.files_dir / project_id).glob("export-*.docx"))
+    assert len(uploaded) == int(cloud_file) and removed == uploaded
+
+
+def test_lost_export_publish_receipt_keeps_the_committed_word_file(isolated, monkeypatch):
+    _, store, project_id = isolated
+    update = store.update_project
+
+    def publish_then_disconnect(pid, **fields):
+        saved = update(pid, **fields)
+        if "exported_docx_fingerprint" in fields.get("state", {}):
+            raise ConnectionError("lost write response")
+        return saved
+
+    monkeypatch.setattr(store, "update_project", publish_then_disconnect)
+    url = f"/api/projects/{project_id}"
+    with TestClient(app.app, raise_server_exceptions=False) as client:
+        assert client.post(url + "/export").status_code == 500
+        download = client.get(url + "/download")
+    assert download.status_code == 200
+    assert Document(io.BytesIO(download.content))
+
+
+def test_lost_tracked_export_receipt_can_be_recovered_without_re_rendering(isolated, monkeypatch):
+    _, store, project_id = isolated
+    update = store.update_project
+    request_id = "a" * 32
+    publications = []
+
+    def publish_then_disconnect(pid, **fields):
+        saved = update(pid, **fields)
+        state = fields.get("state", {})
+        if state.get("exported_docx_receipt", {}).get("id") == request_id:
+            publications.append(state["exported_docx_local_name"])
+            raise ConnectionError("lost write response")
+        return saved
+
+    monkeypatch.setattr(store, "update_project", publish_then_disconnect)
+    url = f"/api/projects/{project_id}/export"
+    with TestClient(app.app, raise_server_exceptions=False) as client:
+        assert client.post(url, json={"request_id": request_id}).status_code == 500
+        status = client.get(f"{url}/status/{request_id}")
+        assert status.headers["Cache-Control"] == "private, no-store"
+        receipt = status.json()
+        assert receipt["status"] == "completed"
+        assert receipt["warnings"]
+        assert client.post(url, json={"request_id": request_id}).json() == receipt
+        download = client.get(receipt["download_url"])
+        download.raise_for_status()
+        assert download.headers["Repr-Digest"] == receipt["download_digest"]
+        word = Document(io.BytesIO(download.content))
+        assert any("我的专业排名为第三名。" in paragraph.text for paragraph in word.paragraphs)
+        assert client.get(f"{url}/status/{'b' * 32}").json() == {"status": "missing"}
+        store.update_project(project_id, sections={"letter": "保存后的新版正文。"})
+        assert client.get(f"{url}/status/{request_id}").json() == {"status": "stale"}
+    assert len(publications) == 1
+
+
+def test_tracked_export_reserves_once_until_the_same_request_can_be_downloaded(isolated, monkeypatch):
+    client, _, project_id = isolated
+    url = f"/api/projects/{project_id}/export"
+    request_id = "a" * 32
+    started, release = Event(), Event()
+    renders = []
+    export = export_api.export_project
+
+    def wait_for_status(*args):
+        renders.append(args[2].name)
+        started.set()
+        assert release.wait(timeout=10), "test did not release the renderer"
+        return export(*args)
+
+    monkeypatch.setattr(export_api, "export_project", wait_for_status)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(client.post, url, json={"request_id": request_id})
+        try:
+            assert started.wait(timeout=5)
+            assert client.get(f"{url}/status/{request_id}").json() == {"status": "processing"}
+            assert client.post(url, json={"request_id": request_id}).json() == {"status": "processing"}
+            assert client.post(url, json={"request_id": "b" * 32}).status_code == 409
+        finally:
+            release.set()
+        result = first.result(timeout=10)
+    assert result.json()["status"] == "completed"
+    assert len(renders) == 1
+
+
+@pytest.mark.parametrize("abandoned", [False, True])
+def test_failed_or_abandoned_export_accepts_a_fresh_request(isolated, monkeypatch, abandoned):
+    client, store, project_id = isolated
+    url = f"/api/projects/{project_id}/export"
+    request_id = "a" * 32
+    if abandoned:
+        project = store.get_project(project_id)
+        # Simulate a worker killed after the reservation but before rendering.
+        store.update_project(project_id, state=dict(project["state"], exported_docx_attempt={
+            "id": request_id, "fingerprint": export_api.export_input_fingerprint(store, project),
+            "started_at": 0,
+        }))
+    else:
+        def fail(*_):
+            raise ValueError("renderer error")
+
+        with monkeypatch.context() as m:
+            m.setattr(export_api, "export_project", fail)
+            assert client.post(url, json={"request_id": request_id}).status_code == 422
+    status = {"status": "expired" if abandoned else "failed"}
+    assert client.get(f"{url}/status/{request_id}").json() == status
+    assert client.post(url, json={"request_id": request_id}).json() == status
+    assert client.post(url, json={"request_id": "b" * 32}).json()["status"] == "completed"
+    assert client.get(f"{url}/status/{request_id}").json() == {"status": "missing"}
 
 
 def test_export_metadata_is_not_bound_only_to_project_revision(isolated):
@@ -113,6 +238,18 @@ def test_export_metadata_is_not_bound_only_to_project_revision(isolated):
     # Student instructions affect facts/template filling without a project patch.
     store.add_message(project_id, "user", "请将申请学校更正为另一所学校。")
     assert client.get(url + "/download").status_code == 409
+
+
+def test_export_receipt_and_response_digest_identify_the_downloaded_bytes(isolated):
+    client, _, project_id = isolated
+    url = f"/api/projects/{project_id}"
+    receipt = client.post(url + "/export")
+    receipt.raise_for_status()
+    download = client.get(receipt.json()["download_url"])
+    download.raise_for_status()
+    digest = base64.b64encode(hashlib.sha256(download.content).digest()).decode("ascii")
+    assert download.headers["Repr-Digest"] == receipt.json()["download_digest"] == f"sha-256=:{digest}:"
+    assert download.headers["Content-Type"] == export_api.WORD_CONTENT_TYPE
 
 
 def test_file_replacement_cannot_serve_bytes_from_another_export(isolated):

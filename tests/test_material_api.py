@@ -1,3 +1,7 @@
+import base64
+import hashlib
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -29,6 +33,15 @@ def api(monkeypatch, tmp_path):
         yield client,store,p
 
 
+def test_documented_worker_command_starts_without_a_pythonpath(tmp_path):
+    worker = Path(__file__).resolve().parents[1] / "server" / "material_worker.py"
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    process = subprocess.run([sys.executable, str(worker), "--help"], env=env, cwd=tmp_path,
+                             capture_output=True, text=True, timeout=15)
+    assert process.returncode == 0, process.stderr
+    assert "--local-data" in process.stdout
+
+
 def test_material_api_supports_catalogue_types_and_rejects_unknown(api):
     client,store,p = api
     assert client.get(f"/api/projects/{p['id']}/material").status_code == 200
@@ -36,6 +49,17 @@ def test_material_api_supports_catalogue_types_and_rejects_unknown(api):
     assert client.get(f"/api/projects/{p['id']}/material").status_code == 200
     store.update_project(p["id"],state={"skill_id":"not-a-catalogue-skill"})
     assert client.get(f"/api/projects/{p['id']}/material").status_code == 404
+
+
+@pytest.mark.parametrize("ready", [False, True])
+def test_project_detail_exposes_same_worker_readiness_as_material_context(api, monkeypatch, ready):
+    client, _, project = api
+    url = f"/api/projects/{project['id']}"
+    monkeypatch.setenv("MATERIAL_WORKER_READY", str(ready).lower())
+    detail = client.get(url).json()
+    context = client.get(url + "/material").json()
+    assert detail["material"]["enabled"] is True
+    assert detail["material"]["worker_ready"] is context["worker_ready"] is ready
 
 
 def test_non_innovation_export_job_runs_end_to_end(api, monkeypatch):
@@ -55,6 +79,90 @@ def test_non_innovation_export_job_runs_end_to_end(api, monkeypatch):
     assert job["status"] == "completed", job
     path = store.files_dir / project["id"] / "_material" / job["id"] / "proposal.docx"
     assert "国家奖学金" in "\n".join(p.text for p in Document(path).paragraphs)
+    download = client.get(f"/api/projects/{project['id']}/material/jobs/{job['id']}/files/proposal.docx")
+    download.raise_for_status()
+    assert download.content == path.read_bytes()
+    digest = base64.b64encode(hashlib.sha256(download.content).digest()).decode("ascii")
+    assert download.headers["Repr-Digest"] == f"sha-256=:{digest}:"
+    assert download.headers["Content-Type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def test_worker_export_recovers_exact_request_and_checks_the_current_snapshot(api):
+    import material_worker
+    from docx import Document
+    from io import BytesIO
+
+    client, store, project = api
+    pid = project["id"]
+    base = f"/api/projects/{pid}/material"
+    key = "a" * 32
+    lookup = f"{base}/exports/by-request/{key}"
+    body = {"revision": project["material_revision"], "kind": "export", "idempotency_key": key}
+    assert client.get(lookup).status_code == 404
+    receipt = client.post(f"{base}/jobs", json=body)
+    assert receipt.status_code == 202, receipt.text
+    pending = client.get(lookup)
+    assert pending.headers["Cache-Control"] == "private, no-store"
+    assert pending.json()["id"] == receipt.json()["id"]
+    assert pending.json()["status"] == "pending"
+    assert client.post(f"{base}/jobs", json=body).json()["id"] == pending.json()["id"]
+    assert len(MaterialJobs(store).call("list", project_id=pid)) == 1
+
+    other = store.create_project(title="另一个项目")
+    store.update_project(other["id"], state={"skill_id": "innovation-research"})
+    assert client.get(lookup.replace(pid, other["id"])).status_code == 404
+    assert client.get(lookup.replace(key, "b" * 32)).status_code == 404
+    assert material_worker.run_one(local_store=store)
+    completed = client.get(lookup).json()
+    assert completed["status"] == "completed"
+    assert completed["id"] == pending.json()["id"]
+    artifact = f"{base}/jobs/{completed['id']}/files/proposal.docx"
+    latest = client.get(artifact + "?current=true")
+    latest.raise_for_status()
+    assert any("原文" in paragraph.text for paragraph in Document(BytesIO(latest.content)).paragraphs)
+
+    store.add_message(pid, "assistant", "普通助手回复。")
+    assert client.get(artifact + "?current=true").status_code == 200
+    store.add_message(pid, "user", "这次请用新的申报范围。")
+    stale = client.get(artifact + "?current=true")
+    assert stale.status_code == 409 and "重新导出" in stale.json()["detail"]
+    assert client.get(artifact).content == latest.content
+
+
+def test_paid_job_lookup_recovers_original_and_replayed_apply_preserves_newer_text(api):
+    client, store, project = api
+    pid = project["id"]
+    base = f"/api/projects/{pid}/material/jobs"
+    key = "a" * 32
+    body = {"revision": project["material_revision"], "kind": "section", "target": "method",
+            "confirm_paid": True, "idempotency_key": key, "llm_config": {"provider": "ollama"}}
+    submitted = client.post(base, json=body)
+    assert submitted.status_code == 202, submitted.text
+    job_id = submitted.json()["id"]
+    queue = MaterialJobs(store)
+    job = queue.claim_local()
+    assert job["id"] == job_id
+    queue.worker_local(job, "finish", status="completed", result={"content": "本次生成的正文", "status": "passed"})
+    found = client.get(f"{base}/by-request/{key}")
+    assert found.headers["Cache-Control"] == "private, no-store"
+    assert found.json()["id"] == job_id and found.json()["status"] == "completed"
+    assert "payload" not in found.json()
+    assert client.post(base, json=body).json()["id"] == job_id
+    assert len(queue.call("list", project_id=pid)) == 1
+    other = store.create_project(title="另一个项目")
+    assert client.get(f"{base}/by-request/{key}".replace(pid, other["id"])).status_code == 404
+
+    apply_url = f"{base}/{job_id}/apply"
+    applied = client.post(apply_url)
+    applied.raise_for_status()
+    assert applied.json()["material_revision"] == store.get_project(pid)["material_revision"]
+    assert store.get_project(pid)["sections"]["method"] == "本次生成的正文"
+    store.update_project(pid, sections={"method": "学生后来手写的正文"})
+    replay = client.post(apply_url)
+    replay.raise_for_status()
+    assert replay.json()["conflict_status"] == "user_edit_preserved"
+    assert store.get_project(pid)["sections"]["method"] == "学生后来手写的正文"
+    assert len(store.list_section_versions(pid, "method")) == 1
 
 
 def test_export_snapshot_preserves_income_optout_after_30_messages(api):
@@ -238,6 +346,68 @@ def test_figure_plan_and_explicit_confirmation(api):
     assert client.get(f"/api/projects/{other['id']}/material/jobs/{first.json()['id']}").status_code == 404
 
 
+def test_figure_review_binds_current_job_and_image_and_is_idempotent(api, tmp_path):
+    from PIL import Image
+    from proposal.material_export import export_material
+
+    client, store, project = api
+    pid = project["id"]
+    root = f"/api/projects/{pid}/material"
+    queue = MaterialJobs(store)
+    scene = ["测试标签"]
+
+    def complete_and_apply(color, number):
+        current = store.get_project(pid)
+        job_id = str(number) * 32
+        queue.submit(pid, "figure", "flow", {
+            "job_id": job_id, "base_revision": current["material_revision"], "input_snapshot": "snapshot",
+        }, f"figure-{number}")
+        job = queue.claim_local()
+        image = store.files_dir / pid / "_material" / job_id / "figure.png"
+        image.parent.mkdir(parents=True)
+        Image.new("RGB", (80, 40), color).save(image)
+        queue.worker_local(job, "finish", status="completed", result={"asset": {
+            "id": "flow", "title": "技术路线", "section_id": "method", "renderer": "svg",
+            "scene_text": scene, "text_confirmed": True,
+        }})
+        client.post(f"{root}/jobs/{job_id}/apply").raise_for_status()
+        return job_id, image
+
+    def review_body(job, image):
+        downloaded = client.get(f"{root}/jobs/{job}/files/figure.png")
+        downloaded.raise_for_status()
+        digest = hashlib.sha256(image.read_bytes()).hexdigest()
+        assert downloaded.headers["X-Figure-SHA256"] == digest
+        return {"job_id": job, "image_sha256": digest, "revision": store.get_project(pid)["material_revision"]}
+
+    first, old_image = complete_and_apply("blue", 1)
+    old_receipt = review_body(first, old_image)
+    second, current_image = complete_and_apply("green", 2)
+    current = store.get_project(pid)
+    confirm = f"{root}/figures/flow/confirm-text"
+    assert not current["diagrams"][0]["text_confirmed"]
+    assert client.post(confirm, json={"revision": current["material_revision"], "snapshot": "old", "nodes": []}).status_code == 422
+    assert client.post(confirm, json={**old_receipt, "revision": current["material_revision"]}).status_code == 409
+    assert not store.get_project(pid)["diagrams"][0]["text_confirmed"]
+
+    receipt = review_body(second, current_image)
+    response = client.post(confirm, json=receipt)
+    response.raise_for_status()
+    approved = store.get_project(pid)
+    assert approved["diagrams"][0]["text_confirmation"] == {
+        "job_id": second, "sha256": receipt["image_sha256"], "scene_text": scene,
+    }
+    assert client.post(confirm, json=receipt).status_code == 200
+    assert store.get_project(pid)["material_revision"] == approved["material_revision"]
+    good = export_material(store, pid, tmp_path / "verified")
+    assert all("场景文字尚未人工核对" not in warning for warning in good["warnings"])
+
+    Image.new("RGB", (80, 40), "red").save(current_image)
+    assert client.post(confirm, json=receipt).status_code == 409
+    changed = export_material(store, pid, tmp_path / "changed")
+    assert any("场景文字尚未人工核对" in warning for warning in changed["warnings"])
+
+
 def test_text_calls_require_confirmation_and_credentials_not_echoed(api):
     client,store,p = api
     root = f"/api/projects/{p['id']}/material"
@@ -287,3 +457,21 @@ def test_direct_section_generation_reports_atomic_persistence_when_worker_unread
     assert result["material_applied"] is True
     assert result["material_revision"] == store.get_project(project["id"])["material_revision"]
     assert store.get_project(project["id"])["sections"]["method"] == "新的生成草稿"
+
+
+def test_importing_a_completed_outline_job_returns_a_preview_without_replacing_saved_directory(api):
+    client, store, project = api
+    queue = MaterialJobs(store)
+    identifier = "a" * 32
+    queue.submit(project["id"], "outline", "", {"job_id": identifier,
+        "base_revision": project["material_revision"], "input_snapshot": "snapshot"}, "outline-preview")
+    job = queue.claim_local()
+    candidate = [{"id": "different", "title": "候选目录"}]
+    queue.worker_local(job, "finish", status="completed", result={"outline": candidate})
+    url = f"/api/projects/{project['id']}/material/jobs/{identifier}/apply"
+    response = client.post(url)
+    assert response.status_code == 200 and response.json()["outline"] == candidate
+    assert response.json()["applied"] is False
+    current = store.get_project(project["id"])
+    assert current["material_revision"] == project["material_revision"]
+    assert current["outline"] == project["outline"] and current["state"]["outline_confirmed"] is True

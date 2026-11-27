@@ -20,14 +20,14 @@ from threading import Lock
 from typing import Any, Callable, Dict, Optional
 
 from . import observability as obs
-from .generation_safety import mark_review_alternative, mark_review_save_uncertain, review_incomplete
+from .generation_safety import persist_generated_section
 
 logger = logging.getLogger("proposal_agent.jobs")
 
 
 def content_hash(text: str) -> str:
     """计算章节文本的稳定指纹。"""
-    return hashlib.sha256((text or "").strip().encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
 
 
 class GenerationJobRunner:
@@ -145,53 +145,11 @@ class GenerationJobRunner:
             if not job_after or job_after.get("status") == "cancelled":
                 return
 
-            generated_content = result.get("content", "")
-            review_card = result.get("review_card")
-
-            # 版本保护 (Optimistic Concurrency Control)
-            # 获取当前章节最新正文，比对指纹
             project = self.store.get_project(project_id)
-            current_now = (project.get("sections") or {}).get(section_id, "") if project else ""
-            current_ver_now = content_hash(current_now)
-
-            if review_incomplete(result) or current_ver_now != base_version:
-                # 用户在后台生成期间手动编辑了输入框！绝不强行静默覆盖！
-                try:
-                    saved_ver = self.store.save_section_version(
-                        project_id=project_id,
-                        section_id=section_id,
-                        content=generated_content,
-                        source="ai_generated_alternative",
-                        review_card=review_card,
-                    )
-                except Exception:
-                    if not review_incomplete(result):
-                        raise
-                    # The model result remains available through the job if
-                    # the task store itself is still writable.
-                    mark_review_save_uncertain(result)
-                else:
-                    if review_incomplete(result):
-                        mark_review_alternative(result, saved_ver["id"])
-                    else:
-                        result["conflict_status"] = "user_edit_preserved"
-                        result["alternative_version_id"] = saved_ver["id"]
-                        result["notice"] = (
-                            "检测到您在生成期间手动编辑了该章节，AI 生成的最新版本已安全存入版本历史，未覆盖您的当前编辑。"
-                        )
-            else:
-                # 正常覆盖更新并记录版本
-                if project:
-                    sections = dict(project.get("sections") or {})
-                    sections[section_id] = generated_content
-                    self.store.update_project(project_id, sections=sections)
-                self.store.save_section_version(
-                    project_id=project_id,
-                    section_id=section_id,
-                    content=generated_content,
-                    source="ai_generated",
-                    review_card=review_card,
-                )
+            if project is None:
+                raise ValueError("找不到这个项目")
+            changed = content_hash(project["sections"].get(section_id, "")) != base_version
+            persist_generated_section(self.store, project, section_id, result, section_changed=changed)
 
             # 状态转移：completed -> finished
             self.store.update_generation_job(

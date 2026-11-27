@@ -136,3 +136,88 @@ test("uncorroborated personal numbers remain in the task and prompt the student 
   assert.equal(state.project.sections.chapter, "原文");
   assert.ok(!calls.some(call => call.url.endsWith("/apply")));
 });
+
+function paidJobPage(shared, api, confirm, owner = "user:one") {
+  const id = "a".repeat(32);
+  const state = { project: { id, material: { enabled: true }, material_revision: 2, sections: {} },
+    llmConfig: { api_key: "hidden-config" } };
+  const context = vm.createContext({ window: {}, console, confirm,
+    crypto: { randomUUID: () => "12345678-1234-1234-1234-123456789012" },
+    setTimeout: (fn, delay) => { if (delay < 15000) fn(); return 1; }, clearTimeout() {},
+    document: { querySelectorAll: () => [] }, sessionStorage: {
+      getItem: key => shared.get(key) ?? null, setItem: (key, value) => shared.set(key, value),
+      removeItem: key => shared.delete(key), get length() { return shared.size; },
+      key: index => [...shared.keys()][index] ?? null,
+    } });
+  const source = readFileSync(resolve(__dirname, "../../server/static/material.js"), "utf8")
+    .replace("window.MaterialPilot =", `
+      globalThis.init = config => { host = config; projectId = config.state.project.id;
+        data = { context: { revision: 2 }, worker_ready: true, jobs: [] }; refresh = async () => {}; };
+      window.MaterialPilot =`);
+  vm.runInContext(readFileSync(resolve(__dirname, "../../server/static/draft-recovery.js"), "utf8"), context);
+  vm.runInContext(source, context);
+  context.init({ state, api, toast() {} });
+  const pilot = context.window.MaterialPilot;
+  pilot.configureRecovery(() => owner);
+  return { id, pilot };
+}
+
+for (const kind of ["section", "outline"]) {
+  test(`lost ${kind} work is recovered after reload without confirming another model call`, async () => {
+    const shared = new Map(), posts = [], followups = [];
+    const target = kind === "section" ? "chapter" : "";
+    const start = pilot => kind === "section" ? pilot.section(target, null) : pilot.outline();
+    const first = paidJobPage(shared, async (url, options) => {
+      assert.ok(url.endsWith("/jobs") && options.method === "POST");
+      posts.push(JSON.parse(options.body));
+      throw Error("connection lost");
+    }, () => true);
+    await assert.rejects(start(first.pilot), /任务可能已经开始/);
+    assert.equal(posts.length, 1);
+    const key = posts[0].idempotency_key;
+    assert.ok(![...shared.values()].join("").includes("hidden-config"));
+    const noConfirm = () => assert.fail("checking a finished job should not confirm a new charge");
+    const other = paidJobPage(shared, () => assert.fail("unexpected request"), noConfirm, "user:two");
+    assert.equal(other.pilot.pendingJob(other.id, kind, target), null);
+
+    const jobId = "b".repeat(32);
+    const result = kind === "section" ? { content: "这次任务的正文" } : { outline: [{ id: "next", title: "候选目录" }] };
+    const recovered = paidJobPage(shared, async (url, options) => {
+      followups.push([url, options.method]);
+      if (url.endsWith(`/jobs/by-request/${key}`))
+        return { id: jobId, kind, target, project_id: first.id, status: "completed", result };
+      if (kind === "section" && url.endsWith(`/jobs/${jobId}/apply`))
+        return { ...result, applied: true, material_revision: 3 };
+      assert.fail(`unexpected request ${url}`);
+    }, noConfirm);
+    const outcome = await start(recovered.pilot);
+    assert.equal(kind === "section" ? outcome.content : outcome.outline[0].title,
+      kind === "section" ? "这次任务的正文" : "候选目录");
+    assert.equal(followups.filter(([url]) => url.endsWith("/jobs")).length, 0);
+    assert.equal(shared.size, 0);
+  });
+}
+
+test("a missing receipt can be explicitly retried using the original submission number", async () => {
+  const shared = new Map(), ids = [], confirms = [];
+  const original = paidJobPage(shared, async (_url, options) => {
+    ids.push(JSON.parse(options.body).idempotency_key);
+    throw Error("network interrupted");
+  }, () => true);
+  await assert.rejects(original.pilot.outline());
+  let allowRetry = false;
+  const recovered = paidJobPage(shared, async (url, options) => {
+    if (url.includes("/jobs/by-request/"))
+      throw Object.assign(new Error("not found"), { status: 404 });
+    assert.ok(url.endsWith("/jobs"));
+    ids.push(JSON.parse(options.body).idempotency_key);
+    return { id: "b".repeat(32), status: "completed", result: { outline: [{ id: "next", title: "候选目录" }] } };
+  }, message => { confirms.push(message); return allowRetry; });
+  await assert.rejects(recovered.pilot.outline(), /已取消/);
+  assert.equal(ids.length, 1);
+  allowRetry = true;
+  assert.equal((await recovered.pilot.outline()).outline[0].title, "候选目录");
+  assert.equal(ids.length, 2);
+  assert.equal(ids[0], ids[1]);
+  assert.ok(confirms.every(message => message.includes("沿用原编号")));
+});

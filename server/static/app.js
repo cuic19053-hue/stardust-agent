@@ -107,6 +107,7 @@
 
   // Project requests may finish out of order when the student switches chats.
   let projectLoadRevision = 0;
+  let projectListRevision = 0;
   let loadingProjectId = null;
   // A sent message can finish after a disconnect. Keep it only in the current
   // tab, under its account and project, and never submit it automatically.
@@ -119,6 +120,23 @@
   // A completed model call can outlive a failed history write. Keep its
   // returned text only in this page, scoped to the originating project.
   const uncertainSectionDrafts = new Map();
+  const outlineDrafts = new Map();
+  const outlinePreviews = new Map();
+  const outlineRequests = new Map();
+  const outlineRecovery = window.DraftRecovery.create("stardust-outline-recovery-v1:", chatRecoveryOwner);
+  let outlineRecoveryWarning = false;
+  const documentCorrections = new Map();
+  const documentReviews = new Map();
+  const documentRecovery = window.DraftRecovery.create("stardust-document-recovery-v1:", chatRecoveryOwner);
+  let documentRecoveryWarning = false;
+  const factEdits = window.FactEdits.create(chatRecoveryOwner, toast);
+  window.MaterialPilot?.configureRecovery?.(chatRecoveryOwner);
+  let factFormProjectId = null;
+  const sectionEdits = window.SectionEdits.create({
+    state, api: (...args) => api(...args), currentProjectView, recoveryOwner: chatRecoveryOwner,
+    setDraftSaveStatus, updateDraftStats, toast,
+  });
+  const { flushDraftEdits, confirmGeneratedSection, applyGeneratedSection } = sectionEdits;
   const deletedProjectEpochs = new Map();
   let chatRecoveryEpoch = 0;
 
@@ -208,6 +226,12 @@
 
   function clearInterruptedChatMessages() {
     chatRecoveryEpoch++;
+    projectListRevision++;
+    state.projectsList = [];
+    const search = $("#projectSearchInput");
+    if (search) search.value = "";
+    renderProjectList([]);
+    clearProjectResults();
     interruptedChatMessages.clear();
     pendingChatRequests.clear();
     try {
@@ -221,6 +245,20 @@
     loadedRecoveryOwner = null;
     try { sessionStorage.removeItem(chatRecoveryStorageKey); } catch {}
     uncertainSectionDrafts.clear();
+    sectionEdits.clear();
+    outlineDrafts.clear();
+    outlinePreviews.clear();
+    outlineRequests.clear();
+    outlineRecovery.clear();
+    outlineRecoveryWarning = false;
+    factEdits.clear();
+    documentCorrections.clear();
+    documentReviews.clear();
+    documentRecovery.clear();
+    clearWordExportRecovery();
+    window.MaterialPilot?.clearRecovery?.();
+    documentRecoveryWarning = false;
+    factFormProjectId = null;
     deletedProjectEpochs.clear();
     const input = $("#chatInput");
     if (input) {
@@ -237,6 +275,27 @@
 
   function chatProjectIsActive(projectId) {
     return state.project?.id === projectId && (!loadingProjectId || loadingProjectId === projectId);
+  }
+
+  let projectViewVersion = 0;
+
+  function currentProjectView() {
+    const id = state.project?.id;
+    const version = projectViewVersion;
+    return { id, active: () => Boolean(id) && version === projectViewVersion && chatProjectIsActive(id) };
+  }
+
+  function clearProjectResults() {
+    projectViewVersion++;
+    for (const selector of ["#sourceResults", "#knowledgeResults", "#factCandidates", "#intakeCandidates"]) {
+      $(selector)?.replaceChildren();
+    }
+    for (const selector of ["#knowledgeExternalConsent", "#knowledgeIncludeExamples"]) {
+      const checkbox = $(selector);
+      if (checkbox) checkbox.checked = false;
+    }
+    if ($("#documentPreviewDialog")?.open) $("#documentPreviewDialog").close();
+    clearLeaderPhoto();
   }
 
   function countWords(str) {
@@ -359,7 +418,9 @@
     const body = type.includes("application/json") ? await response.json() : await response.text();
     if (!response.ok) {
       const detail = typeof body === "object" ? body.detail || body.error : body;
-      throw new Error(detail || `请求失败 (${response.status})`);
+      const error = new Error(detail || `请求失败 (${response.status})`);
+      error.status = response.status;
+      throw error;
     }
     return body;
   }
@@ -960,20 +1021,31 @@
     $("#authGate").classList.add("hidden");
     $("#appShell").classList.remove("hidden");
     $("#signOutBtn").classList.toggle("hidden", !state.cloudMode);
+    const accountEpoch = chatRecoveryEpoch;
+    const initialNavigation = projectLoadRevision;
+    const activeSession = () => state.appStarted && chatRecoveryEpoch === accountEpoch
+      && session?.user?.id === state.authSession?.user?.id;
     await loadCloudModelConfig();
-    if (session?.user?.id !== state.authSession?.user?.id) return;
+    if (!activeSession()) return;
     await loadUserBalance();
-    await Promise.all([checkHealth(), refreshProjects()]);
-    const projects = await api("/api/projects");
-    if (projects.projects?.length) {
-      const lastId = localStorage.getItem(activeProjectKey);
-      const target = projects.projects.find((project) => project.id === lastId) || projects.projects[0];
-      await loadProject(target.id);
-    } else {
-      $("#workspace").classList.add("hidden");
-      $("#welcome").classList.remove("hidden");
+    if (!activeSession()) return;
+    let [, projects] = await Promise.all([checkHealth(), refreshProjects()]);
+    if (projects === null && activeSession() && projectLoadRevision === initialNavigation) {
+      projects = await refreshProjects();
+      if (projects === null && activeSession()) toast("项目列表暂时无法加载，请刷新后重试。", true);
     }
-    checkInitialOnboarding();
+    if (!activeSession()) return;
+    if (projects && projectLoadRevision === initialNavigation) {
+      if (projects.length) {
+        let lastId;
+        try { lastId = localStorage.getItem(activeProjectKey); } catch {}
+        const target = projects.find(project => project.id === lastId) || projects[0];
+        await loadProject(target.id, { refreshList: false });
+      } else {
+        showWelcomeView();
+      }
+    }
+    if (activeSession()) checkInitialOnboarding();
   }
 
   async function initializeCloudAuth(config) {
@@ -1062,7 +1134,11 @@
       state.authSession = session;
       if (session && !state.appStarted) {
         // 不在 Auth 回调锁内调用 SDK，避免 setSession/getSession 死锁。
-        setTimeout(() => { void startApplication(session); }, 0);
+        const epoch = chatRecoveryEpoch;
+        setTimeout(() => {
+          if (epoch === chatRecoveryEpoch && state.authSession?.user?.id === session.user.id)
+            void startApplication(state.authSession);
+        }, 0);
       } else if (!session && event === "SIGNED_OUT") {
         invalidateProjectLoad();
         clearInterruptedChatMessages();
@@ -1240,7 +1316,7 @@
         try {
           await api(`/api/projects/${project.id}`, { method: "DELETE" });
           closeDeletedProject(project.id);
-          await refreshProjects($("#projectSearchInput")?.value || "");
+          await refreshProjects();
           toast("项目已删除。");
         } catch (err) {
           toast(err.message, true);
@@ -1259,13 +1335,18 @@
     }
   }
 
-  async function refreshProjects(filterKeyword = "") {
+  async function refreshProjects() {
+    const revision = ++projectListRevision;
     try {
       const response = await api("/api/projects");
+      if (revision !== projectListRevision) return;
       state.projectsList = response.projects || [];
-      renderProjectList(state.projectsList, filterKeyword);
+      renderProjectList(state.projectsList, $("#projectSearchInput")?.value || "");
+      return state.projectsList;
     } catch (e) {
+      if (revision !== projectListRevision) return;
       console.warn("刷新项目列表失败", e);
+      return null;
     }
   }
   async function checkHealth() {
@@ -1310,26 +1391,40 @@
     recoveredChatInputs.delete(projectId);
     persistInterruptedChatMessages();
     deletedProjectEpochs.set(projectId, (deletedProjectEpochs.get(projectId) || 0) + 1);
+    sectionEdits.removeProject(projectId);
+    factEdits.removeProject(projectId);
+    const keyPrefix = `${projectId}\0`;
+    for (const key of documentCorrections.keys()) if (key.startsWith(keyPrefix)) documentCorrections.delete(key);
+    for (const key of documentReviews.keys()) if (key.startsWith(keyPrefix)) documentReviews.delete(key);
+    documentRecovery.clear(keyPrefix);
+    clearWordExportRecovery(projectId);
+    window.MaterialPilot?.clearRecovery?.(projectId);
+    if (factFormProjectId === projectId) factFormProjectId = null;
+    outlineDrafts.delete(projectId);
+    outlinePreviews.delete(projectId);
+    outlineRequests.delete(projectId);
+    outlineRecovery.clear(`${projectId}\0`);
     for (const key of uncertainSectionDrafts.keys()) {
       if (key.startsWith(`${projectId}\0`)) uncertainSectionDrafts.delete(key);
     }
     for (const key of interruptedMessagesRendered) {
       if (key.startsWith(`${projectId}\0`)) interruptedMessagesRendered.delete(key);
     }
+    // Even an unopened project can be deleted from the sidebar during its first load.
+    if (loadingProjectId === projectId || (!loadingProjectId && state.project?.id === projectId)) invalidateProjectLoad();
     if (state.project?.id !== projectId) return;
+    clearProjectResults();
     const input = $("#chatInput");
     if (input) {
       input.value = "";
       if (input.style) input.style.height = "auto";
     }
-    // Keep a different project's in-flight load; do not revive the deleted one.
-    if (!loadingProjectId || loadingProjectId === projectId) invalidateProjectLoad();
     clearExportArtifacts();
     state.project = null;
     showWelcomeView();
   }
 
-  async function loadProject(projectId) {
+  async function loadProject(projectId, { refreshList = true } = {}) {
     const revision = ++projectLoadRevision;
     loadingProjectId = projectId;
     try {
@@ -1338,8 +1433,9 @@
       });
       const project = await api(`/api/projects/${projectId}`);
       if (revision !== projectLoadRevision) return;
+      if (state.project?.id === projectId && project.material_revision < state.project.material_revision) return;
       if (state.project?.id !== projectId) {
-        $("#intakeCandidates")?.replaceChildren();
+        clearProjectResults();
         const input = $("#chatInput");
         const previousProjectId = state.project?.id;
         if (previousProjectId && input?.value?.trim()) {
@@ -1353,14 +1449,15 @@
         if ($("#privateRagConsent")) $("#privateRagConsent").checked = false;
         $("#privateRagResults")?.replaceChildren();
         $("#uploadResult").classList.add("hidden");
-        clearExportArtifacts();
+        clearExportArtifacts({ preserveRecovery: true });
         if (mobileLayout?.matches) showMobileWorkspaceView("chat");
       }
       state.project = project;
+      syncWordExportButtons();
       try { localStorage.setItem(activeProjectKey, projectId); } catch {}
       state.documents = project.documents || [];
       state.messages = project.messages || [];
-      state.outline = project.outline || [];
+      restoreOutlineEditor(project);
       state.diagrams = project.diagrams || [];
       showProject();
       configureSkillWorkspace(project);
@@ -1376,7 +1473,8 @@
       renderConfirmedSources();
       renderOutline();
       renderSections();
-      if (window.MaterialPilot) await window.MaterialPilot.mount({ api, state, toast, reload: loadProject, isProjectActive: chatProjectIsActive });
+      if (window.MaterialPilot) await window.MaterialPilot.mount({ api, state, toast, reload: loadProject, flushEdits: flushDraftEdits, previewOutline: showOutlineFromTask, isProjectActive: chatProjectIsActive,
+        captureView: currentProjectView });
       if (revision !== projectLoadRevision) return;
       if (window.DraftReview) void window.DraftReview.mount({ api, state, toast,
         focusSection: focusDraftSection,
@@ -1384,15 +1482,12 @@
           handleTabNavigation("panel-materials");
           document.getElementById("panel-materials")?.scrollIntoView({ behavior: "smooth" });
         },
-        flushEdits: async () => {
-          await flushDraftEdits();
-          if (window.MaterialPilot?.active()) await window.MaterialPilot.flushEdits();
-        } });
+        flushEdits: flushDraftEdits });
       renderDiagrams();
       renderMessages();
       restoreInterruptedChatMessage(projectId);
       updateTemplateQuickActions(project);
-      void refreshProjects();
+      if (refreshList) void refreshProjects();
       if (state.llmConfig.provider === "preset") void loadUserBalance();
     } catch (error) {
       if (revision === projectLoadRevision) toast(error.message, true);
@@ -1576,7 +1671,7 @@
       state.project = updated;
       $("#projectHeading").textContent = updated.title;
       $("#crumbProject").textContent = updated.title;
-      await refreshProjects($("#projectSearchInput")?.value || "");
+      await refreshProjects();
       toast("课题名称已更新。");
     } catch (err) {
       toast(err.message, true);
@@ -1825,10 +1920,11 @@
 
   const {
     uploadLimitMB, oversizedUploadError, uploadFilesToCloud, cloudUploadIntent, uploadResumable,
-  } = window.MaterialUpload.create({ state, $, api: (...args) => api(...args) });
+  } = window.MaterialUpload.create({ state, api: (...args) => api(...args) });
 
   async function uploadFiles(fileList, kind = state.uploadKind, fromChat = false) {
-    if (!state.project || !fileList.length) return;
+    const view = currentProjectView();
+    if (!view.active() || !fileList.length) return;
     if (state.uploading) return toast("材料正在上传，请稍候。", true);
     if (fileList.length > 12) return toast("一次最多上传 12 个文件。", true);
     const sizeError = oversizedUploadError(fileList);
@@ -1839,7 +1935,7 @@
       $("#chatFileInput").value = "";
       return toast(sizeError, true);
     }
-    const projectId = state.project.id;
+    const projectId = view.id;
     const form = new FormData();
     for (const file of fileList) form.append("files", file);
     const names = fileList.map((file) => file.name);
@@ -1855,13 +1951,15 @@
     status.classList.remove("hidden", "error");
     try {
       toast(state.cloudMode ? "正在安全上传并识别材料…" : "正在本机识别文件…");
+      const reportProgress = message => { if (view.active()) status.textContent = message; };
       const result = state.cloudMode
-        ? await uploadFilesToCloud(fileList, kind, projectId)
+        ? await uploadFilesToCloud(fileList, kind, projectId, false, reportProgress)
         : await api(`/api/projects/${projectId}/documents?${query}`, { method: "POST", body: form });
       const failed = (result.documents || []).filter((d) => d.error);
       const uploaded = (result.documents || []).filter((d) => !d.error);
-      if (state.project?.id !== projectId) return;
+      if (!view.active()) return;
       await loadProject(projectId);
+      if (!view.active()) return;
       renderUploadResult(result.documents || []);
       toast(failed.length ? "有文件处理失败，请查看上传结果。" : `上传成功：${uploaded.length} 个文件，可预览并核对文字。`, failed.length > 0);
       const firstDocument = (result.documents || []).find((item) => item.document?.id);
@@ -1874,13 +1972,13 @@
           `我刚上传了${labels[kind] || "材料"}：${(successfulNames.length ? successfulNames : names).join("、")}。请告诉我下一步怎么处理。`
         );
       }
-      if (fromChat && failed.length) {
+      if (fromChat && failed.length && view.active()) {
         appendMessage("assistant", `以下文件未能完成处理：\n${failed.map((item) =>
           `${item.document?.original_name || "文件"}：${item.error}`
         ).join("\n")}\n请查看项目材料区的上传结果后重试。`);
       }
     } catch (error) {
-      if (state.project?.id !== projectId) return;
+      if (!view.active()) return;
       renderUploadResult(names.map((name) => ({ document: { original_name: name }, error: error.message })));
       toast(error.message, true);
       if (fromChat) appendMessage("assistant", `上传没有完成：${error.message}`);
@@ -2028,11 +2126,43 @@
     }
   }
 
+  function persistDocumentCorrection(key, correction) {
+    if (correction) documentCorrections.set(key, correction);
+    else documentCorrections.delete(key);
+    if (documentRecovery.write(key, correction) || !correction || documentRecoveryWarning) return;
+    documentRecoveryWarning = true;
+    toast("浏览器暂时无法保留材料校对稿，请先确认保存再刷新。", true);
+  }
+
+  function restoreDocumentCorrection(key, doc) {
+    let correction = documentCorrections.get(key);
+    if (!correction) {
+      const cached = documentRecovery.read(key);
+      if (typeof cached?.text !== "string" || !Number.isSafeInteger(cached.revision)) return null;
+      correction = cached;
+    }
+    const latest = doc.extracted_text || "";
+    if (doc.review_revision > correction.revision && latest === correction.submitted) {
+      correction.revision = doc.review_revision;
+      delete correction.submitted;
+      persistDocumentCorrection(key, correction);
+    }
+    if (doc.confirmed && latest === correction.text && !documentReviews.has(key)) {
+      persistDocumentCorrection(key, null);
+      return null;
+    }
+    documentCorrections.set(key, correction);
+    return correction;
+  }
+
   function renderDocuments() {
+    const view = currentProjectView();
     const list = $("#documentsList");
     list.replaceChildren();
     if (!state.documents.length) return;
     for (const doc of state.documents) {
+      const correctionKey = `${view.id}\0${doc.id}`;
+      let correction = doc.kind === "template" ? null : restoreDocumentCorrection(correctionKey, doc);
       const card = document.createElement("div");
       card.className = "document-card";
       card.dataset.documentId = doc.id;
@@ -2059,48 +2189,126 @@
       const text = document.createElement("textarea");
       text.className = "doc-text";
       text.rows = Math.min(7, Math.max(3, Math.ceil((doc.extracted_text || "").length / 95)));
-      text.value = doc.extracted_text || "";
+      text.value = correction?.text ?? doc.extracted_text ?? "";
       text.placeholder = doc.extraction_status === "error" ? "识别失败，请重新上传或手动补充内容。" : "暂无识别文字";
-      text.readOnly = doc.kind === "template" || doc.confirmed;
+      text.readOnly = doc.kind === "template" || (doc.confirmed && !correction);
       text.setAttribute("aria-label", `识别文字：${doc.original_name}`);
       card.append(text);
       const actions = document.createElement("div");
       actions.className = "doc-actions";
       const preview = button("预览文件", "button button-small button-secondary");
-      preview.addEventListener("click", () => void previewDocument(doc));
+      preview.addEventListener("click", () => { if (view.active()) void previewDocument(doc); });
       actions.append(preview);
+      const conflict = document.createElement("div");
+      conflict.className = "section-versions";
+      conflict.hidden = true;
+      const hasConflict = () => Boolean(correction && correction.revision !== doc.review_revision);
+      const syncConflict = () => {
+        conflict.hidden = !hasConflict();
+        conflict.replaceChildren();
+        if (!hasConflict()) return;
+        const label = document.createElement("p");
+        label.textContent = "材料文字已更新，请核对服务器版本后再确认。";
+        const latest = document.createElement("pre");
+        latest.textContent = doc.extracted_text || "（正文为空）";
+        const keep = button("保留本页文字");
+        const use = button("使用服务器文字", "button button-small button-quiet");
+        keep.addEventListener("click", () => {
+          if (!view.active()) return;
+          correction = { text: text.value, revision: doc.review_revision };
+          persistDocumentCorrection(correctionKey, correction);
+          syncConflict();
+        });
+        use.addEventListener("click", () => {
+          if (!view.active()) return;
+          correction = null;
+          persistDocumentCorrection(correctionKey, null);
+          text.value = doc.extracted_text || "";
+          syncConflict();
+        });
+        conflict.append(label, latest, keep, use);
+      };
+      if (doc.kind !== "template") {
+        text.addEventListener("input", () => {
+          if (state.project?.id !== view.id) return;
+          if (!correction) correction = { revision: doc.review_revision };
+          correction.text = text.value;
+          if (!documentReviews.has(correctionKey) && !correction.submitted && !hasConflict()
+              && text.value === (doc.extracted_text || "")) correction = null;
+          persistDocumentCorrection(correctionKey, correction);
+        });
+        card.append(conflict);
+        syncConflict();
+      }
+
       if (state.cloudMode && !doc.confirmed && doc.extraction_status !== "ready") {
         const retry = button("重试文字识别", "button button-small button-secondary");
         retry.addEventListener("click", async () => {
+          if (!view.active()) return;
           retry.disabled = true;
           try {
             const result = await api(`/api/documents/${doc.id}/process`, { method: "POST" });
+            if (!view.active()) return;
             renderUploadResult(result.documents || []);
-            await loadProject(state.project.id);
+            await loadProject(view.id);
           } catch (error) {
-            toast(`原文件仍保留，识别未完成：${error.message}`, true);
+            if (view.active()) toast(`原文件仍保留，识别未完成：${error.message}`, true);
           } finally { retry.disabled = false; }
         });
         actions.append(retry);
       }
       if (doc.kind !== "template") {
-        const confirmText = async () => {
+        const confirmText = async event => {
+          if (!view.active() || documentReviews.has(correctionKey)) return;
+          if (hasConflict()) {
+            toast("请先选择要保留的文字。", true);
+            return;
+          }
           if (!text.value.trim()) {
             toast("请先补充或核对识别文字。", true);
             return;
           }
+          const submitted = text.value;
+          const revision = correction?.revision ?? doc.review_revision;
+          const request = {};
+          documentReviews.set(correctionKey, request);
+          const control = event?.currentTarget;
+          if (control) control.disabled = true;
+          const previousSubmission = correction?.submitted;
+          correction = { text: submitted, revision, submitted };
+          persistDocumentCorrection(correctionKey, correction);
           try {
-            const result = await api(`/api/documents/${doc.id}/confirm`, {
+            const result = await observeMaterialRequest(`/api/documents/${doc.id}/confirm`, {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ confirmed: true, corrected_text: text.value }),
-            });
-            await loadProject(state.project.id);
+              body: JSON.stringify({ confirmed: true, corrected_text: submitted, expected_revision: revision }),
+            }, 90000, "材料确认结果待核对，已保留本页文字。");
+            if (documentReviews.get(correctionKey) !== request) return;
+            const latest = documentCorrections.get(correctionKey);
+            if (latest?.text === submitted) persistDocumentCorrection(correctionKey, null);
+            else if (latest && Number.isSafeInteger(result.document?.review_revision))
+              persistDocumentCorrection(correctionKey, { text: latest.text, revision: result.document.review_revision });
+            if (!view.active() && !chatProjectIsActive(view.id)) return;
+            clearExportArtifacts();
+            window.MaterialPilot?.invalidateArtifacts?.();
+            await loadProject(view.id, { refreshList: false });
+            if (!view.active()) return;
             toast(result.index_mode === "keyword_fallback" && privateRagConsented()
-              ? "材料已确认，但云向量未建立；当前仅能关键词检索，请核对服务或缩短材料。"
-              : "已确认材料并建立检索索引。", result.index_mode === "keyword_fallback" && privateRagConsented());
+              ? "材料已确认，可用关键词检索；向量索引暂未建立。"
+              : "已确认材料并建立检索索引。");
           } catch (error) {
-            toast(error.message, true);
+            if (documentReviews.get(correctionKey) !== request) return;
+            const latest = documentCorrections.get(correctionKey);
+            if (latest && error.status >= 400 && error.status < 500) {
+              latest.submitted = previousSubmission;
+              persistDocumentCorrection(correctionKey, latest);
+            }
+            if (!view.active()) return;
+            if (error.status === 409 || error.status >= 500) await loadProject(view.id, { refreshList: false });
+            if (view.active()) toast(error.message, true);
+          } finally {
+            if (documentReviews.get(correctionKey) === request) documentReviews.delete(correctionKey);
+            if (control) control.disabled = false;
           }
         };
         if (!doc.confirmed) {
@@ -2110,36 +2318,43 @@
         } else {
           if (state.authConfig?.private_embedding_configured) {
             const reindex = button("重新建立向量索引", "button button-small button-secondary");
-            reindex.addEventListener("click", () => {
+            reindex.addEventListener("click", event => {
               if (!privateRagConsented()) {
                 toast("请先阅读并勾选本项目的 Cloudflare 私有检索授权。", true);
                 return;
               }
-              void confirmText();
+              void confirmText(event);
             });
             actions.append(reindex);
           }
+          const save = button("确认修改并重新索引", "button button-small button-primary");
+          save.hidden = !correction;
+          save.addEventListener("click", confirmText);
           const edit = button("修改识别文字", "button button-small button-secondary");
+          edit.hidden = Boolean(correction);
           edit.addEventListener("click", () => {
             text.readOnly = false;
             text.focus();
-            const save = button("确认修改并重新索引", "button button-small button-primary");
-            save.addEventListener("click", confirmText);
-            actions.insertBefore(save, remove);
-            edit.remove();
+            save.hidden = false;
+            edit.hidden = true;
           });
-          actions.append(edit);
+          actions.append(edit, save);
         }
       }
       const remove = button("移除", "button button-small button-quiet");
       remove.addEventListener("click", async () => {
-        if (!confirm(`确定从本项目移除“${doc.original_name}”吗？${state.cloudMode ? "历史加密备份可能长期保留已删除的材料。" : ""}`)) return;
+        if (!view.active() || !confirm(`确定从本项目移除“${doc.original_name}”吗？${state.cloudMode ? "历史加密备份可能长期保留已删除的材料。" : ""}`)) return;
+        const epoch = chatRecoveryEpoch;
         try {
           await api(`/api/documents/${doc.id}`, { method: "DELETE" });
-          await refreshChatAfterError(projectId);
-          toast("材料和对应索引已删除。");
+          if (epoch !== chatRecoveryEpoch) return;
+          documentReviews.delete(correctionKey);
+          persistDocumentCorrection(correctionKey, null);
+          if (!view.active()) return;
+          await loadProject(view.id);
+          if (view.active()) toast("材料和对应索引已删除。");
         } catch (error) {
-          toast(error.message, true);
+          if (view.active()) toast(error.message, true);
         }
       });
       actions.append(remove);
@@ -2149,6 +2364,13 @@
   }
 
   function renderFacts() {
+    const project = state.project;
+    if (!project) return;
+    const draft = factEdits.open(project);
+    if (factFormProjectId !== project.id) {
+      factFormProjectId = project.id;
+      $("#factsEditor").classList.toggle("hidden", !draft.entries.size);
+    }
     renderIntakeArchive();
     updateIntakeModelNote();
     const facts = { ...(state.project?.state?.confirmed_facts || {}) };
@@ -2191,8 +2413,6 @@
         }
       });
       summary.append(box);
-      const input = $(`[data-fact="${key}"]`);
-      if (input) input.value = val || "";
     }
     const photoId = state.project?.state?.leader_photo || facts.leader_photo;
     const photoBox = document.createElement("div");
@@ -2212,9 +2432,12 @@
     const dynamic = $("#dynamicFactsGrid");
     if (dynamic) {
       dynamic.replaceChildren();
-      for (const [key, value] of Object.entries(facts)) {
-        if (key in labels || key.startsWith("skill_") || key.startsWith("template_") || key.startsWith("fact_")) continue;
-        appendDynamicFact(key, value);
+      const dynamicKeys = new Set(Object.keys(facts));
+      for (const entry of draft.entries.values()) if (entry.group === "facts") dynamicKeys.add(entry.key);
+      for (const key of dynamicKeys) {
+        if (Object.hasOwn(labels, key) || key.startsWith("skill_") || key.startsWith("template_")
+            || key.startsWith("fact_") || key === "leader_photo") continue;
+        appendDynamicFact(key, factEdits.value(project, draft, "facts", key));
       }
     }
     // The editor survives project switches. Always refresh every input,
@@ -2224,8 +2447,8 @@
       "expected_output", "constraints", "duration", "budget", "leader_name", "advisor_name", "team"]);
     $$("[data-fact]").forEach((field) => {
       const key = field.dataset.fact;
-      const value = facts[key];
-      field.value = value == null ? "" : String(value);
+      const value = factEdits.value(project, draft, "facts", key);
+      field.value = value;
       const parent = field.closest(".field");
       if (parent && projectOnlyFacts.has(key)) {
         // Existing values remain visible/editable even after a skill change.
@@ -2235,59 +2458,116 @@
     const photoField = $(".leader-photo-field");
     if (photoField) photoField.classList.toggle("hidden", personalApplication && !photoId);
     $$("[data-project]").forEach((field) => {
-      field.value = state.project?.[field.dataset.project] || "";
+      field.value = factEdits.value(project, draft, "project", field.dataset.project);
     });
+    renderFactDraftStatus(project, draft);
+  }
+
+  const projectFieldLabels = { title: "项目名称", level: "申报级别", discipline: "专业 / 学科", school: "学校" };
+
+  function renderFactDraftStatus(project, draft) {
+    const notice = $("#factFormStatus");
+    const list = $("#factConflictList");
+    if (!notice || !list) return;
+    const conflicts = factEdits.conflicts(project, draft);
+    const awaitingReceipt = [...draft.entries.values()].some(entry => entry.submitted !== undefined);
+    notice.textContent = draft.saving ? "正在保存，可以继续编辑。" : conflicts.length
+      ? "其他页面已修改下列字段，选择要保留的值后再保存。"
+      : awaitingReceipt ? "上一次保存待确认，请核对后保存。"
+      : draft.entries.size ? (draft.recovered ? "已恢复未保存的信息，请核对后保存。" : "有修改待保存。") : "";
+    notice.hidden = !notice.textContent;
+    list.hidden = !conflicts.length;
+    const view = currentProjectView();
+    list.replaceChildren();
+    for (const entry of conflicts) {
+      const row = document.createElement("div");
+      row.className = "section-versions";
+      const label = document.createElement("strong");
+      label.textContent = entry.group === "project" ? projectFieldLabels[entry.key] || entry.key
+        : labels[entry.key] || entry.key.replace(/_/g, " ");
+      const current = document.createElement("p");
+      current.textContent = `已保存：${factEdits.readValue(project, entry.group, entry.key) || "（空）"}`
+        + (entry.group === "facts" && entry.key === "project_name" ? `，当前项目标题「${project.title || "（空）"}」` : "");
+      const keep = button("保留本页输入");
+      const accept = button("使用已保存值", "button button-small button-quiet");
+      const resolve = keepLocal => {
+        if (!view.active() || state.project !== project) return;
+        factEdits.resolve(project, entry, keepLocal);
+        renderFacts();
+      };
+      keep.disabled = accept.disabled = draft.saving;
+      keep.addEventListener("click", () => resolve(true));
+      accept.addEventListener("click", () => resolve(false));
+      row.append(label, current, keep, accept);
+      list.append(row);
+    }
+    $("#saveFactsBtn").disabled = draft.saving || conflicts.length > 0;
+  }
+
+  function recordFactInput(field, project = state.project) {
+    if (!project || typeof field?.value !== "string") return;
+    const key = field.dataset?.fact || field.dataset?.project;
+    const group = field.dataset?.fact ? "facts" : "project";
+    if (!/^[a-z][a-z0-9_]{1,63}$/.test(key || "") || (group === "project" && !Object.hasOwn(projectFieldLabels, key))
+        || (key === "political_stage" && $("#politicalStageField").hidden)) return;
+    factEdits.edit(project, group, key, field.value);
   }
 
   let leaderPhotoBlobUrl = "";
+  let leaderPhotoId = null;
+  let leaderPhotoRequest = 0;
+
+  function clearLeaderPhoto() {
+    leaderPhotoRequest++;
+    if (leaderPhotoBlobUrl) URL.revokeObjectURL(leaderPhotoBlobUrl);
+    leaderPhotoBlobUrl = "";
+    leaderPhotoId = null;
+    $("#leaderPhotoPreview")?.replaceChildren();
+    $("#removeLeaderPhotoBtn")?.classList.add("hidden");
+  }
 
   async function renderLeaderPhoto() {
     const preview = $("#leaderPhotoPreview");
-    const removeBtn = $("#removeLeaderPhotoBtn");
-    const chooseBtn = $("#chooseLeaderPhotoBtn");
     if (!preview) return;
+    const view = currentProjectView();
     const photoId = state.project?.state?.leader_photo;
-    if (!photoId) {
-      preview.replaceChildren();
-      const placeholder = document.createElement("span");
-      placeholder.className = "photo-placeholder-text";
-      placeholder.textContent = "暂无照片";
-      preview.append(placeholder);
-      if (removeBtn) removeBtn.classList.add("hidden");
-      if (chooseBtn) chooseBtn.textContent = "上传照片";
-      if (leaderPhotoBlobUrl) {
-        URL.revokeObjectURL(leaderPhotoBlobUrl);
-        leaderPhotoBlobUrl = "";
-      }
-      return;
-    }
-    const doc = (state.documents || []).find((d) => d.id === photoId) || { id: photoId };
+    if (photoId && photoId === leaderPhotoId && leaderPhotoBlobUrl) return;
+    clearLeaderPhoto();
+    const request = leaderPhotoRequest;
+    const choose = $("#chooseLeaderPhotoBtn");
+    if (choose) choose.textContent = photoId ? "更换照片" : "上传照片";
+    const placeholder = document.createElement("span");
+    placeholder.className = "photo-placeholder-text";
+    placeholder.textContent = photoId ? "正在加载照片…" : "暂无照片";
+    preview.append(placeholder);
+    if (!photoId) return;
+    $("#removeLeaderPhotoBtn")?.classList.remove("hidden");
+    const current = () => request === leaderPhotoRequest && view.active() && state.project?.state?.leader_photo === photoId;
+    const doc = (state.documents || []).find(d => d.id === photoId) || { id: photoId };
     try {
       const blob = await fetchDocumentBlob(doc);
-      if (leaderPhotoBlobUrl) URL.revokeObjectURL(leaderPhotoBlobUrl);
+      if (!current()) return;
+      leaderPhotoId = photoId;
       leaderPhotoBlobUrl = URL.createObjectURL(blob);
       const img = document.createElement("img");
       img.src = leaderPhotoBlobUrl;
       img.alt = "负责人照片";
-      preview.replaceChildren(img);
-      if (removeBtn) removeBtn.classList.remove("hidden");
-      if (chooseBtn) chooseBtn.textContent = "更换照片";
-    } catch {
-      preview.replaceChildren();
-      const img = document.createElement("img");
-      img.src = `/api/documents/${encodeURIComponent(photoId)}/file`;
-      img.alt = "负责人照片";
       img.onerror = () => {
-        preview.textContent = "已上传";
+        if (current()) {
+          clearLeaderPhoto();
+          preview.textContent = "照片无法预览";
+          $("#removeLeaderPhotoBtn")?.classList.remove("hidden");
+        }
       };
-      preview.append(img);
-      if (removeBtn) removeBtn.classList.remove("hidden");
-      if (chooseBtn) chooseBtn.textContent = "更换照片";
+      preview.replaceChildren(img);
+    } catch {
+      if (current()) placeholder.textContent = "照片已登记，预览读取失败";
     }
   }
 
   async function handleLeaderPhotoUpload(file) {
-    if (!file || !state.project?.id) return;
+    const view = currentProjectView();
+    if (!file || !view.active()) return;
     const sizeError = oversizedUploadError([file]);
     if (sizeError) return toast(sizeError, true);
     const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
@@ -2299,23 +2579,22 @@
     try {
       toast("正在上传负责人照片…");
       if (state.cloudMode) {
-        const result = await uploadFilesToCloud([file], "photo", state.project.id, true);
+        const result = await uploadFilesToCloud([file], "photo", view.id, true);
         const failed = result.documents.find(item => item.error);
         if (failed) throw new Error(failed.error);
       } else {
         const form = new FormData();
         form.append("file", file);
-        await api(`/api/projects/${state.project.id}/leader-photo`, {
+        await api(`/api/projects/${view.id}/leader-photo`, {
           method: "POST",
           body: form,
         });
       }
-      await loadProject(state.project.id);
-      renderLeaderPhoto();
-      renderFacts();
-      toast("负责人照片上传成功！");
+      if (!view.active()) return;
+      await loadProject(view.id);
+      if (view.active()) toast("负责人照片上传成功！");
     } catch (err) {
-      toast(`上传失败：${err.message}`, true);
+      if (view.active()) toast(`上传失败：${err.message}`, true);
     } finally {
       if (btn) btn.disabled = false;
       const input = $("#leaderPhotoInput");
@@ -2324,18 +2603,18 @@
   }
 
   async function handleLeaderPhotoDelete() {
-    if (!state.project?.id) return;
+    const view = currentProjectView();
+    if (!view.active()) return;
     if (typeof confirm === "function" && !confirm("确定删除已上传的负责人照片吗？")) return;
     const btn = $("#removeLeaderPhotoBtn");
     if (btn) btn.disabled = true;
     try {
-      await api(`/api/projects/${state.project.id}/leader-photo`, { method: "DELETE" });
-      await loadProject(state.project.id);
-      renderLeaderPhoto();
-      renderFacts();
-      toast("已删除负责人照片。");
+      await api(`/api/projects/${view.id}/leader-photo`, { method: "DELETE" });
+      if (!view.active()) return;
+      await loadProject(view.id);
+      if (view.active()) toast("已删除负责人照片。");
     } catch (err) {
-      toast(`删除失败：${err.message}`, true);
+      if (view.active()) toast(`删除失败：${err.message}`, true);
     } finally {
       if (btn) btn.disabled = false;
     }
@@ -2394,7 +2673,7 @@
     }
   }
 
-  function renderSourceCards(items, kind) {
+  function renderSourceCards(items, kind, view) {
     const target = $("#sourceResults");
     target.replaceChildren();
     if (!items?.length) {
@@ -2431,14 +2710,15 @@
         : "搜索摘要不是通知全文；请打开原始页面核对年份和适用对象。";
       card.append(warning);
       const add = button("我已核对，加入来源", "button button-small button-primary");
-      add.addEventListener("click", () => confirmSource(source, kind, add));
+      add.addEventListener("click", () => confirmSource(source, kind, add, view));
       card.append(add);
       target.append(card);
     }
   }
 
   async function searchPublicKnowledge() {
-    if (!state.project?.id) {
+    const view = currentProjectView();
+    if (!view.active()) {
       toast("请先选择项目。", true);
       return;
     }
@@ -2451,7 +2731,7 @@
     const target = $("#knowledgeResults");
     btn.disabled = true;
     try {
-      const result = await api(`/api/projects/${state.project.id}/search/knowledge`, {
+      const result = await api(`/api/projects/${view.id}/search/knowledge`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2460,6 +2740,7 @@
           include_examples: $("#knowledgeIncludeExamples").checked === true,
         }),
       });
+      if (!view.active()) return;
       target.replaceChildren();
       const notice = document.createElement("p");
       notice.className = "source-warning";
@@ -2507,21 +2788,24 @@
         target.append(card);
       }
     } catch (error) {
-      toast(error.message || "赛道知识检索失败。", true);
+      if (view.active()) toast(error.message || "赛道知识检索失败。", true);
     } finally {
-      $("#knowledgeExternalConsent").checked = false;
-      $("#knowledgeIncludeExamples").checked = false;
+      if (view.active()) {
+        $("#knowledgeExternalConsent").checked = false;
+        $("#knowledgeIncludeExamples").checked = false;
+      }
       btn.disabled = false;
     }
   }
 
-  async function confirmSource(source, kind, btn) {
+  async function confirmSource(source, kind, btn, view) {
+    if (!view.active()) return;
     btn.disabled = true;
     try {
       const yearValue = typeof source.year === "number"
         ? source.year
         : (/^\d{4}$/.test(String(source.year || "")) ? Number(source.year) : null);
-      await api(`/api/projects/${state.project.id}/references/confirm`, {
+      await api(`/api/projects/${view.id}/references/confirm`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2536,15 +2820,19 @@
           published_at: source.published_at || "",
         }),
       });
-      await loadProject(state.project.id);
-      toast("来源已加入项目；仍请核对其是否支持正文中的具体论断。");
+      if (!view.active()) return;
+      await loadProject(view.id);
+      if (view.active()) toast("来源已加入项目；仍请核对其是否支持正文中的具体论断。");
     } catch (error) {
+      if (!view.active()) return;
       toast(error.message, true);
       btn.disabled = false;
     }
   }
 
   async function searchSources(kind) {
+    const view = currentProjectView();
+    if (!view.active()) return;
     const input = kind === "paper" ? $("#paperQuery") : $("#officialQuery");
     const query = input.value.trim();
     if (query.length < 2) return toast("请输入至少两个字的关键词。", true);
@@ -2558,14 +2846,16 @@
     $("#sourceResults").append(loading);
     try {
       const endpoint = kind === "paper" ? "papers" : "official";
-      const result = await api(`/api/projects/${state.project.id}/search/${endpoint}`, {
+      const result = await api(`/api/projects/${view.id}/search/${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query }),
       });
-      renderSourceCards(result.results, kind);
+      if (!view.active()) return;
+      renderSourceCards(result.results, kind, view);
       if (result.error) toast(result.error, true);
     } catch (error) {
+      if (!view.active()) return;
       toast(error.message, true);
       $("#sourceResults").replaceChildren();
     } finally {
@@ -2575,17 +2865,20 @@
   }
 
   async function previewOfficialUrl() {
+    const view = currentProjectView();
+    if (!view.active()) return;
     const url = $("#officialUrl").value.trim();
     if (!url) return toast("请先粘贴学校或政府官网的 HTTPS 通知链接。", true);
     const btn = $("#officialUrlBtn");
     btn.disabled = true;
     btn.textContent = "读取中…";
     try {
-      const result = await api(`/api/projects/${state.project.id}/official/preview`, {
+      const result = await api(`/api/projects/${view.id}/official/preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url }),
       });
+      if (!view.active()) return;
       const target = $("#sourceResults");
       target.replaceChildren();
       const card = document.createElement("div");
@@ -2608,16 +2901,19 @@
       warning.textContent = result.warning || "请核对页面年份和适用范围。";
       const add = button("我已核对，将全文加入当前项目材料", "button button-small button-primary");
       add.addEventListener("click", async () => {
+        if (!view.active()) return;
         add.disabled = true;
         try {
-          const imported = await api(`/api/projects/${state.project.id}/official/import`, {
+          const imported = await api(`/api/projects/${view.id}/official/import`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ url: result.url }),
           });
-          await loadProject(state.project.id);
-          toast(imported.note || "官方通知已读取；确认文字后才能进入 RAG。");
+          if (!view.active()) return;
+          await loadProject(view.id);
+          if (view.active()) toast(imported.note || "官方通知已读取；确认文字后才能进入 RAG。");
         } catch (error) {
+          if (!view.active()) return;
           toast(error.message, true);
           add.disabled = false;
         }
@@ -2625,6 +2921,7 @@
       card.append(title, link, date, excerpt, warning, add);
       target.append(card);
     } catch (error) {
+      if (!view.active()) return;
       toast(error.message, true);
       if ((error.message || "").includes("积分不足") || (error.message || "").includes("402")) {
         openRechargeDialog();
@@ -2636,32 +2933,79 @@
   }
 
   async function saveFacts() {
-    const payload = {};
-    $$("[data-fact]").forEach((field) => {
-      if (field.dataset.fact === "political_stage" && $("#politicalStageField").hidden) return;
-      if (field.value.trim() || ["application_year", "education_level", "college", "political_stage"].includes(field.dataset.fact))
-        payload[field.dataset.fact] = field.value.trim();
-    });
-    const projectFields = {};
-    $$("[data-project]").forEach((field) => {
-      projectFields[field.dataset.project] = field.value.trim();
-    });
+    const view = currentProjectView();
+    if (!view.active()) return;
+    const draft = factEdits.open(state.project);
+    if (draft.saving) return;
+    for (const field of [...$$("[data-fact]"), ...$$("[data-project]")]) recordFactInput(field);
+    if (factEdits.conflicts(state.project, draft).length) {
+      renderFactDraftStatus(state.project, draft);
+      return;
+    }
+    const initial = factEdits.prepare(state.project, draft);
+    if (!initial.changes.length) return;
+    draft.saving = true;
+    clearExportArtifacts();
+    window.MaterialPilot?.invalidateArtifacts?.();
+    renderFactDraftStatus(state.project, draft);
+    let plan = initial;
     try {
-      await api(`/api/projects/${state.project.id}/facts`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      await api(`/api/projects/${state.project.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(projectFields),
-      });
-      await loadProject(state.project.id);
-      $("#factsEditor").classList.add("hidden");
-      toast("已保存为你确认的项目事实。");
+      for (let attempt = 0; attempt < 2; attempt++) {
+        factEdits.start(view.id, draft, plan.changes);
+        try {
+          const receipt = await observeMaterialRequest(`/api/projects/${view.id}/facts/form`, {
+            method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(plan.payload),
+          }, 30000, "保存结果待确认，已保留本页输入。");
+          factEdits.finish(view.id, draft, plan.changes);
+          if (view.active() && Number.isSafeInteger(receipt?.material_revision)
+              && receipt.material_revision >= state.project.material_revision) {
+            Object.assign(state.project, receipt.project);
+            state.project.state ||= {};
+            state.project.state.confirmed_facts = receipt.confirmed_facts;
+            state.project.state.fact_sources = receipt.fact_sources;
+            state.project.material_revision = receipt.material_revision;
+          }
+          break;
+        } catch (error) {
+          if (error.status >= 400 && error.status < 500) factEdits.finish(view.id, draft, plan.changes, true);
+          if (error.status !== 409 || !view.active()) throw error;
+          const revision = state.project.material_revision;
+          await loadProject(view.id, { refreshList: false });
+          if (!view.active()) return;
+          factEdits.open(state.project, true);
+          if (factEdits.conflicts(state.project, draft).length) {
+            toast("这些字段同时被修改，请核对后保存。", true);
+            return;
+          }
+          const next = factEdits.prepare(state.project, draft);
+          if (!next.changes.length) break;
+          if (attempt || state.project.material_revision === revision) throw error;
+          const sameInputs = next.changes.every(({ entry, value }) =>
+            initial.changes.some(change => change.entry === entry && change.value === value));
+          if (!sameInputs) {
+            toast("已载入最新项目信息，本页还有修改待保存。");
+            return;
+          }
+          plan = next;
+        }
+      }
+      if (view.active()) {
+        clearExportArtifacts();
+        window.MaterialPilot?.invalidateArtifacts?.();
+        await loadProject(view.id);
+        if (!view.active()) return;
+        if (!draft.entries.size) $("#factsEditor").classList.add("hidden");
+        toast(draft.entries.size ? "已保存提交时的信息，本页还有修改待保存。" : "已保存为你确认的项目事实。");
+      } else if (factEdits.tracked(view.id, draft) && chatProjectIsActive(view.id)) {
+        draft.saving = false;
+        await loadProject(view.id, { refreshList: false });
+      }
     } catch (error) {
-      toast(error.message, true);
+      if (!view.active()) return;
+      toast(error.status ? error.message : "保存结果待确认，已保留本页输入。", true);
+    } finally {
+      draft.saving = false;
+      if (state.project?.id === view.id && factEdits.tracked(view.id, draft)) renderFactDraftStatus(state.project, draft);
     }
   }
 
@@ -2774,13 +3118,16 @@
   }
 
   async function proposeFacts() {
+    const view = currentProjectView();
+    if (!view.active()) return;
     const btn = $("#proposeFactsBtn");
     btn.disabled = true;
     btn.textContent = "提取中…";
     const root = $("#factCandidates");
     root.replaceChildren();
     try {
-      const result = await api(`/api/projects/${state.project.id}/facts/propose`, { method: "POST" });
+      const result = await api(`/api/projects/${view.id}/facts/propose`, { method: "POST" });
+      if (!view.active()) return;
       if (!result.candidates?.length) {
         const note = document.createElement("div");
         note.className = "empty-note";
@@ -2799,18 +3146,20 @@
         evidence.textContent = `原文依据：“${candidate.source_quote}”`;
         const confirm = button("我已核对，确认保存", "button button-small button-primary");
         confirm.addEventListener("click", async () => {
+          if (!view.active()) return;
           confirm.disabled = true;
           try {
-            await api(`/api/projects/${state.project.id}/facts/confirm`, {
+            await api(`/api/projects/${view.id}/facts/confirm`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(candidate),
             });
+            if (!view.active()) return;
             card.remove();
-            await loadProject(state.project.id);
-            toast("已保存你确认的项目事实。");
+            await loadProject(view.id);
+            if (view.active()) toast("已保存你确认的项目事实。");
           } catch (error) {
-            toast(error.message, true);
+            if (view.active()) toast(error.message, true);
             confirm.disabled = false;
           }
         });
@@ -2818,6 +3167,7 @@
         root.append(card);
       }
     } catch (error) {
+      if (!view.active()) return;
       toast(error.message, true);
       if ((error.message || "").includes("积分不足") || (error.message || "").includes("402")) {
         openRechargeDialog();
@@ -2828,92 +3178,219 @@
     }
   }
 
-  async function generateOutline() {
-    const btn = $("#generateOutlineBtn");
-    const projectId = state.project?.id;
-    if (!projectId) return;
-    btn.disabled = true;
-    btn.textContent = "正在整理…";
-    try {
-      const result = window.MaterialPilot?.active()
-        ? await window.MaterialPilot.outline()
-        : await api(`/api/projects/${projectId}/outline/generate`, { method: "POST" });
-      if (state.project?.id !== projectId) return;
-      state.outline = result.outline;
-      renderOutline();
-      $("#outlineActions").classList.remove("hidden");
-      $("#outlineWarning").textContent = result.warning || "";
-    } catch (error) {
-      toast(error.message, true);
-      if ((error.message || "").includes("积分不足") || (error.message || "").includes("402")) {
-        openRechargeDialog();
-      }
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "拟一份目录";
-    }
+  function copyOutline(rows) {
+    return (rows || []).map(({ id, title }) => ({ id, title }));
   }
 
-  async function recommendOutline() {
-    const projectId = state.project?.id;
-    const btn = $("#resetOutlineBtn");
-    if (!projectId || !btn) return;
-    btn.disabled = true;
-    try {
-      await flushDraftEdits();
-      if (state.project?.id !== projectId) return;
-      const result = await api(`/api/projects/${projectId}/outline/recommend`);
-      if (state.project?.id !== projectId) return;
-      if (!result.outline?.length) {
-        toast(result.warning || "请先确定申报类型", true);
-        return;
-      }
-      // This is a preview. The existing saved directory and sections are not
-      // changed until the student explicitly confirms the displayed outline.
-      const current = state.project.outline || [];
-      const saved = state.project.sections || {};
-      const existingByTitle = new Map(current.map(item => [String(item.title || "").trim(), item]));
-      const reserved = new Set(current.map(item => item.id));
-      const used = new Set();
-      const next = result.outline.map(item => {
-        const sameTitle = existingByTitle.get(String(item.title || "").trim());
-        let id = sameTitle?.id || item.id;
-        if (!sameTitle && reserved.has(id)) {
-          const prefix = String(id).slice(0, 65) + "_recommended";
-          id = prefix;
-          let number = 2;
-          while (reserved.has(id) || used.has(id)) id = `${prefix}_${number++}`;
-        }
-        used.add(id);
-        return { ...item, id };
+  function sameOutline(a, b) {
+    return a.length === b.length && a.every((row, index) => row.id === b[index].id && row.title === b[index].title);
+  }
+
+  function savedOutlineRows(rows) {
+    if (!Array.isArray(rows) || !rows.every(row => typeof row?.id === "string" && typeof row.title === "string")) return null;
+    return copyOutline(rows);
+  }
+
+  function persistOutlineEditor(projectId) {
+    const draft = outlineDrafts.get(projectId);
+    const preview = outlinePreviews.get(projectId);
+    const value = draft || preview ? {
+      draft: draft && { base: draft.base, rows: draft.rows, warning: draft.warning, submitted: draft.submitted },
+      preview: preview && { outline: preview.outline, warning: preview.warning },
+    } : null;
+    if (outlineRecovery.write(projectId, value) || !value || outlineRecoveryWarning) return;
+    outlineRecoveryWarning = true;
+    toast("浏览器暂时无法保留目录草稿，请先保存目录再刷新。", true);
+  }
+
+  function restoreOutlineEditor(project) {
+    const id = project.id;
+    if (!outlineDrafts.has(id) && !outlinePreviews.has(id)) {
+      const recovery = outlineRecovery.read(id);
+      const base = savedOutlineRows(recovery?.draft?.base);
+      const rows = savedOutlineRows(recovery?.draft?.rows);
+      if (base && rows) outlineDrafts.set(id, {
+        base, rows, warning: typeof recovery.draft.warning === "string" ? recovery.draft.warning : "",
+        submitted: savedOutlineRows(recovery.draft.submitted) || undefined, recovered: true,
       });
-      const preserved = current.filter(item => String(saved[item.id] || "").trim() && !used.has(item.id));
-      if (next.length + preserved.length > 20) {
-        toast("为保留已有正文，暂不能自动替换目录；请先调整现有章节。", true);
-        return;
-      }
-      state.outline = [...next, ...preserved];
-      renderOutline();
-      $("#outlineWarning").textContent = (result.warning || "请核对并保存目录。")
-        + (preserved.length ? " 已保留含正文的原章节。" : "");
-      toast("已整理推荐目录，请核对后保存。");
-    } catch (error) {
-      toast(error.message, true);
-    } finally {
-      btn.disabled = false;
+      const outline = savedOutlineRows(recovery?.preview?.outline);
+      if (outline?.length) outlinePreviews.set(id, {
+        outline, warning: typeof recovery.preview.warning === "string" ? recovery.preview.warning : "",
+      });
     }
+    const draft = outlineDrafts.get(id);
+    const saved = copyOutline(project.outline);
+    if (draft && !draft.saving && project.state?.outline_confirmed) {
+      if (draft.submitted && sameOutline(saved, draft.submitted)) {
+        draft.base = saved;
+        draft.submitted = undefined;
+        if (sameOutline(saved, normalizedOutline(draft.rows))) draft.rows = saved;
+      }
+      if (!draft.submitted && sameOutline(saved, draft.rows)) outlineDrafts.delete(id);
+    }
+    state.outline = outlineDrafts.get(id)?.rows || saved;
+    persistOutlineEditor(id);
   }
 
-  function renderOutline() {
-    const list = $("#outlineList");
-    list.replaceChildren();
-    if (!state.outline?.length) {
-      list.className = "outline-list empty-note";
-      list.textContent = "还没有目录。点击“拟一份目录”或“赛道推荐目录”开始。";
-      $("#outlineActions").classList.add("hidden");
+  function normalizedOutline(rows) {
+    return rows.map(({ id, title }, index) => ({
+      id: id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || `section_${index + 1}`,
+      title: Array.from(title.trim()).slice(0, 100).join(""),
+    }));
+  }
+
+  function editOutline(rows, warning = "") {
+    const project = state.project;
+    // Keep a stable copy of the directory on which this edit started.
+    const draft = outlineDrafts.get(project.id) || { base: copyOutline(project.outline) };
+    draft.rows = rows;
+    draft.warning = warning;
+    draft.recovered = false;
+    if (!draft.saving && !draft.submitted && project.state?.outline_confirmed
+        && sameOutline(draft.base, rows) && sameOutline(rows, copyOutline(project.outline))) outlineDrafts.delete(project.id);
+    else outlineDrafts.set(project.id, draft);
+    state.outline = rows;
+    persistOutlineEditor(project.id);
+    clearExportArtifacts();
+  }
+
+  function applyOutlinePreview(result) {
+    const project = state.project;
+    const current = copyOutline(project.outline);
+    const remaining = new Map(current.map(row => [row.id, row]));
+    const reserved = new Set([...remaining.keys(), ...Object.keys(project.sections || {})]);
+    const used = new Set();
+    const next = result.outline.map((item, index) => {
+      const title = String(item.title || "").trim().slice(0, 100);
+      if (!title) return null;
+      const requested = String(item.id || "").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || `section_${index + 1}`;
+      const sameId = remaining.get(requested);
+      const matched = sameId?.title.trim() === title ? sameId
+        : [...remaining.values()].find(row => row.title.trim() === title);
+      let id = matched?.id || requested;
+      if (matched) remaining.delete(matched.id);
+      else if (reserved.has(id) || used.has(id)) {
+        const prefix = id.slice(0, 65) + "_suggested";
+        id = prefix;
+        for (let number = 2; reserved.has(id) || used.has(id); number++) id = `${prefix}_${number}`;
+      }
+      used.add(id);
+      return { id, title };
+    }).filter(Boolean);
+    if (!next.length) {
+      toast(result.warning || "没有可用的候选章节。", true);
       return;
     }
+    const preserved = [...remaining.values()].filter(row => String(project.sections?.[row.id] || "").trim()
+      || sectionEdits.hasLocalContent(project.id, row.id));
+    if (next.length + preserved.length > 20) {
+      toast("已有正文的章节和候选章节合计超过 20 个，请先调整目录。", true);
+      return;
+    }
+    outlinePreviews.delete(project.id);
+    editOutline([...next, ...preserved], (result.warning || "请核对候选目录后保存。")
+      + (preserved.length ? " 已保留含正文的原章节。" : ""));
+    renderOutline();
+    toast("候选目录已就绪，请核对后保存。");
+  }
+
+  function showOutlineFromTask(result) {
+    if (!state.project || !result.outline?.length) return;
+    outlinePreviews.set(state.project.id, result);
+    persistOutlineEditor(state.project.id);
+    if (!outlineDrafts.has(state.project.id)) applyOutlinePreview(result);
+    else renderOutline();
+    handleTabNavigation("outline-panel");
+  }
+
+  function hasPendingMaterialJob(projectId, kind, target = "") {
+    return Boolean(window.MaterialPilot?.pendingJob?.(projectId, kind, target));
+  }
+
+  function shouldUseMaterialJob(projectId, kind, target) {
+    if (hasPendingMaterialJob(projectId, kind, target)) return true;
+    return window.MaterialPilot?.usesWorker() ?? false;
+  }
+
+  function syncOutlineGenerateLabel() {
+    const btn = $("#generateOutlineBtn");
+    const projectId = state.project?.id;
+    if (btn && !outlineRequests.has(projectId))
+      btn.textContent = hasPendingMaterialJob(projectId, "outline") ? "查看上次目录任务" : "拟一份目录";
+  }
+
+  async function suggestOutline(generate) {
+    const view = currentProjectView();
+    const btn = $(generate ? "#generateOutlineBtn" : "#resetOutlineBtn");
+    if (!view.active() || !btn || outlineRequests.has(view.id)) return;
+    const current = copyOutline(state.outline);
+    const request = {};
+    outlineRequests.set(view.id, request);
+    btn.disabled = true;
+    if (generate) btn.textContent = "正在整理…";
+    try {
+      const worker = generate && await shouldUseMaterialJob(view.id, "outline");
+      if (!view.active()) return;
+      const result = generate
+        ? (worker
+          ? await window.MaterialPilot.outline()
+          : await observeMaterialRequest(`/api/projects/${view.id}/outline/generate`, { method: "POST" }, 180000,
+            "目录生成结果暂未收到，请稍后查看，避免重复提交。"))
+        : await api(`/api/projects/${view.id}/outline/recommend`);
+      if (outlineRequests.get(view.id) !== request) return;
+      if (!result.outline?.length) {
+        if (view.active()) toast(result.warning || "暂未取得候选目录。", true);
+        return;
+      }
+      outlinePreviews.set(view.id, result);
+      persistOutlineEditor(view.id);
+      if (view.active() && sameOutline(current, state.outline) && !outlineDrafts.has(view.id)) {
+        applyOutlinePreview(result);
+      } else {
+        if (view.active()) {
+          renderOutline();
+          toast("候选目录已就绪，可在目录编辑器中查看。");
+        }
+      }
+    } catch (error) {
+      if (!view.active()) return;
+      toast(error.message, true);
+      if ((error.message || "").includes("积分不足") || (error.message || "").includes("402")) openRechargeDialog();
+    } finally {
+      if (outlineRequests.get(view.id) === request) outlineRequests.delete(view.id);
+      btn.disabled = false;
+      if (generate) syncOutlineGenerateLabel();
+    }
+  }
+
+  const generateOutline = () => suggestOutline(true);
+  const recommendOutline = () => suggestOutline(false);
+
+  function renderOutline() {
+    syncOutlineGenerateLabel();
+    const list = $("#outlineList");
+    list.replaceChildren();
+    const view = currentProjectView();
+    const saved = copyOutline(state.project?.outline);
+    const draft = outlineDrafts.get(view.id);
+    const conflict = draft && !sameOutline(draft.base, saved);
+    const warning = $("#outlineWarning");
+    warning.textContent = conflict ? "其他页面已修改目录，请核对后选择要保留的版本。"
+      : draft?.submitted && !draft.saving ? "上一次目录保存待确认，请核对后保存。"
+      : draft?.recovered ? "目录草稿已恢复，请核对后保存。"
+      : draft?.warning || (draft ? "目录有待保存的修改。" : "");
     list.className = "outline-list";
+    if (!state.outline.length) {
+      const note = document.createElement("p");
+      note.className = "empty-note";
+      note.textContent = "还没有目录。可手动添加章节、使用赛道推荐目录或请 Agent 拟一份。";
+      list.append(note);
+    }
+    const change = rows => {
+      if (!view.active()) return;
+      editOutline(rows);
+      renderOutline();
+    };
     state.outline.forEach((section, index) => {
       const row = document.createElement("div");
       row.className = "outline-row";
@@ -2922,89 +3399,179 @@
       mark.textContent = String(index + 1).padStart(2, "0");
       const input = document.createElement("input");
       input.value = section.title;
-      input.addEventListener("input", () => { clearExportArtifacts(); section.title = input.value; });
-      const up = button("↑", "remove-outline");
-      up.title = "上移";
-      up.disabled = index === 0;
-      up.addEventListener("click", () => {
-        if (index === 0) return;
-        clearExportArtifacts();
-        [state.outline[index - 1], state.outline[index]] = [state.outline[index], state.outline[index - 1]];
-        renderOutline();
+      input.maxLength = 100;
+      input.addEventListener("input", () => {
+        if (!view.active()) return;
+        editOutline(state.outline.map((item, i) => i === index ? { ...item, title: input.value } : item));
+        const hasDraft = outlineDrafts.has(view.id);
+        if (!conflict || !hasDraft) warning.textContent = hasDraft ? "目录有待保存的修改。" : "";
+        discard.classList.toggle("hidden", !hasDraft);
       });
-      const down = button("↓", "remove-outline down-outline");
-      down.title = "下移";
-      down.disabled = index === state.outline.length - 1;
-      down.addEventListener("click", () => {
-        if (index === state.outline.length - 1) return;
-        clearExportArtifacts();
-        [state.outline[index + 1], state.outline[index]] = [state.outline[index], state.outline[index + 1]];
-        renderOutline();
-      });
+      const move = (offset, label, title) => {
+        const control = button(label, offset > 0 ? "remove-outline down-outline" : "remove-outline");
+        control.title = title;
+        const next = index + offset;
+        control.disabled = next < 0 || next >= state.outline.length;
+        control.addEventListener("click", () => {
+          if (control.disabled || !view.active()) return;
+          const rows = [...state.outline];
+          [rows[index], rows[next]] = [rows[next], rows[index]];
+          change(rows);
+        });
+        return control;
+      };
       const remove = button("×", "remove-outline");
-      remove.title = "删除章节";
-      remove.addEventListener("click", () => {
-        clearExportArtifacts();
-        state.outline.splice(index, 1);
-        renderOutline();
-      });
-      row.append(mark, input, up, down, remove);
+      remove.title = "移出目录";
+      remove.addEventListener("click", () => change(state.outline.filter((_, i) => i !== index)));
+      row.append(mark, input, move(-1, "↑", "上移"), move(1, "↓", "下移"), remove);
       list.append(row);
     });
+    const full = state.outline.length >= 20;
     const add = button("＋ 添加章节", "button button-small button-quiet");
+    add.disabled = full;
     add.addEventListener("click", () => {
-      clearExportArtifacts();
-      const newId = `section_${Date.now()}`;
-      state.outline.push({ id: newId, title: "新章节" });
-      renderOutline();
+      if (add.disabled || !view.active()) return;
+      const suffix = globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      change([...state.outline, { id: `section_${suffix}`, title: "新章节" }]);
       const allInputs = $$("#outlineList .outline-row input");
-      const last = allInputs[allInputs.length - 1];
-      if (last) {
-        last.focus();
-        last.select();
-      }
+      allInputs.at(-1)?.focus();
+      allInputs.at(-1)?.select();
     });
     list.append(add);
+    const discard = button("恢复已保存目录", "button button-small button-quiet");
+    discard.classList.toggle("hidden", !draft);
+    discard.addEventListener("click", () => {
+      if (!view.active() || outlineDrafts.get(view.id)?.saving) return;
+      if (!confirm("放弃本页目录修改，恢复已保存的目录吗？")) return;
+      outlineDrafts.delete(view.id);
+      persistOutlineEditor(view.id);
+      restoreOutlineEditor(state.project);
+      renderOutline();
+    });
+    list.append(discard);
+    const preview = outlinePreviews.get(view.id);
+    if (preview) {
+      const use = button("查看已生成的候选目录", "button button-small button-secondary");
+      use.addEventListener("click", () => {
+        if (!view.active()) return;
+        if (!outlineDrafts.has(view.id) || confirm("用候选目录替换本页正在编辑的目录吗？")) applyOutlinePreview(preview);
+      });
+      list.append(use);
+    }
+    if (conflict) {
+      const comparison = document.createElement("div");
+      const caption = document.createElement("p");
+      caption.textContent = saved.length ? `服务器目录：${saved.map(item => item.title).join("、")}` : "服务器当前目录为空。";
+      const keep = button("保留本页目录", "button button-small button-secondary");
+      keep.addEventListener("click", () => {
+        if (!view.active() || outlineDrafts.get(view.id) !== draft || draft.saving) return;
+        draft.base = saved;
+        draft.submitted = undefined;
+        persistOutlineEditor(view.id);
+        renderOutline();
+      });
+      comparison.append(caption, keep);
+      list.append(comparison);
+    }
+    const inEditor = new Set(state.outline.map(row => row.id));
+    const archived = (state.project?.state?._archived_outline || []).filter(row => !inEditor.has(row.id));
+    if (archived.length) {
+      const history = document.createElement("details");
+      const label = document.createElement("summary");
+      label.textContent = "已移出的章节";
+      history.append(label);
+      for (const row of archived) {
+        const restore = button(`恢复「${row.title}」`, "button button-small button-secondary");
+        restore.disabled = full;
+        restore.addEventListener("click", () => {
+          if (!restore.disabled && view.active()) change([...state.outline, { ...row }]);
+        });
+        history.append(restore);
+      }
+      list.append(history);
+    }
     $("#outlineActions").classList.remove("hidden");
+    $("#saveOutlineBtn").disabled = !state.outline.length || Boolean(conflict || draft?.saving);
   }
 
   async function saveOutline() {
-    const projectId = state.project?.id;
-    if (!projectId) return;
+    const view = currentProjectView();
+    if (!view.active() || !state.outline.length) return;
+    const draft = outlineDrafts.get(view.id) || { base: copyOutline(state.project.outline), rows: state.outline };
+    if (draft.saving || !sameOutline(draft.base, copyOutline(state.project.outline))) return;
+    const rows = draft.rows;
+    const removed = draft.base.filter(row => !rows.some(item => item.id === row.id)
+      && (String(state.project.sections?.[row.id] || "").trim() || sectionEdits.hasLocalContent(view.id, row.id)));
+    if (removed.length && !confirm("移出的章节将从后续 Word 导出中排除，正文可从「已移出的章节」恢复。继续保存吗？")) return;
+    outlineDrafts.set(view.id, draft);
+    draft.saving = true;
+    const previousSubmission = draft.submitted;
+    let submitted;
+    $("#saveOutlineBtn").disabled = true;
     clearExportArtifacts();
     window.MaterialPilot?.invalidateArtifacts?.();
     try {
       await flushDraftEdits();
-      if (state.project?.id !== projectId) return;
-      if (window.MaterialPilot?.active()) await window.MaterialPilot.flushEdits();
-      if (state.project?.id !== projectId) return;
-      const result = await api(`/api/projects/${projectId}/outline`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ outline: state.outline, expected_revision: state.project.material_revision }),
+      if (!view.active()) return;
+      submitted = normalizedOutline(rows);
+      draft.submitted = submitted;
+      persistOutlineEditor(view.id);
+      const fencePreviousWrite = previousSubmission && sameOutline(submitted, draft.base);
+      const result = await api(`/api/projects/${view.id}/outline`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ outline: rows, base_outline: draft.base,
+          expected_revision: fencePreviousWrite ? state.project.material_revision : undefined }),
       });
-      if (state.project?.id !== projectId) return;
-      state.outline = result.outline;
-      state.project.outline = result.outline.map(item => ({ ...item }));
-      state.project.sections ||= {};
-      for (const item of result.outline) state.project.sections[item.id] ??= "";
+      const stillTracked = outlineDrafts.get(view.id) === draft;
+      if (stillTracked) {
+        draft.base = copyOutline(result.outline);
+        draft.submitted = undefined;
+        if (draft.rows === rows) outlineDrafts.delete(view.id);
+        persistOutlineEditor(view.id);
+      }
+      if (!view.active()) {
+        if (stillTracked && chatProjectIsActive(view.id)) {
+          draft.saving = false;
+          await loadProject(view.id, { refreshList: false });
+        }
+        return;
+      }
+      if (result.material_revision < state.project.material_revision) {
+        await loadProject(view.id, { refreshList: false });
+        return;
+      }
+      state.project.outline = copyOutline(result.outline);
+      const emptySections = Object.fromEntries(result.outline.map(item => [item.id, ""]));
+      state.project.sections = { ...emptySections, ...state.project.sections };
       state.project.state ||= {};
       state.project.state.outline_confirmed = true;
+      if (result.archived_outline) state.project.state._archived_outline = result.archived_outline;
       if (result.material_revision !== undefined) state.project.material_revision = result.material_revision;
-      $("#outlineActions").classList.add("hidden");
-      renderOutline();
+      restoreOutlineEditor(state.project);
       renderSections();
-      if (window.MaterialPilot?.active()) await window.MaterialPilot.refresh();
-      toast("目录已确认。现在可以逐章生成或编辑。");
+      if (window.MaterialPilot?.active()) void window.MaterialPilot.refresh().catch(() => {});
+      toast(draft.rows === rows ? "目录已确认。现在可以逐章生成或编辑。" : "已保存提交时的目录，本页还有新修改待保存。");
     } catch (error) {
-      toast(error.message, true);
+      if (submitted && outlineDrafts.get(view.id) === draft && error.status >= 400 && error.status < 500) {
+        draft.submitted = previousSubmission;
+        persistOutlineEditor(view.id);
+      }
+      if (!view.active()) return;
+      if (error.status === 409) {
+        draft.saving = false;
+        await loadProject(view.id, { refreshList: false });
+      }
+      if (view.active()) toast(error.message, true);
+    } finally {
+      draft.saving = false;
+      if (view.active() || (chatProjectIsActive(view.id) && outlineDrafts.get(view.id) === draft)) renderOutline();
     }
   }
 
   function updateDraftStats() {
     const badge = $("#draftStatsBadge");
     if (!badge) return;
-    const outline = state.outline || [];
+    const outline = state.project?.outline || [];
     const sections = state.project?.sections || {};
     const totalWords = outline.reduce((sum, s) => sum + countWords(sections[s.id] || ""), 0);
     const completed = outline.filter(s => (sections[s.id] || "").trim().length > 0).length;
@@ -3055,8 +3622,22 @@
     if (btn) btn.textContent = allSectionsFolded ? "展开全部" : "折叠全部";
   }
 
+  function rememberSectionCandidate(key, content) {
+    const drafts = uncertainSectionDrafts.get(key) || [];
+    if (!drafts.includes(content)) drafts.push(content);
+    uncertainSectionDrafts.set(key, drafts);
+  }
+
+  function syncBatchGenerateLabel() {
+    const button = $("#batchGenerateSectionsBtn");
+    if (!button || state.batchGenerating) return;
+    const project = state.project;
+    const pending = project?.outline?.some(section => hasPendingMaterialJob(project.id, "section", section.id));
+    button.textContent = pending ? "查看待确认的章节任务" : "⚡ 批量生成所有章节";
+  }
+
   async function startBatchGeneration() {
-    if (!state.project || !state.outline?.length) {
+    if (!state.project?.outline?.length) {
       toast("请先拟定并确认目录", true);
       return;
     }
@@ -3065,12 +3646,13 @@
     state.batchGenerating = true;
     state.batchAbort = false;
     const projectId = state.project.id;
+    const view = currentProjectView();
     const accountId = state.authSession?.user?.id || null;
     const generationEpoch = chatRecoveryEpoch;
     const deletionEpoch = deletedProjectEpochs.get(projectId) || 0;
     const isCurrent = () => chatRecoveryEpoch === generationEpoch &&
       (state.authSession?.user?.id || null) === accountId &&
-      (deletedProjectEpochs.get(projectId) || 0) === deletionEpoch && chatProjectIsActive(projectId);
+      (deletedProjectEpochs.get(projectId) || 0) === deletionEpoch && view.active();
     try {
       if ([...document.querySelectorAll(".draft-section textarea")].some(area => {
         const sid = area.closest(".draft-section")?.id?.slice("draft-sec-".length);
@@ -3083,24 +3665,29 @@
       return;
     }
     if (!isCurrent()) { state.batchGenerating = false; state.batchAbort = false; return; }
+    const chapterId = area => area.closest(".draft-section").id.slice("draft-sec-".length);
     const editorBaselines = new Map([...document.querySelectorAll(".draft-section textarea")]
-      .map(area => [area, area.value]));
-    const editorsChanged = () => [...editorBaselines].some(([area, value]) => area.value !== value);
+      .map(area => [chapterId(area), area.value]));
+    const editorsChanged = () => [...document.querySelectorAll(".draft-section textarea")]
+      .some(area => editorBaselines.get(chapterId(area)) !== area.value);
 
     const wrapper = $("#batchProgressWrapper");
     const fill = $("#batchProgressFill");
     const text = $("#batchProgressText");
     const batchBtn = $("#batchGenerateSectionsBtn");
+    const outline = copyOutline(state.project.outline);
+    const pending = outline.filter(section => hasPendingMaterialJob(projectId, "section", section.id));
+    const recoveryOnly = pending.length > 0;
+    const chapters = recoveryOnly ? pending : outline;
 
     if (wrapper) wrapper.classList.remove("hidden");
     if (batchBtn) {
       batchBtn.disabled = true;
-      batchBtn.textContent = "批量生成中…";
+      batchBtn.textContent = recoveryOnly ? "正在查询任务…" : "批量生成中…";
     }
 
-    const outline = [...state.outline];
     let completedCount = 0;
-    const total = outline.length;
+    const total = chapters.length;
     let stopped = "";
 
     for (let i = 0; i < total; i++) {
@@ -3108,13 +3695,20 @@
         stopped = state.batchAbort ? "已停止后续章节" : "已切换项目，停止后续章节";
         break;
       }
-      const section = outline[i];
+      const section = chapters[i];
+      // Another control may have finished this recovery since batch started.
+      if (recoveryOnly && !hasPendingMaterialJob(projectId, "section", section.id)) continue;
+      const base = state.project.sections?.[section.id] || "";
       if (fill) fill.style.width = `${Math.round(((i + 0.1) / total) * 100)}%`;
-      if (text) text.textContent = `正在生成 [${i + 1}/${total}]：${section.title}…`;
+      if (text) text.textContent = `${recoveryOnly ? "正在查询" : "正在生成"} [${i + 1}/${total}]：${section.title}…`;
 
       try {
-        const result = window.MaterialPilot?.active()
-          ? await window.MaterialPilot.section(section.id, null)
+        const worker = await shouldUseMaterialJob(projectId, "section", section.id);
+        if (state.batchAbort || !isCurrent()) {
+          stopped = state.batchAbort ? "已停止后续章节" : "已切换项目，停止后续章节";
+          break;
+        }
+        const result = worker ? await window.MaterialPilot.section(section.id, null)
           : await observeMaterialRequest(`/api/projects/${projectId}/sections/${section.id}/generate`,
               { method: "POST" }, 180000, SECTION_WAIT_NOTICE);
         if (!isCurrent()) { stopped = "已切换项目，停止后续章节"; break; }
@@ -3134,9 +3728,8 @@
           // Generation may already be saved on the server. Keep it as the
           // baseline, but never replace text typed while the request ran.
           if (result.conflict_status !== "user_edit_preserved" && typeof result.content === "string") {
-            state.project.sections ||= {};
-            state.project.sections[section.id] = result.content;
-            if (result.material_revision !== undefined) state.project.material_revision = result.material_revision;
+            if (result.material_applied) applyGeneratedSection(section.id, result.content, result.material_revision);
+            else rememberSectionCandidate(`${projectId}\0${section.id}`, result.content);
           }
           stopped = "生成期间的手写编辑已保留，请保存后再继续；已停止后续章节";
           break;
@@ -3150,15 +3743,20 @@
           stopped = (result.notice || "当前章节需要补充信息") + "；已停止后续章节";
           break;
         }
-        if (result.material_revision !== undefined) state.project.material_revision = result.material_revision;
-        state.project.sections = state.project.sections || {};
-        state.project.sections[section.id] = result.content;
-
-        if (!result.material_applied) await api(`/api/projects/${projectId}/sections/${section.id}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: result.content }),
-        });
+        let revision;
+        try {
+          revision = await confirmGeneratedSection(view, section.id, base, result);
+        } catch (error) {
+          if (isCurrent()) rememberSectionCandidate(`${projectId}\0${section.id}`, result.content);
+          throw error;
+        }
+        if (!isCurrent()) break;
+        const changed = editorsChanged();
+        if (!applyGeneratedSection(section.id, result.content, revision) || changed) {
+          stopped = "章节在生成期间发生变化，请核对正文后继续";
+          break;
+        }
+        if (editorBaselines.has(section.id)) editorBaselines.set(section.id, result.content);
         completedCount++;
       } catch (err) {
         console.warn(`生成章节 ${section.title} 失败:`, err);
@@ -3168,11 +3766,12 @@
     }
 
     if (fill && !stopped) fill.style.width = "100%";
-    if (text) text.textContent = `${stopped || "批量生成结束"}，共完成 ${completedCount}/${total} 章节。`;
+    const done = recoveryOnly ? "章节任务查询完成" : "批量生成结束";
+    if (text) text.textContent = `${stopped || done}，共完成 ${completedCount}/${total} 章节。`;
     if (isCurrent()) {
       if (!editorsChanged()) renderSections();
       updateDraftStats();
-      toast(stopped || `批量生成完成，共更新 ${completedCount} 个章节。`, Boolean(stopped));
+      toast(stopped || `${done}，共更新 ${completedCount} 个章节。`, Boolean(stopped));
     }
 
     setTimeout(() => {
@@ -3181,10 +3780,8 @@
 
     state.batchGenerating = false;
     state.batchAbort = false;
-    if (batchBtn) {
-      batchBtn.disabled = false;
-      batchBtn.textContent = "⚡ 批量生成所有章节";
-    }
+    if (batchBtn) batchBtn.disabled = false;
+    syncBatchGenerateLabel();
   }
 
   function cancelBatchGeneration() {
@@ -3232,22 +3829,30 @@
     }
   }
 
+  const sectionVersionLabels = new Map([
+    ["before_restore", "恢复前的正文"], ["restore", "已恢复的正文"],
+    ["before_chat_replacement", "聊天草稿替换前的正文"], ["ai_generated", "生成草稿"],
+    ["ai_generated_alternative", "备选草稿"], ["user_edit", "手写正文"],
+  ]);
+
   function renderSections() {
+    syncBatchGenerateLabel();
     const root = $("#draftSections");
+    sectionEdits.detachEditors();
     root.replaceChildren();
     if (mobileLayout?.matches) {
       allSectionsFolded = false;
       $("#toggleAllSectionsBtn").textContent = "折叠全部";
     }
     updateDraftStats();
-    if (!state.outline?.length) {
+    if (!state.project?.outline?.length) {
       const note = document.createElement("div");
       note.className = "empty-note";
       note.textContent = "确认目录后，这里会出现章节编辑器。";
       root.append(note);
       return;
     }
-    for (const section of state.outline) {
+    for (const section of state.project.outline) {
       const boundProjectId = state.project?.id;
       const uncertainKey = `${boundProjectId}\0${section.id}`;
       const wrapper = document.createElement("div");
@@ -3267,7 +3872,9 @@
       const title = document.createElement("strong");
       title.textContent = section.title;
 
-      const initialContent = state.project.sections?.[section.id] || "";
+      const remoteContent = state.project.sections?.[section.id] || "";
+      const draft = sectionEdits.open(uncertainKey, remoteContent);
+      const initialContent = draft.content;
       const wordBadge = document.createElement("span");
       wordBadge.className = "section-word-badge";
       wordBadge.textContent = `${countWords(initialContent)} 字`;
@@ -3284,7 +3891,9 @@
       const copy = button("📋 复制", "button button-small button-quiet");
       copy.title = "复制本章节草稿正文到剪贴板";
 
-      const generate = button("生成草稿", "button button-small button-secondary");
+      const generationLabel = () => hasPendingMaterialJob(boundProjectId, "section", section.id)
+        ? "查看上次生成任务" : "生成草稿";
+      const generate = button(generationLabel(), "button button-small button-secondary");
       const save = button("保存", "button button-small button-primary");
       const history = button("历史版本", "button button-small button-quiet");
       actions.append(copy, generate, save, history);
@@ -3334,6 +3943,50 @@
       const uncertainBox = document.createElement("div");
       uncertainBox.className = "section-versions hidden";
 
+      const conflictBox = document.createElement("div");
+      conflictBox.className = "section-versions hidden";
+      function paintDraft() {
+        wordBadge.textContent = `${countWords(draft.content)} 字`;
+        setDraftSaveStatus(statusPill, draft.content === draft.base);
+        if (draft.recovered && draft.content !== draft.base) statusPill.textContent = "● 已恢复，未保存";
+        if (draft.submitted !== undefined && draft.content === draft.base) {
+          statusPill.className = "section-status-pill unsaved";
+          statusPill.textContent = "● 保存待确认";
+        }
+        conflictBox.replaceChildren();
+        const conflict = draft.base !== draft.remote;
+        conflictBox.classList.toggle("hidden", !conflict);
+        if (!conflict) return;
+        statusPill.className = "section-status-pill unsaved";
+        statusPill.textContent = "● 两处编辑待核对";
+        const label = document.createElement("p");
+        label.textContent = "本章节在其他页面有修改。请对照下方最新正文，选择要保留的内容。";
+        const latest = document.createElement("pre");
+        latest.textContent = draft.remote || "（正文为空）";
+        const keep = button("保留我的编辑", "button button-small button-secondary");
+        const useLatest = button("使用最新正文", "button button-small button-quiet");
+        keep.addEventListener("click", () => resolveConflict(false));
+        useLatest.addEventListener("click", () => resolveConflict(true));
+        conflictBox.append(label, latest, keep, useLatest);
+      }
+      function resolveConflict(useRemote) {
+        if (!currentEditor()) return;
+        if (useRemote) editor.value = draft.remote;
+        recordInput(true);
+      }
+      function currentEditor() {
+        return chatProjectIsActive(boundProjectId) && sectionEdits.isAttached(uncertainKey, editor);
+      }
+      function recordInput(resolveConflict = false) {
+        if (!sectionEdits.isAttached(uncertainKey, editor) || state.project?.id !== boundProjectId) return;
+        clearExportArtifacts();
+        window.MaterialPilot?.invalidateArtifacts?.();
+        sectionEdits.record(uncertainKey, editor.value, resolveConflict);
+        paintDraft();
+      }
+      draft.display = { editor, paint: paintDraft };
+      if (draft.base !== draft.content || draft.base !== draft.remote || draft.submitted !== undefined) paintDraft();
+
       function renderUncertainDrafts() {
         uncertainBox.replaceChildren();
         const drafts = uncertainSectionDrafts.get(uncertainKey) || [];
@@ -3354,12 +4007,7 @@
             if (editor.value !== (state.project?.sections?.[section.id] || "") &&
                 !confirm("当前编辑内容还未保存，确定用这份草稿替换编辑框内容吗？")) return;
             editor.value = content;
-            clearExportArtifacts();
-            window.MaterialPilot?.invalidateArtifacts?.();
-            wordBadge.textContent = `${countWords(content)} 字`;
-            statusPill.className = "section-status-pill unsaved";
-            statusPill.textContent = "● 未保存";
-            updateDraftStats();
+            recordInput();
             toast("已放入编辑器，保存后生效。");
           });
           row.append(note, text, copyDraft, use);
@@ -3373,40 +4021,71 @@
           versionsBox.classList.add("hidden");
           return;
         }
-        const projectId = state.project?.id;
-        if (!projectId) return;
+        if (!currentEditor()) return;
+        const view = currentProjectView();
+        const versionsUrl = `/api/projects/${encodeURIComponent(view.id)}/sections/${encodeURIComponent(section.id)}/versions`;
         history.disabled = true;
         try {
-          const data = await api(`/api/projects/${encodeURIComponent(projectId)}/sections/${encodeURIComponent(section.id)}/versions`);
-          if (!chatProjectIsActive(projectId)) return;
+          const data = await api(versionsUrl);
+          if (!currentEditor()) return;
           versionsBox.replaceChildren();
           for (const version of data.versions || []) {
             if (typeof version.content !== "string") continue;
             const row = document.createElement("div");
+            const label = document.createElement("strong");
+            const savedAt = new Date(version.created_at);
+            const source = sectionVersionLabels.get(version.source) || "历史版本";
+            label.textContent = Number.isNaN(savedAt.getTime()) ? source : `${source} · ${savedAt.toLocaleString("zh-CN")}`;
             const text = document.createElement("pre");
-            text.textContent = version.content;
+            text.textContent = version.content || "（正文为空）";
             const use = button("放入编辑器", "button button-small button-secondary");
             use.addEventListener("click", () => {
-              if (!chatProjectIsActive(projectId)) return;
+              if (!currentEditor()) return;
               if (editor.value !== (state.project?.sections?.[section.id] || "") &&
                   !confirm("当前编辑内容还未保存，确定用历史版本替换编辑框内容吗？")) return;
               editor.value = version.content;
-              clearExportArtifacts();
-              window.MaterialPilot?.invalidateArtifacts?.();
-              wordBadge.textContent = `${countWords(editor.value)} 字`;
-              statusPill.className = "section-status-pill unsaved";
-              statusPill.textContent = "● 未保存";
+              recordInput();
               versionsBox.classList.add("hidden");
               updateDraftStats();
               toast("已放入编辑器，保存后生效。");
             });
-            row.append(text, use);
+            row.append(label, text, use);
+            if (version.id != null) {
+              const restore = button("恢复并保存", "button button-small button-secondary");
+              restore.addEventListener("click", async () => {
+                if (!currentEditor() || restore.disabled) return;
+                const dirty = editor.value !== (state.project.sections?.[section.id] || "");
+                if (dirty && !confirm("恢复前会先保存你正在编辑的正文，可在历史版本中找回。继续恢复吗？")) return;
+                restore.disabled = true;
+                try {
+                  await flushDraftEdits([{ area: editor, section: wrapper }]);
+                  if (!currentEditor()) return;
+                  clearExportArtifacts();
+                  window.MaterialPilot?.invalidateArtifacts?.();
+                  const restored = await api(`${versionsUrl}/${encodeURIComponent(version.id)}/restore`, {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ expected_revision: state.project.material_revision,
+                      base_content: state.project.sections?.[section.id] || "" }),
+                  });
+                  if (!view.active()) return;
+                  clearExportArtifacts();
+                  window.MaterialPilot?.invalidateArtifacts?.();
+                  await loadProject(view.id, { refreshList: false });
+                  if (view.active()) toast(restored.notice || "已恢复所选版本。");
+                } catch (error) {
+                  if (view.active()) toast(`恢复未确认：${error.message}`, true);
+                } finally {
+                  restore.disabled = false;
+                }
+              });
+              row.append(restore);
+            }
             versionsBox.append(row);
           }
           if (!versionsBox.children.length) versionsBox.textContent = "暂无历史版本。";
           versionsBox.classList.remove("hidden");
         } catch (error) {
-          toast(`读取历史版本失败：${error.message}`, true);
+          if (currentEditor()) toast(`读取历史版本失败：${error.message}`, true);
         } finally {
           history.disabled = false;
         }
@@ -3444,15 +4123,7 @@
         editor.dispatchEvent(new Event("input"));
       });
 
-      editor.addEventListener("input", () => {
-        clearExportArtifacts();
-        window.MaterialPilot?.invalidateArtifacts?.();
-        const words = countWords(editor.value);
-        wordBadge.textContent = `${words} 字`;
-        statusPill.className = "section-status-pill unsaved";
-        statusPill.textContent = "● 未保存";
-        updateDraftStats();
-      });
+      editor.addEventListener("input", () => recordInput());
 
       editor.addEventListener("keydown", (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === "s") {
@@ -3487,9 +4158,10 @@
 
       generate.addEventListener("click", async () => {
         const generationProjectId = state.project?.id;
-        if (!generationProjectId || generationProjectId !== boundProjectId) return;
+        if (!currentEditor()) return;
         clearExportArtifacts();
         window.MaterialPilot?.invalidateArtifacts?.();
+        const view = currentProjectView();
         const generationEpoch = chatRecoveryEpoch;
         const generationUserId = state.authSession?.user?.id || null;
         const deletionEpoch = deletedProjectEpochs.get(generationProjectId) || 0;
@@ -3504,11 +4176,12 @@
         try {
           if (editor.value !== (state.project?.sections?.[section.id] || "")) {
             await flushDraftEdits();
-            if (!mayRetainResult() || !chatProjectIsActive(generationProjectId)) return;
+            if (!mayRetainResult() || !currentEditor()) return;
           }
           const editorAtStart = editor.value;
-          let result = window.MaterialPilot?.active()
-            ? await window.MaterialPilot.section(section.id, editor)
+          const worker = await shouldUseMaterialJob(generationProjectId, "section", section.id);
+          if (!mayRetainResult() || !currentEditor()) return;
+          let result = worker ? await window.MaterialPilot.section(section.id, editor)
             : await observeMaterialRequest(`/api/projects/${generationProjectId}/sections/${section.id}/generate`,
                 { method: "POST" }, 180000, SECTION_WAIT_NOTICE);
           if (!mayRetainResult()) return;
@@ -3541,12 +4214,9 @@
           }
 
           if (!mayRetainResult()) return;
-          if (result?.result_save_uncertain && typeof result.content === "string" && result.content.trim()) {
-            const drafts = uncertainSectionDrafts.get(uncertainKey) || [];
-            if (!drafts.includes(result.content)) drafts.push(result.content);
-            uncertainSectionDrafts.set(uncertainKey, drafts);
-          }
-          if (!chatProjectIsActive(generationProjectId)) return;
+          if (result?.result_save_uncertain && typeof result.content === "string" && result.content.trim())
+            rememberSectionCandidate(uncertainKey, result.content);
+          if (!view.active()) return;
 
           if (result?.requires_student_input && editor.value.trim()) {
             const changed = editor.value !== (state.project?.sections?.[section.id] || "");
@@ -3556,19 +4226,11 @@
             return;
           }
 
-          if (result?.conflict_status !== "user_edit_preserved" && typeof result?.content === "string"
-              && editor.value !== editorAtStart) {
-            state.project.sections ||= {};
-            state.project.sections[section.id] = result.content;
-            if (result.material_revision !== undefined) state.project.material_revision = result.material_revision;
-            statusPill.className = "section-status-pill unsaved";
-            statusPill.textContent = "● 未保存";
-            toast("生成期间的新编辑已保留，请检查并保存。", true);
-            return;
-          }
-
           if (result.conflict_status === "user_edit_preserved") {
-            if (result.result_save_uncertain) renderUncertainDrafts();
+            if (result.result_save_uncertain) {
+              if (currentEditor()) renderUncertainDrafts();
+              else renderSections();
+            }
             toast(result.notice || "检测到您已编辑该章节，AI最新草稿已安全存入历史版本，未覆盖您的正文。", false);
             statusPill.className = `section-status-pill ${result.result_save_uncertain ? "unsaved" : "saved"}`;
             statusPill.textContent = result.result_save_uncertain ? "● 草稿待保存" : "● 有新备选版本";
@@ -3578,23 +4240,39 @@
           } else if (result.content) {
             clearExportArtifacts();
             window.MaterialPilot?.invalidateArtifacts?.();
-            if (result.material_revision !== undefined) state.project.material_revision = result.material_revision;
-            editor.value = result.content;
-            wordBadge.textContent = `${countWords(result.content)} 字`;
+            if (!result.material_applied && (draft.display?.editor.value ?? draft.content) !== editorAtStart) {
+              rememberSectionCandidate(uncertainKey, result.content);
+              renderSections();
+              toast("生成期间的新编辑已保留，生成结果可在候选草稿中查看。");
+              return;
+            }
+            let revision;
+            try {
+              revision = await confirmGeneratedSection(view, section.id, editorAtStart, result);
+            } catch (error) {
+              if (mayRetainResult()) rememberSectionCandidate(uncertainKey, result.content);
+              if (view.active()) {
+                renderSections();
+                toast(`生成结果已保留。请核对正文后保存：${error.message}`, true);
+              }
+              return;
+            }
+            if (!view.active()) return;
+            if (!applyGeneratedSection(section.id, result.content, revision)) {
+              await loadProject(generationProjectId, { refreshList: false });
+              if (view.active()) toast("已有更新的章节版本，请核对最新正文。");
+              return;
+            }
+            if (!currentEditor()) return;
+            if (editor.value !== result.content) {
+              toast("生成期间的新编辑已保留，请检查并保存。", true);
+              return;
+            }
             const evidence = (result.evidence || []).map((e) => `${e.source_name} · ${e.source_ref}`).join("；");
             const publicRefs = (result.public_knowledge?.results || [])
               .map((e) => `${e.kind === "official" ? "官方摘要" : "非官方指南"}：${e.title} · ${e.source_ref}`).join("；");
             sources.textContent = (evidence ? `项目材料：${evidence}` : "未检索到项目材料；请补充事实或保留“待补充”。")
               + (publicRefs ? ` 公共参考：${publicRefs}。请核对来源和适用范围。` : "");
-            state.project.sections = state.project.sections || {};
-            state.project.sections[section.id] = result.content;
-
-            if (!result.material_applied) await api(`/api/projects/${generationProjectId}/sections/${section.id}`, {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ content: result.content }),
-            });
-
             if (result.review_card) {
               renderReviewCard(wrapper, result.review_card);
             }
@@ -3604,6 +4282,7 @@
             toast(result.notice || "章节草稿已生成并自动保存。");
           }
         } catch (error) {
+          if (!currentEditor()) return;
           statusPill.className = "section-status-pill unsaved";
           statusPill.textContent = ([SECTION_WAIT_NOTICE, SECTION_STATUS_NOTICE].includes(error.message)
             || /可能.*(?:后台|开始)|任务已提交|暂未收到草稿保存结果|草稿已处理/.test(error.message || ""))
@@ -3614,60 +4293,40 @@
           }
         } finally {
           generate.disabled = false;
-          generate.textContent = "生成草稿";
+          generate.textContent = generationLabel();
+          syncBatchGenerateLabel();
           wrapper.classList.remove("generating");
         }
       });
       save.addEventListener("click", async () => {
-        const projectId = state.project?.id;
-        if (!projectId) return;
+        if (!currentEditor()) return;
         clearExportArtifacts();
         window.MaterialPilot?.invalidateArtifacts?.();
-        const previousContent = state.project.sections?.[section.id] || "";
         const currentVal = editor.value;
         save.disabled = true;
         save.textContent = "保存中…";
-        statusPill.className = "section-status-pill saved";
-        statusPill.textContent = "✓ 保存中…";
-        updateDraftStats();
         try {
-          const saved = await api(`/api/projects/${projectId}/sections/${section.id}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content: currentVal,
-              ...(state.project?.material?.enabled ? { expected_revision: state.project.material_revision,
-                base_content: previousContent } : {}) }),
-          });
-          if (!chatProjectIsActive(projectId)) return;
-          clearExportArtifacts();
-          window.MaterialPilot?.invalidateArtifacts?.();
-          state.project.sections = state.project.sections || {};
-          state.project.sections[section.id] = currentVal;
+          await flushDraftEdits([{ area: editor, section: wrapper }]);
+          if (!currentEditor()) return;
           const drafts = uncertainSectionDrafts.get(uncertainKey) || [];
           const remaining = drafts.filter(content => content !== currentVal);
           if (remaining.length) uncertainSectionDrafts.set(uncertainKey, remaining);
           else uncertainSectionDrafts.delete(uncertainKey);
           renderUncertainDrafts();
-          if (saved.material_revision !== undefined) state.project.material_revision = saved.material_revision;
-          const changedWhileSaving = editor.value !== currentVal;
-          setDraftSaveStatus(statusPill, !changedWhileSaving);
-          save.textContent = changedWhileSaving ? "保存" : "已保存";
-          setTimeout(() => {
-            save.textContent = "保存";
-            save.disabled = false;
-          }, 800);
+          paintDraft();
           if (state.project?.material?.enabled) void window.MaterialPilot?.refresh();
-          toast(changedWhileSaving ? "已保存提交时的内容，后续修改仍需保存。" : `已保存“${section.title}”。`);
+          toast(`已保存“${section.title}”。`);
         } catch (error) {
+          if (!currentEditor()) return;
+          paintDraft();
+          toast(`保存失败：${error.message}`, true);
+        } finally {
           save.disabled = false;
           save.textContent = "保存";
-          statusPill.className = "section-status-pill unsaved";
-          statusPill.textContent = "● 未保存";
-          toast(`保存失败：${error.message}`, true);
         }
       });
 
-      bodyWrapper.append(toolbar, editor, previewBox, versionsBox, uncertainBox, sources);
+      bodyWrapper.append(toolbar, editor, previewBox, versionsBox, uncertainBox, sources, conflictBox);
       wrapper.append(head, bodyWrapper);
       root.append(wrapper);
     }
@@ -4549,52 +5208,18 @@
     }
   }
 
-  const { exportDoc, fetchExportBlob, invalidate: invalidateWordExport } = window.WordExport.create({
-    state, $, api: (...args) => api(...args), chatProjectIsActive, flushDraftEdits, showChatDrafts, toast, openRechargeDialog,
+  const { exportDoc, fetchExportBlob, invalidate: invalidateWordExport,
+    syncButtons: syncWordExportButtons, clearRecovery: clearWordExportRecovery } = window.WordExport.create({
+    state, $, api: (...args) => api(...args), chatProjectIsActive, recoveryOwner: chatRecoveryOwner,
+    flushDraftEdits, showChatDrafts, toast, openRechargeDialog,
   });
 
-  function clearExportArtifacts() {
-    invalidateWordExport();
+  function clearExportArtifacts(options) {
+    invalidateWordExport(options);
     $("#chatDraftDialog")?.close();
     $("#chatDraftItems")?.replaceChildren();
     const save = $("#confirmChatDraftsBtn");
     if (save) save.onclick = null;
-  }
-
-  async function flushDraftEdits() {
-    const projectId = state.project?.id;
-    if (!projectId) throw new Error("请先打开项目");
-    const edits = [...document.querySelectorAll(".draft-section textarea")].map(area => {
-      const section = area.closest(".draft-section");
-      const sid = section.id.slice("draft-sec-".length);
-      const base = state.project.sections?.[sid] || "";
-      return { area, section, sid, base, content: area.value };
-    }).filter(edit => edit.content !== edit.base);
-    if (!edits.length) return;
-    const latest = await api(`/api/projects/${projectId}`);
-    if (state.project?.id !== projectId) throw new Error("项目已切换，请重新操作");
-    for (const edit of edits) {
-      if (!latest.outline?.some(s => s.id === edit.sid) ||
-          (latest.sections?.[edit.sid] || "") !== edit.base)
-        throw new Error("章节已在其他页面变化，未覆盖您的编辑，请先核对版本");
-    }
-    state.project.material_revision = latest.material_revision;
-    for (const { area, section, sid, base, content } of edits) {
-      const saved = await api(`/api/projects/${projectId}/sections/${sid}`, {
-        method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content, base_content: base,
-          expected_revision: state.project.material_revision }),
-      });
-      if (state.project?.id !== projectId) throw new Error("项目已切换，请在当前项目重新操作");
-      state.project.sections ||= {};
-      state.project.sections[sid] = content;
-      if (saved.material_revision !== undefined) state.project.material_revision = saved.material_revision;
-      const changedWhileSaving = area.value !== content;
-      const statusPill = $(".section-status-pill", section);
-      if (statusPill) setDraftSaveStatus(statusPill, !changedWhileSaving);
-      updateDraftStats();
-      if (changedWhileSaving) throw new Error("保存期间正文又有修改，请保存最新版本后再导出");
-    }
   }
 
   async function showChatDrafts(preview = null, afterSave = null) {
@@ -4967,8 +5592,15 @@
     });
     $("#editFactsBtn").addEventListener("click", () => {
       $("#factsEditor").classList.toggle("hidden");
-      renderFacts();
     });
+    const factsEditor = $("#factsEditor");
+    const onFactInput = event => {
+      if (factFormProjectId !== state.project?.id) return;
+      recordFactInput(event.target);
+      renderFactDraftStatus(state.project, factEdits.open(state.project));
+    };
+    factsEditor.addEventListener("input", onFactInput);
+    factsEditor.addEventListener("change", onFactInput);
     $("#addFactBtn").addEventListener("click", addCustomFact);
     $("#saveFactsBtn").addEventListener("click", saveFacts);
     $("#chooseLeaderPhotoBtn")?.addEventListener("click", () => $("#leaderPhotoInput")?.click());
@@ -5243,6 +5875,12 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
+    window.addEventListener("beforeunload", event => {
+      if (!sectionEdits.hasUnsaved() && !factEdits.hasUnsaved() && !documentCorrections.size
+          && !documentRecovery.hasEntries() && !outlineDrafts.size && !outlinePreviews.size && !outlineRecovery.hasEntries()) return;
+      event.preventDefault();
+      event.returnValue = "";
+    });
     init().catch((error) => {
       if (state.authStatus !== "ready" && !state.appStarted) {
         state.authStatus = "error";

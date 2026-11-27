@@ -1,28 +1,72 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import logging
 import os
 import re
 import secrets
+import time
 import urllib.parse
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Path as PathParam
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from proposal.chat_drafts import require_export_content
 from proposal.exporter import ensure_grant_income_artifact_safe, export_input_fingerprint, export_project
+from proposal.materials import MaterialConflict
 
 
 logger = logging.getLogger(__name__)
 WORD_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+EXPORT_REQUEST_ID = r"^[a-f0-9]{32}$"
+# Allow for the production function's 60-second limit and for a slow local render.
+EXPORT_ATTEMPT_TIMEOUT = 120
+
+
+def word_digest(sha256: bytes) -> str:
+    return f"sha-256=:{base64.b64encode(sha256).decode('ascii')}:"
 
 
 class ExportInput(BaseModel):
     allow_empty_draft: bool = False
+    request_id: str | None = Field(default=None, pattern=EXPORT_REQUEST_ID)
+
+
+def _download_receipt(project_id: str, state: dict[str, Any]) -> dict[str, str]:
+    return {
+        "download_url": f"/api/projects/{project_id}/download",
+        "download_digest": word_digest(bytes.fromhex(state["exported_docx_sha256"])),
+    }
+
+
+def _active_attempt(attempt: dict[str, Any], fingerprint: str) -> bool:
+    return (attempt.get("fingerprint") == fingerprint and not attempt.get("failed")
+            and time.time() - attempt["started_at"] < EXPORT_ATTEMPT_TIMEOUT)
+
+
+def _export_status(
+    store, project: dict[str, Any], request_id: str, *, fingerprint: str | None = None,
+) -> dict[str, Any]:
+    state = project["state"]
+    receipt = state.get("exported_docx_receipt") or {}
+    attempt = state.get("exported_docx_attempt") or {}
+    if receipt.get("id") != request_id and attempt.get("id") != request_id:
+        return {"status": "missing"}
+    fingerprint = fingerprint or export_input_fingerprint(store, project)
+    if receipt.get("id") == request_id:
+        if state.get("exported_docx_fingerprint") != fingerprint:
+            return {"status": "stale"}
+        return {"status": "completed", **_download_receipt(project["id"], state),
+                "warnings": receipt["warnings"]}
+    if attempt["fingerprint"] != fingerprint:
+        return {"status": "stale"}
+    if attempt.get("failed"):
+        return {"status": "failed"}
+    return {"status": "processing" if _active_attempt(attempt, fingerprint) else "expired"}
 
 
 def _require_current_export(
@@ -41,11 +85,59 @@ def register_export_api(app: FastAPI, get_store, load_project, validate_project)
         store = get_store()
         project = load_project(project_id)
         source_fingerprint = export_input_fingerprint(store, project)
-        source_revision = project.get("material_revision", 0)
+        request_id = payload.request_id if payload else None
+        if request_id:
+            existing = _export_status(store, project, request_id, fingerprint=source_fingerprint)
+            if existing["status"] != "missing":
+                return existing
+        if _active_attempt(project["state"].get("exported_docx_attempt") or {}, source_fingerprint):
+            raise HTTPException(409, "这个项目正在生成 Word 草稿，请稍后再试。")
         try:
             require_export_content(project, bool(payload and payload.allow_empty_draft))
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
+        if request_id:
+            state = dict(project["state"], exported_docx_attempt={
+                "id": request_id, "fingerprint": source_fingerprint, "started_at": time.time(),
+            })
+            try:
+                project = store.update_project(project_id, expected_revision=project.get("material_revision", 0),
+                                               state=state)
+            except MaterialConflict:
+                existing = _export_status(store, load_project(project_id), request_id)
+                if existing["status"] != "missing":
+                    return existing
+                raise
+            if project is None:
+                raise HTTPException(404, "项目不存在")
+        try:
+            return render_and_publish(store, project, source_fingerprint, request_id)
+        except Exception:
+            if request_id:
+                mark_failed(store, project_id, request_id)
+            raise
+
+    @app.get("/api/projects/{project_id}/export/status/{request_id}")
+    def export_status(project_id: str, request_id: str = PathParam(pattern=EXPORT_REQUEST_ID)) -> dict[str, Any]:
+        return _export_status(get_store(), load_project(project_id), request_id)
+
+    def mark_failed(store, project_id: str, request_id: str) -> None:
+        try:
+            current = load_project(project_id)
+            state = dict(current["state"])
+            attempt = state.get("exported_docx_attempt") or {}
+            if attempt.get("id") == request_id:
+                state["exported_docx_attempt"] = {**attempt, "failed": True}
+                store.update_project(project_id, expected_revision=current.get("material_revision", 0), state=state)
+        except Exception:
+            # The failure marker is best-effort. Abandoned attempts also expire.
+            logger.warning("Could not record failed Word export; project_id=%s", project_id)
+
+    def render_and_publish(
+        store, project: dict[str, Any], source_fingerprint: str, request_id: str | None,
+    ) -> dict[str, Any]:
+        project_id = project["id"]
+        source_revision = project.get("material_revision", 0)
         preflight = validate_project(project_id)
         output_path = store.files_dir / project_id / f"export-{secrets.token_hex(16)}.docx"
         try:
@@ -100,6 +192,12 @@ def register_export_api(app: FastAPI, get_store, load_project, validate_project)
         state_data.update(exported_docx_fingerprint=source_fingerprint,
                           exported_docx_sha256=hashlib.sha256(output_path.read_bytes()).hexdigest(),
                           exported_docx_local_name=output_path.name)
+        if request_id:
+            state_data["exported_docx_receipt"] = {"id": request_id, "warnings": result.get("warnings", [])}
+        else:
+            state_data.pop("exported_docx_receipt", None)
+        state_data.pop("exported_docx_attempt", None)
+        storage_path = None
         if hasattr(store, "persist_generated_file"):
             storage_path = store.persist_generated_file(
                 project_id,
@@ -108,7 +206,23 @@ def register_export_api(app: FastAPI, get_store, load_project, validate_project)
                 WORD_CONTENT_TYPE,
             )
             state_data["exported_docx_storage_path"] = storage_path
-        store.update_project(project_id, expected_revision=current.get("material_revision", 0), state=state_data)
+        def discard_unpublished() -> None:
+            try:
+                output_path.unlink(missing_ok=True)
+                if storage_path and hasattr(store, "discard_generated_export"):
+                    store.discard_generated_export(project_id, storage_path)
+            except (OSError, RuntimeError):
+                logger.warning("Could not remove unpublished Word export; project_id=%s", project_id)
+
+        try:
+            saved = store.update_project(project_id, expected_revision=current.get("material_revision", 0), state=state_data)
+        except MaterialConflict:
+            # Only clean up a rejected publication. A lost acknowledgement may conceal a successful write.
+            discard_unpublished()
+            raise
+        if saved is None:
+            discard_unpublished()
+            raise HTTPException(404, "项目不存在")
         previous_name = current["state"].get("exported_docx_local_name", "")
         previous_storage = current["state"].get("exported_docx_storage_path", "")
         try:
@@ -120,8 +234,9 @@ def register_export_api(app: FastAPI, get_store, load_project, validate_project)
         except (OSError, RuntimeError):
             # Publishing succeeded; old-file cleanup must not hide the new result.
             logger.warning("Previous Word export cleanup deferred; project_id=%s", project_id)
-        result["download_url"] = f"/api/projects/{project_id}/download"
-        result["validation"] = preflight
+        result.update(_download_receipt(project_id, state_data), validation=preflight)
+        if request_id:
+            result["status"] = "completed"
         return result
 
     @app.get("/api/projects/{project_id}/download")
@@ -142,6 +257,7 @@ def register_export_api(app: FastAPI, get_store, load_project, validate_project)
                 content=content,
                 media_type=WORD_CONTENT_TYPE,
                 headers={"Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(download_name)}",
+                         "Repr-Digest": word_digest(bytes.fromhex(state_data["exported_docx_sha256"])),
                          "Cache-Control": "private, no-store"},
             )
         name = state_data.get("exported_docx_local_name", "")
@@ -160,5 +276,6 @@ def register_export_api(app: FastAPI, get_store, load_project, validate_project)
             content=content,
             media_type=WORD_CONTENT_TYPE,
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(download_name)}",
+                     "Repr-Digest": word_digest(bytes.fromhex(state_data["exported_docx_sha256"])),
                      "Cache-Control": "private, no-store"},
         )

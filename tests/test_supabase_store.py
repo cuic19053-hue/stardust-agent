@@ -222,3 +222,92 @@ def test_cloud_chunk_replace_maps_conflict_without_overwrite(monkeypatch, tmp_pa
     monkeypatch.setattr(store, "_rest", conflict)
     with pytest.raises(MaterialConflict):
         store.replace_chunks("doc-1", [{"source_ref":"第 1 段", "content":"内容"}], expected_text="内容")
+
+
+def test_automatic_ocr_only_updates_unconfirmed_unfinished_rows(monkeypatch, tmp_path):
+    store = SupabaseStore("https://example.supabase.co", "test", tmp_path)
+    calls = []
+    def rest(table, method, params, payload):
+        calls.append((table, method, dict(params)))
+        return []
+
+    monkeypatch.setattr(store, "_rest", rest)
+    assert store.update_document_extraction("doc", "", "error", only_unprocessed=True) is False
+    assert calls == [("documents", "PATCH", {"id": "eq.doc", "confirmed": "eq.false", "extraction_status": "neq.ready"})]
+
+
+def test_cloud_chapter_history_survives_instance_replacement_and_pipeline_toggle(monkeypatch, tmp_path):
+    cloud = []
+    def rest(table, method="GET", params=None, payload=None):
+        assert table == "material_revisions"
+        if method == "POST":
+            version = {**payload, "id": len(cloud) + 1, "created_at": "2026-11-27T02:00:00+00:00"}
+            cloud.append(version)
+            return [version]
+        if "id" in params:
+            return [v for v in cloud if f"eq.{v['id']}" == params["id"]]
+        return [v for v in cloud if f"eq.{v['project_id']}" == params["project_id"]
+                and f"eq.{v['section_id']}" == params["section_id"]][:int(params["limit"])]
+    one = SupabaseStore("https://example.supabase.co", "public-test", tmp_path / "one")
+    two = SupabaseStore("https://example.supabase.co", "public-test", tmp_path / "two")
+    for store in (one, two):
+        monkeypatch.setattr(store, "_rest", rest)
+    monkeypatch.setenv("MATERIAL_PIPELINE_ENABLED", "false")
+    saved = one.save_section_version("p", "intro", "需要在冷启动后找回的手稿", source="before_restore")
+    assert not one._job_store.list_section_versions("p", "intro")
+    for enabled in ("true", "false"):
+        monkeypatch.setenv("MATERIAL_PIPELINE_ENABLED", enabled)
+        assert two.list_section_versions("p", "intro") == [saved]
+        assert two.get_section_version(str(saved["id"])) == saved
+
+
+def test_cloud_and_local_history_are_merged_only_for_a_visible_project(monkeypatch, tmp_path):
+    store = SupabaseStore("https://example.supabase.co", "public-test", tmp_path)
+    old = store._job_store.save_section_version("p", "intro", "旧实例手稿")
+    newer = {"project_id": "p", "section_id": "intro", "content": "云端记录", "created_at": "2099-01-01T00:00:00Z", "id": 123}
+    monkeypatch.setattr(store, "_rest", lambda *_args, **_kwargs: [newer])
+    monkeypatch.setattr(store, "get_project", lambda pid: {"id": pid})
+    assert [v["id"] for v in store.list_section_versions("p", "intro")] == [123, old["id"]]
+    assert [v["id"] for v in store.list_section_versions("p", "intro", 1)] == [123]
+    assert store.get_section_version(old["id"])["content"] == "旧实例手稿"
+    monkeypatch.setattr(store, "get_project", lambda _: None)
+    monkeypatch.setattr(store, "_rest", lambda *_args, **_kwargs: [])
+    assert store.list_section_versions("p", "intro") == []
+    assert store.get_section_version(old["id"]) is None
+
+
+def test_document_review_publishes_text_and_chunks_in_one_authenticated_call(monkeypatch, tmp_path):
+    store = SupabaseStore("https://example.supabase.co", "public-test", tmp_path)
+    monkeypatch.delenv("MATERIAL_PIPELINE_ENABLED", raising=False)
+    writes = []
+    def rest(route, method="GET", *, payload=None):
+        writes.append((route, method, payload))
+        return {"id": "doc", "project_id": "project", "storage_path": "owner/project/file.txt", "kind": "source",
+                "confirmed": True, "confirmation_origin": "user", "review_revision": 5,
+                "extracted_text": payload["p_text"]}
+    monkeypatch.setattr(store, "_rest", rest)
+    result = store.apply_document_review("doc", 4, "用户校对的文字", "ready", True, [
+        {"content": "用户校对的文字", "source_ref": "片段 1"},
+    ])
+    (route, method, payload), = writes
+    assert (route, method) == ("rpc/rag_apply_document_review", "POST")
+    assert payload["p_expected_revision"] == 4
+    assert payload["p_text"] == payload["p_chunks"][0]["content"]
+    assert result["review_revision"] == 5 and result["confirmed"]
+
+
+def test_document_review_refuses_a_missing_cloud_migration_without_falling_back(monkeypatch, tmp_path):
+    import urllib.error
+    from proposal.document_review import DocumentReviewUnavailable
+    store = SupabaseStore("https://example.supabase.co", "public-test", tmp_path)
+    calls = []
+    def missing(route, *args, **kwargs):
+        calls.append(route)
+        try:
+            raise urllib.error.HTTPError("https://example.supabase.co", 404, "missing function", {}, None)
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError("cloud write failed") from exc
+    monkeypatch.setattr(store, "_rest", missing)
+    with pytest.raises(DocumentReviewUnavailable):
+        store.apply_document_review("doc", 0, "试写文本", "ready", True, [])
+    assert calls == ["rpc/rag_apply_document_review"]

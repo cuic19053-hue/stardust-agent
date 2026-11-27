@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
+
 import pytest
 from server.proposal.storage import Store
-from server.proposal.jobs import GenerationJobRunner, content_hash
+from server.proposal.jobs import GenerationJobRunner
 
 
 def test_job_runner_lifecycle_and_completion(tmp_path):
@@ -155,3 +157,80 @@ def test_job_runner_cancellation(tmp_path):
 
     st = runner.get_job_status(job["id"])
     assert st["status"] == "cancelled"
+
+
+@pytest.mark.parametrize("edited_section", ["background", "method"])
+def test_edit_between_job_read_and_write_survives(tmp_path, monkeypatch, edited_section):
+    store = Store(tmp_path / "race.db")
+    project_id = store.create_project(title="写入竞态")["id"]
+    runner = GenerationJobRunner(store)
+    update = store.update_project
+    generated = "生成结果"
+
+    def update_with_student_edit(pid, **fields):
+        if fields.get("sections", {}).get("background") == generated:
+            update(pid, sections={edited_section: "学生刚保存的正文"})
+        return update(pid, **fields)
+
+    monkeypatch.setattr(store, "update_project", update_with_student_edit)
+    job = runner.submit_job(project_id, "background", lambda: {"content": generated})
+    runner.executor.shutdown(wait=True)
+    completed = runner.get_job_status(job["id"])
+    assert completed["status"] == "completed"
+    assert store.get_project(project_id)["sections"] == {edited_section: "学生刚保存的正文"}
+    assert completed["result"]["conflict_status"] == "user_edit_preserved"
+    candidate, = store.list_section_versions(project_id, "background")
+    assert candidate["source"] == "ai_generated_alternative" and candidate["content"] == generated
+
+
+@pytest.mark.parametrize("changed", [True, False])
+def test_history_failure_preserves_finished_job_text(tmp_path, monkeypatch, changed):
+    store = Store(tmp_path / "history.db")
+    project_id = store.create_project(title="版本保存中断")["id"]
+    runner = GenerationJobRunner(store)
+    store.update_project(project_id, sections={"s": "原文"})
+
+    def invoke():
+        if changed:
+            store.update_project(project_id, sections={"s": "原文\n"})
+        return {"content": "生成文本"}
+
+    def unavailable(*args, **kwargs):
+        raise OSError("offline")
+
+    monkeypatch.setattr(store, "save_section_version", unavailable)
+    job = runner.submit_job(project_id, "s", invoke, current_section_content="原文")
+    runner.executor.shutdown(wait=True)
+    completed = runner.get_job_status(job["id"])
+    assert completed["status"] == "completed"
+    result = completed["result"]
+    assert result["content"] == "生成文本"
+    actual = store.get_project(project_id)
+    if changed:
+        assert actual["sections"]["s"] == "原文\n"
+        assert result["conflict_status"] == "user_edit_preserved" and result["result_save_uncertain"]
+    else:
+        assert actual["sections"]["s"] == "生成文本"
+        assert result["material_applied"] and result["material_revision"] == actual["material_revision"]
+
+
+def test_save_acknowledges_its_own_revision_if_another_writer_commits_immediately(tmp_path, monkeypatch):
+    store = Store(tmp_path / "ack.db")
+    other = Store(store.data_dir)
+    project = store.create_project(title="保存响应")
+    connect = store.connect
+
+    @contextmanager
+    def racing_connect():
+        with connect() as db:
+            yield db
+            wrote = bool(db.total_changes)
+        if wrote:
+            other.update_project(project["id"], sections={"s": "第二份正文"})
+
+    monkeypatch.setattr(store, "connect", racing_connect)
+    saved = store.update_project(project["id"], sections={"s": "第一份正文"})
+    latest = other.get_project(project["id"])
+    assert saved["sections"]["s"] == "第一份正文"
+    assert latest["sections"]["s"] == "第二份正文"
+    assert saved["material_revision"] + 1 == latest["material_revision"]

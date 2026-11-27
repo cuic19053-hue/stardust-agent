@@ -1,7 +1,60 @@
 /* Material UI: all user/project text uses textContent, never injected HTML. */
 (() => {
   "use strict";
-  let host, data, root, projectId, urls = [], fillPlan, artifactEpoch = 0;
+  let host, data, root, projectId, mountedOwner = "local", urls = [], fillPlan, artifactEpoch = 0;
+  let mountVersion = 0, refreshSequence = 0, renderedRefresh = 0;
+  let workerReady, mountRefresh;
+  const pendingJobs = new Map(), formDrafts = new Map(), formSaves = new Map();
+  let recoveryOwner = () => "local", recoveryStorage, formStorage;
+  let visibleForms = [], formStorageWarning = false;
+  const jobKey = (id, kind, target) => `${id}\0${kind}\0${target}`;
+
+  function configureRecovery(owner) {
+    recoveryOwner = owner;
+    recoveryStorage = window.DraftRecovery.create("stardust-material-job-v1:", recoveryOwner);
+    formStorage = window.DraftRecovery.create("stardust-material-form-v1:", recoveryOwner);
+  }
+
+  function pendingJob(id, kind, target) {
+    const owner = recoveryOwner();
+    if (!owner) return null;
+    const key = jobKey(id, kind, target);
+    const inMemory = pendingJobs.get(owner + "\0" + key);
+    if (inMemory) return inMemory;
+    const saved = recoveryStorage?.read(key);
+    const identifier = saved?.jobId ?? saved?.requestId;
+    return typeof identifier === "string" && /^[a-f0-9]{32}$/.test(identifier) ? saved : null;
+  }
+
+  function clearRecovery(id) {
+    const prefix = id ? `${id}\0` : "";
+    for (const map of [pendingJobs, formDrafts]) {
+      for (const key of map.keys()) {
+        if (key.slice(key.indexOf("\0") + 1).startsWith(prefix)) map.delete(key);
+      }
+    }
+    for (const key of formSaves.keys()) {
+      if (key.slice(key.indexOf("\0") + 1).startsWith(prefix)) formSaves.delete(key);
+    }
+    recoveryStorage?.clear(prefix);
+    formStorage?.clear(prefix);
+    if (!id) formStorageWarning = false;
+  }
+
+  function trackedAction(id, kind, target, isCurrent) {
+    const owner = recoveryOwner();
+    const key = jobKey(id, kind, target);
+    const memoryKey = owner + "\0" + key;
+    const current = () => isCurrent() && owner === recoveryOwner();
+    function record(value) {
+      if (!owner || !current()) return;
+      if (value) pendingJobs.set(memoryKey, value);
+      else pendingJobs.delete(memoryKey);
+      recoveryStorage?.write(key, value);
+    }
+    return { id, kind, target, current, record, read: () => pendingJob(id, kind, target) };
+  }
+
   const el = (tag, text, cls) => {
     const n = document.createElement(tag);
     if (text !== undefined) n.textContent = text;
@@ -9,9 +62,9 @@
     return n;
   };
   const configured = () => Boolean(host?.state.project?.material?.enabled);
-  // Do not route generation away from the existing chain until the operator
-  // has explicitly declared the Worker ready.
-  const active = () => Boolean(configured() && projectId === host.state.project.id && data?.worker_ready);
+  const workerStatus = () => workerReady ?? data?.worker_ready;
+  const active = () => Boolean(configured() && projectId === host.state.project.id && workerStatus() === true
+    && mountedOwner === recoveryOwner() && host.isProjectActive?.(projectId) !== false);
   const path = suffix => `/api/projects/${encodeURIComponent(host.state.project.id)}/material${suffix}`;
   const request = (suffix, method = "GET", body) => host.api(path(suffix), {
     method, ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
@@ -27,13 +80,49 @@
   }
   const JOB_STATUS_NOTICE = "暂时无法获取任务状态，任务可能仍在后台运行；请稍后刷新任务列表，不要重复生成。";
   const JOB_SUBMIT_NOTICE = "暂未收到任务提交结果，任务可能已经开始；请先刷新任务列表及费用记录，不要重复提交。";
-  function action(text, fn, parent) {
+  function captureWorkspace() {
+    const version = mountVersion;
+    const project = host?.state.project;
+    const owner = recoveryOwner();
+    const view = host?.captureView?.();
+    return {
+      project,
+      current: () => Boolean(project && project === host?.state.project && version === mountVersion
+        && owner === recoveryOwner() && (view?.active() ?? host.isProjectActive?.(project.id) !== false)),
+    };
+  }
+
+  async function usesWorker() {
+    if (!configured()) return false;
+    const scope = captureWorkspace();
+    if (!scope.current() || projectId !== scope.project.id || mountedOwner !== recoveryOwner())
+      throw new Error("项目已切换，请在当前项目重新操作。");
+    if (typeof workerStatus() === "boolean") return workerStatus();
+
+    const notice = "暂时无法确认材料后台状态，请稍后重试。";
+    try {
+      await waitFor(mountRefresh ?? refresh(), 15000, notice);
+    } catch {
+      if (!scope.current()) throw new Error("项目已切换，请在当前项目重新操作。");
+      if (typeof workerStatus() !== "boolean") throw new Error(notice);
+    }
+    if (!scope.current()) throw new Error("项目已切换，请在当前项目重新操作。");
+    if (typeof workerStatus() !== "boolean") throw new Error(notice);
+    return workerStatus();
+  }
+
+  function action(text, fn, parent, enabled = () => true) {
     const button = el("button", text, "button button-small button-secondary");
     button.type = "button";
+    button.disabled = !enabled();
+    const scope = captureWorkspace();
+    const rendered = data;
     button.onclick = async () => {
+      if (!scope.current() || rendered !== data || !enabled()) return;
       button.disabled = true;
-      try { await fn(); } catch (e) { host.toast(e.message, true); }
-      finally { button.disabled = false; }
+      try { await fn(scope); }
+      catch (e) { if (scope.current()) host.toast(e.message, true); }
+      finally { button.disabled = !enabled(); }
     };
     parent.append(button);
     return button;
@@ -54,6 +143,135 @@
     });
     wrap.append(node); parent.append(wrap); return node;
   }
+  function sameValue(left, right) {
+    if (left === right) return true;
+    if (!left || !right || typeof left !== "object" || typeof right !== "object"
+        || Array.isArray(left) !== Array.isArray(right)) return false;
+    const keys = Object.keys(left);
+    return keys.length === Object.keys(right).length
+      && keys.every(key => Object.hasOwn(right, key) && sameValue(left[key], right[key]));
+  }
+
+  function bindForm(kind, box, fields) {
+    const scope = captureWorkspace();
+    const key = `${scope.project.id}\0${kind}`;
+    const owner = recoveryOwner();
+    const memoryKey = `${owner}\0${key}`;
+    const values = () => Object.fromEntries(Object.entries(fields).map(([name, field]) => [name, field.value]));
+    const defaults = values();
+    if (owner && !formDrafts.has(memoryKey)) {
+      const saved = formStorage?.read(key);
+      if (saved?.values && Object.keys(fields).every(name => typeof saved.values[name] === "string"))
+        formDrafts.set(memoryKey, saved);
+    }
+    const read = () => formDrafts.get(memoryKey);
+    const saving = () => formSaves.has(memoryKey);
+    function begin(attempt) {
+      if (saving()) throw new Error("这份表单正在保存，请稍等。");
+      formSaves.set(memoryKey, attempt);
+    }
+    function finish(attempt) {
+      if (formSaves.get(memoryKey) === attempt) formSaves.delete(memoryKey);
+    }
+    function write(draft) {
+      if (!scope.current() || !owner) return;
+      if (draft) formDrafts.set(memoryKey, draft);
+      else formDrafts.delete(memoryKey);
+      if (formStorage?.write(key, draft) === false && draft && !formStorageWarning) {
+        formStorageWarning = true;
+        host.toast("浏览器暂时无法跨刷新保留材料草稿，请先保存。", true);
+      }
+    }
+    function restore(raw = read()?.values ?? defaults) {
+      for (const [name, field] of Object.entries(fields)) {
+        if (typeof raw[name] !== "string") continue;
+        const value = raw[name];
+        if (value && field.options && !Array.from(field.options).some(option => option.value === value)) {
+          const option = el("option", "原选项暂不可用，请核对");
+          option.value = value;
+          field.append(option);
+        }
+        field.value = value;
+      }
+      if (read()) box.open = true;
+    }
+    const note = el("p", "", "inline-hint");
+    note.setAttribute?.("role", "status");
+    note.hidden = true;
+    box.append(note);
+    function status(message) {
+      note.textContent = message || (saving() ? "正在保存，可以继续编辑。"
+        : read()?.submitted ? "上次保存待确认，输入已保留。" : read()?.dirty ? "有修改待保存。" : "");
+      note.hidden = !note.textContent;
+    }
+    function record() {
+      if (!scope.current()) return;
+      const draft = read();
+      const raw = values();
+      if (sameValue(raw, draft?.values ?? defaults)) return;
+      write({ ...draft, values: raw, dirty: true });
+      status();
+    }
+    for (const field of Object.values(fields)) {
+      field.addEventListener?.("input", record);
+      field.addEventListener?.("change", record);
+    }
+    visibleForms.push({ kind, box, fields, current: scope.current });
+    return { read, write, restore, values, status, saving, begin, finish, current: scope.current };
+  }
+
+  function settleForm(form, savedPlan = null) {
+    const draft = form.read();
+    if (!draft?.submitted) return;
+    if (sameValue(draft.values, draft.submitted.values)) form.write(null);
+    else form.write({ ...draft, submitted: null, base: savedPlan, dirty: true });
+  }
+
+  async function saveForm(form, kind, draft, item, items) {
+    const attempt = { item, values: form.values() };
+    form.begin(attempt);
+    form.write({ ...draft, values: attempt.values, dirty: true, submitted: attempt });
+    form.status();
+    try {
+      const receipt = await waitFor(request(`/${kind}`, "PUT", { revision: data.context.revision, items }),
+        30000, "保存结果暂未收到，输入已保留。");
+      if (!form.current() || form.read()?.submitted !== attempt) return;
+      const savedPlan = kind === "plans" ? receipt.plans.find(plan => plan.id === item.id) : null;
+      settleForm(form, savedPlan);
+    } catch (error) {
+      if (form.current() && form.read()?.submitted === attempt && error.status >= 400 && error.status < 500)
+        form.write({ ...form.read(), submitted: null });
+      throw error;
+    } finally {
+      form.finish(attempt);
+      if (form.current()) {
+        form.restore();
+        form.status();
+        await waitFor(refresh(), 15000, "暂时无法刷新材料状态。").catch(() => {});
+      }
+    }
+  }
+
+  function captureFormFocus() {
+    for (const { kind, fields, current } of visibleForms) {
+      if (!current()) continue;
+      const name = Object.keys(fields).find(key => fields[key] === document.activeElement);
+      if (!name) continue;
+      const field = fields[name];
+      return { kind, name, start: field.selectionStart, end: field.selectionEnd };
+    }
+    return null;
+  }
+
+  function restoreFormFocus(focus) {
+    if (!focus) return;
+    const field = visibleForms.find(form => form.kind === focus.kind)?.fields[focus.name];
+    field?.focus({ preventScroll: true });
+    if (Number.isInteger(focus.start) && field?.setSelectionRange)
+      field.setSelectionRange(focus.start, focus.end);
+  }
+
+  const terminalJobs = new Set(["completed", "failed", "cancelled", "needs_review"]);
   const jobStatus = { pending: "排队中", running: "执行中", completed: "已完成",
     failed: "失败", cancelled: "已取消", needs_review: "待核对结果与费用" };
   const jobKind = { section: "章节", outline: "候选目录", plan: "配图建议",
@@ -66,54 +284,206 @@
     assembling_document: "组装 Word", rendering_pages: "渲染页面供检查",
     saving_artifacts: "保存下载文件",
   };
-  async function blobUrl(url) {
+  async function verifiedFigure(response, blob) {
+    const sha256 = response.headers.get("X-Figure-SHA256");
+    if (response.status !== 200 || blob.type !== "image/png" || !/^[a-f0-9]{64}$/.test(sha256))
+      throw new Error("暂时无法核对这张图片，请重新打开预览。");
+    if (globalThis.crypto?.subtle) {
+      const bytes = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+      const actual = Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, "0")).join("");
+      if (actual !== sha256) throw new Error("图片校验失败，请重新打开预览。");
+    }
+    return sha256;
+  }
+
+  async function loadArtifact(url, { checkFigure = false, signal } = {}) {
     const epoch = artifactEpoch;
-    const requestProject = host.state.project?.id;
-    const headers = {};
-    if (host.state.authSession?.access_token) headers.Authorization = `Bearer ${host.state.authSession.access_token}`;
-    const response = await fetch(url, { headers });
-    if (!response.ok) throw new Error("私有产物读取失败，请检查登录状态");
-    const blob = await response.blob();
-    if (epoch !== artifactEpoch || host.state.project?.id !== requestProject || host.isProjectActive?.(requestProject) === false)
+    const scope = captureWorkspace();
+    const token = host.state.authSession?.access_token;
+    let blob, sha256;
+    if (url.split("?")[0].endsWith("/files/proposal.docx")) {
+      blob = await window.WordExport.fetchWordFile(url, { token });
+    } else {
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const response = await fetch(url, { headers, signal, cache: "no-store", redirect: "error" });
+      if (!response.ok) throw new Error("暂时无法读取文件，请检查连接或登录状态。");
+      blob = await response.blob();
+      if (checkFigure) sha256 = await verifiedFigure(response, blob);
+    }
+    if (signal?.aborted) throw new Error("图片预览加载超时，请重试。");
+    if (epoch !== artifactEpoch || !scope.current())
       throw new Error("项目内容已更新，请重新打开文件。");
     const objectUrl = URL.createObjectURL(blob);
     urls.push(objectUrl);
-    return objectUrl;
+    return { url: objectUrl, sha256 };
   }
+
+  async function blobUrl(url) {
+    return (await loadArtifact(url)).url;
+  }
+
+  function showFigureTask(row, job) {
+    const applied = (data.context.diagrams || []).find(asset => asset.id === job.target && asset.material_job_id === job.id);
+    const scene = applied?.scene_text || job.result?.asset?.scene_text;
+    const saved = applied?.text_confirmed && applied.text_confirmation?.job_id === job.id
+      && sameValue(applied.text_confirmation.scene_text, scene) ? applied.text_confirmation.sha256 : null;
+    let viewImage, viewedSha256, confirmButton, note;
+    const canConfirm = () => Boolean(viewedSha256 && viewedSha256 !== saved);
+
+    function updateReview() {
+      if (!confirmButton) return;
+      confirmButton.disabled = !canConfirm();
+      note.textContent = saved && (!viewedSha256 || viewedSha256 === saved) ? "已保存此版本的文字核对记录。"
+        : saved ? "这张图片的内容与上次核对时不同，请重新核对。"
+        : viewedSha256 ? "请逐字核对图片中的场景文字。" : "打开这张图后即可核对文字。";
+    }
+
+    action("查看生成图片", async scope => {
+      viewedSha256 = null;
+      updateReview();
+      const epoch = artifactEpoch;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 20000);
+      try {
+        const { url, sha256 } = await loadArtifact(path(`/jobs/${job.id}/files/figure.png`),
+          { checkFigure: Boolean(confirmButton), signal: controller.signal });
+        const image = el("img");
+        image.alt = applied?.title || job.result?.asset?.title || "生成的图表";
+        image.src = url;
+        try {
+          await waitFor(image.decode(), 10000, "图片解码超时。");
+          if (controller.signal.aborted) throw new Error("图片预览加载超时。");
+        } catch {
+          discardArtifact(url);
+          throw new Error("图片无法显示，请重新打开预览。");
+        }
+        if (!scope.current() || epoch !== artifactEpoch) {
+          discardArtifact(url);
+          return;
+        }
+        if (viewImage) {
+          discardArtifact(viewImage.src);
+          viewImage.remove();
+        }
+        row.append(image);
+        viewImage = image;
+        viewedSha256 = sha256;
+      } catch (error) {
+        if (controller.signal.aborted) throw new Error("图片预览加载超时，请重试。");
+        throw error;
+      } finally {
+        clearTimeout(timer);
+        updateReview();
+      }
+    }, row);
+    if (!scene?.length) return;
+    row.append(el("p", `场景文字：${scene.join("；")}`));
+    if (!applied) {
+      row.append(el("p", "核对记录适用于项目当前采用的图片。"));
+      return;
+    }
+    note = el("p", "", "inline-hint");
+    row.append(note);
+    confirmButton = action("已逐字核对并确认", async scope => {
+      if (!confirm("确认已经逐字核对这张图片的场景文字？")) return;
+      try {
+        await request(`/figures/${encodeURIComponent(job.target)}/confirm-text`, "POST", {
+          revision: data.context.revision, job_id: job.id, image_sha256: viewedSha256,
+        });
+      } finally {
+        viewedSha256 = null;
+        updateReview();
+        if (scope.current()) await refresh().catch(() => {});
+      }
+    }, row, canConfirm);
+    updateReview();
+  }
+
   async function refresh() {
     if (!configured()) return;
-    const id = host.state.project.id;
-    const next = await request("");
-    if (host.state.project?.id !== id) return;
-    data = next;
-    host.state.project.material = data.context;
-    host.state.project.material_revision = data.context.revision;
-    draw();
+    const scope = captureWorkspace();
+    const sequence = ++refreshSequence;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (!scope.current()) return;
+      const next = await request("");
+      if (!scope.current() || !configured()) return;
+      const revision = next?.context?.revision;
+      if (!Number.isSafeInteger(revision) || revision < 0) throw new Error("暂未取得有效的材料版本。");
+      const cachedRevision = data?.context.revision ?? -1;
+      if (revision < (scope.project.material_revision ?? 0)) {
+        if (cachedRevision >= scope.project.material_revision) return;
+        continue;
+      }
+      if (revision < cachedRevision || (revision === cachedRevision && sequence < renderedRefresh)) return;
+      // The material response contains a partial project view; keep the
+      // project editor's revision attached to the data it actually loaded.
+      data = next;
+      if (typeof next.worker_ready === "boolean") workerReady = next.worker_ready;
+      renderedRefresh = sequence;
+      draw();
+      return;
+    }
+    throw new Error("材料版本正在同步，请稍后刷新任务。");
   }
+
+  function discardArtifact(url) {
+    URL.revokeObjectURL(url);
+    urls = urls.filter(item => item !== url);
+  }
+
+  function revokeArtifacts() {
+    artifactEpoch++;
+    urls.forEach(url => URL.revokeObjectURL(url));
+    urls = [];
+  }
+
   async function mount(config) {
     host = config;
+    mountVersion++;
     root = document.querySelector("#materialPilot");
     if (!root) {
       root = el("section", undefined, "material-pilot");
       root.id = "materialPilot";
       document.querySelector("#templateStatus").after(root);
     }
+    const scope = captureWorkspace();
+    const owner = recoveryOwner();
+    if (projectId !== scope.project?.id || mountedOwner !== owner || !configured()) data = null;
+    projectId = scope.project?.id ?? null;
+    mountedOwner = owner;
+    workerReady = scope.project?.material?.worker_ready;
+    mountRefresh = null;
     root.classList.toggle("hidden", !configured());
-    if (!configured()) { projectId = null; data = null; return; }
-    if (projectId !== host.state.project.id) data = null;
-    projectId = host.state.project.id;
-    try { await refresh(); } catch (e) {
-      root.replaceChildren(el("p", `材料链路暂不可用：${e.message}`));
+    revokeArtifacts();
+    if (!configured()) { root.replaceChildren(); return; }
+
+    const ready = data && data.context.revision >= (scope.project.material_revision ?? 0);
+    if (ready) draw();
+    else root.replaceChildren(el("p", "正在读取材料任务…"));
+    const previous = data;
+    const initialRefresh = refresh();
+    mountRefresh = initialRefresh;
+    try { await initialRefresh; } catch (e) {
+      if (!scope.current() || data !== previous) return;
+      if (ready) host.toast(e.message, true);
+      else {
+        root.replaceChildren(el("p", `材料链路暂不可用：${e.message}`));
+        action("刷新任务与关联提示", refresh, root);
+      }
+    } finally {
+      if (mountRefresh === initialRefresh) mountRefresh = null;
     }
   }
   function draw() {
     if (!data || !configured()) return;
-    artifactEpoch++;
-    urls.forEach(u => URL.revokeObjectURL(u)); urls = [];
+    const focus = captureFormFocus();
+    const openForms = new Map(visibleForms.filter(form => form.current()).map(form => [form.kind, form.box.open]));
+    visibleForms = [];
+    revokeArtifacts();
     root.replaceChildren();
     const details = el("details"); details.open = true;
     details.append(el("summary", "材料工作流 · 信息、要求、配图与交付"));
-    details.append(el("p", data.worker_ready
+    details.append(el("p", workerStatus() === true
       ? "已启用持久任务。付费模型须明确确认；失败不自动重复调用。"
       : "Worker 尚未配置：可整理信息和计划，完整生成与页面检查尚未启用。"));
     action("刷新任务与关联提示", refresh, details);
@@ -148,17 +518,19 @@
             ? "草稿中的项目数据、成果或来源需要你核对，可在下方查看并决定是否使用。"
             : "草稿中的部分个人数字需要你核对，可在下方查看并决定是否使用。")
           : "本轮检查未完成，草稿可在下方查看并由你决定是否使用。"));
-        if (!job.result?.applied && job.kind !== "export")
-          action(reviewIncomplete ? "使用此草稿" : "保存结果／保留为备选", async () => {
+        if (!job.result?.applied && !["export", "outline"].includes(job.kind))
+          action(reviewIncomplete ? "使用此草稿" : "保存结果／保留为备选", async scope => {
             await flushEdits();
+            if (!scope.current()) return;
             const result = await request(`/jobs/${job.id}/apply`, "POST",
               reviewIncomplete ? { use_unreviewed_draft: true } : undefined);
+            if (!scope.current()) return;
             host.toast(reviewIncomplete && !result.conflict_status
               ? (job.result?.grounding_issues?.length
                 ? (job.result?.grounding_kind === "project" ? "草稿已保存，请核对项目数据、成果和来源。" : "草稿已保存，请核对其中的个人数字。")
                 : "草稿已保存，本轮检查尚未完成。")
               : (result.notice || "结果已保存"));
-            await host.reload(projectId);
+            await host.reload(scope.project.id);
           }, row);
         if (job.result?.conflict_status && !reviewIncomplete) row.append(el("p", "输入已经变化：结果保留为备选，未覆盖当前内容。"));
         if (job.kind === "section" && job.result?.content) {
@@ -172,22 +544,13 @@
         }
         if (job.kind === "outline" && job.result?.outline) {
           row.append(el("p", job.result.outline.map(s => s.title).join("；")));
-        }
-        if (job.kind === "figure") {
-          action("查看生成图片", async () => {
-            const image = el("img"); image.alt = job.target;
-            image.src = await blobUrl(path(`/jobs/${job.id}/files/figure.png`)); row.append(image);
+          const ownerProject = projectId;
+          action("在目录编辑器中查看", () => {
+            if (host.state.project?.id === ownerProject && host.isProjectActive?.(ownerProject) !== false)
+              host.previewOutline?.(job.result);
           }, row);
-          if (job.result?.asset?.scene_text?.length) {
-            row.append(el("p", `请逐字核对场景文字：${job.result.asset.scene_text.join("；")}`));
-            action("已逐字核对并确认", async () => {
-              if (!confirm("请先查看大图，并确认场景内所有关键文字准确。")) return;
-              await request(`/figures/${job.target}/confirm-text`, "POST", {
-                revision: data.context.revision, snapshot: data.context.snapshot, nodes: [],
-              }); await refresh();
-            }, row);
-          }
         }
+        if (job.kind === "figure") showFigureTask(row, job);
         if (job.kind === "export") {
           const report = job.result.report || {};
           const quality = { failed: "检查发现问题", not_checked: "尚未完成页面检查", needs_review: "需人工核对" };
@@ -197,13 +560,14 @@
           for (const check of report.checks || []) row.append(el("p", `${check.rule}：${({
             passed: "通过", failed: "失败", not_checked: "未检查", needs_review: "需人工核对",
           })[check.status] || "未完成"} · ${check.detail}`));
-          action("下载可编辑 Word 草稿", async () => {
+          action("下载此任务的 Word 草稿", async () => {
             const link = el("a"); link.href = await blobUrl(path(`/jobs/${job.id}/files/proposal.docx`));
             link.download = "申报材料草稿.docx"; link.click();
           }, row);
-          action("查看逐页预览", async () => {
+          action("查看逐页预览", async scope => {
             const pages = el("div", undefined, "material-pages"); row.append(pages);
             for (const name of report.pages || []) {
+              if (!scope.current()) return;
               const image = el("img"); image.alt = name; image.loading = "lazy";
               image.src = await blobUrl(path(`/jobs/${job.id}/files/${name}`)); pages.append(image);
             }
@@ -213,6 +577,10 @@
       tasks.append(row);
     }
     details.append(tasks); root.append(details);
+    for (const { kind, box } of visibleForms) {
+      if (openForms.has(kind)) box.open = openForms.get(kind);
+    }
+    restoreFormFocus(focus);
   }
   function requirementEditor(parent) {
     const box = el("details"); box.append(el("summary", "适用要求与优先级"));
@@ -230,11 +598,29 @@
     const value = input(box, "具体要求", "", true);
     const source = input(box, "出处／文件名");
     const scope = input(box, "适用学校、年份和范围");
+    const form = bindForm("requirements", box, { kind, key, value, source, scope });
+    if (data.requirements.some(rule => sameValue(rule, form.read()?.submitted?.item))) settleForm(form);
+    form.restore();
+    form.status();
     action("确认这条要求适用并保存", async () => {
-      await request("/requirements", "PUT", { revision: data.context.revision, items: [...data.requirements, {
+      const rule = {
         key: key.value, value: value.value.trim(), source_kind: kind.value, source: source.value.trim(),
         scope: scope.value.trim(), confirmed: true, applicable: true,
-      }] }); await refresh();
+      };
+      if (!rule.value || !rule.source) throw new Error("请填写具体要求和出处。");
+      if (form.saving()) throw new Error("这份表单正在保存，请稍等。");
+      if (data.requirements.some(item => sameValue(item, rule))) {
+        form.write(null);
+        form.restore();
+        form.status("这条要求已保存。");
+        return;
+      }
+      await saveForm(form, "requirements", form.read(), rule, [...data.requirements, rule]);
+    }, box);
+    if (form.read()) action("清空要求草稿", () => {
+      if (form.saving()) throw new Error("这份表单正在保存，请稍等。");
+      form.write(null);
+      draw();
     }, box);
     parent.append(box);
   }
@@ -244,28 +630,34 @@
     data.plans.forEach(plan => {
       const row = el("div", `${plan.title} → ${plan.section_id} · ${plan.renderer}`, "material-job");
       action("编辑", () => { fill(plan); box.open = true; }, row);
-      action("确认并生成此图", async () => {
-        if (!plan.confirmed) {
+      const drawLabel = () => pendingJob(projectId, "figure", plan.id) ? "查看上次绘图任务" : "确认并生成此图";
+      const drawFigure = action(drawLabel(), async () => {
+        if (!plan.confirmed && !pendingJob(projectId, "figure", plan.id)) {
           fill(plan);
           box.open = true;
           host.toast("请先核对候选方案，点击下方保存并确认");
           return;
         }
-        await submit("figure", plan.id, plan.renderer === "gpt");
+        try { await listedJob("figure", plan.id, plan.renderer === "gpt"); }
+        finally { drawFigure.textContent = drawLabel(); }
       }, row);
       action("移除计划", async () => {
         await request("/plans", "PUT", { revision: data.context.revision, items: data.plans.filter(p => p.id !== plan.id) }); await refresh();
       }, row);
       box.append(row);
     });
-    let editingId = null;
     const title = input(box, "图题");
     const section = select(box, "所属章节", host.state.outline.map(s => [s.id, s.title]));
-    action("根据已确认资料拟定配图方案", async () => {
+    const proposePlan = action("根据已确认资料拟定配图方案", async () => {
       if (!section.value) throw new Error("请先确认目录");
-      await refresh();
-      await submit("plan", section.value, true);
+      try { await listedJob("plan", section.value, true); }
+      finally { updatePlanLabel(); }
     }, box);
+    const updatePlanLabel = () => {
+      proposePlan.textContent = pendingJob(projectId, "plan", section.value)
+        ? "查看上次配图建议任务" : "根据已确认资料拟定配图方案";
+    };
+    section.onchange = updatePlanLabel;
     const renderer = select(box, "绘图方式", [["svg", "流程／架构（HTML/SVG）"], ["python", "数据图（Python）"], ["gpt", "概念／场景（GPT Image，付费）"], ["overlay", "已有图片追加准确文字（不调用生图模型）"], ["upload", "真实上传照片／素材（不调用模型）"]]);
     const chart = select(box, "数据图类型", [["bar", "柱状图"], ["line", "折线图"], ["gantt", "甘特图"]]);
     const nodes = input(box, "流程节点：每行一个", "", true);
@@ -281,25 +673,69 @@
     const base = select(box, "局部排字的原图任务", [["", "不使用"], ...data.jobs.filter(j => j.kind === "figure" && j.status === "completed").map(j => [j.id, `${j.target} · ${j.id.slice(0, 8)}`])]);
     const documentId = select(box, "使用的真实上传图片", [["", "不使用"], ...(host.state.documents || [])
       .filter(d => (d.content_type || "").startsWith("image/")).map(d => [d.id, d.original_name])]);
-    function fill(plan) {
+    const form = bindForm("plans", box, {
+      title, section, renderer, chart, nodes, edges, numbers, dataStatus, source, prompt, scene, overlay, base, documentId,
+    });
+    const current = () => data.plans.find(plan => plan.id === form.read()?.planId) ?? null;
+    const sameSubmittedPlan = (saved, submitted) => Boolean(saved && submitted &&
+      Object.entries(submitted).every(([key, value]) => key === "text_confirmed" || sameValue(saved[key], value)));
+    if (sameSubmittedPlan(current(), form.read()?.submitted?.item)) settleForm(form, current());
+    form.restore();
+    updatePlanLabel();
+
+    function loadPlan(plan, saved, allowReplace = false) {
+      if (form.saving()) throw new Error("图表计划正在保存，可以继续编辑。");
+      if (form.read()?.dirty && !allowReplace && !confirm("打开这份计划会替换当前未保存的图表草稿。继续吗？"))
+        return;
+      const values = {
+        title: plan.title, section: plan.section_id, renderer: plan.renderer, chart: plan.chart === "flow" ? "bar" : plan.chart,
+        nodes: plan.nodes.join("\n"), edges: (plan.edges || []).map(e => `${e.source + 1}->${e.target + 1}`).join("\n"),
+        numbers: plan.labels.map((label, i) => [label, ...(plan.chart === "gantt" ? [plan.starts[i]] : []), plan.values[i]].join(",")).join("\n"),
+        source: plan.source, prompt: plan.prompt, scene: plan.scene_text.join("\n"),
+        overlay: plan.overlays.map(o => o.text).join("\n"), base: plan.base_asset_job,
+        dataStatus: plan.data_status, documentId: plan.document_id || "",
+      };
+      form.write({ planId: saved ? plan.id : null, base: saved ? plan : null,
+        inherited: { anchor: plan.anchor, source_ids: plan.source_ids }, values, dirty: !saved });
       box.open = true;
-      editingId = plan.id; title.value = plan.title; section.value = plan.section_id; renderer.value = plan.renderer;
-      chart.value = plan.chart === "flow" ? "bar" : plan.chart; nodes.value = plan.nodes.join("\n");
-      edges.value = (plan.edges || []).map(e => `${e.source+1}->${e.target+1}`).join("\n");
-      numbers.value = plan.labels.map((l, i) => [l, ...(plan.chart === "gantt" ? [plan.starts[i]] : []), plan.values[i]].join(",")).join("\n");
-      source.value = plan.source; prompt.value = plan.prompt; scene.value = plan.scene_text.join("\n");
-      overlay.value = plan.overlays.map(o => o.text).join("\n"); base.value = plan.base_asset_job;
-      dataStatus.value = plan.data_status;
-      documentId.value = plan.document_id || "";
-      title.scrollIntoView({ block: "center", behavior: "smooth" });
+      draw();
+      root.querySelector?.("[data-material-plan-editor]")?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+    function fill(plan) {
+      loadPlan(plan, data.plans.includes(plan));
     }
     fillPlan = fill;
+    box.setAttribute?.("data-material-plan-editor", "");
+    const conflict = () => Boolean(form.read()?.planId && !sameValue(form.read().base ?? null, current()));
+    if (conflict()) {
+      box.append(el("p", current() ? "这份计划已在其他页面更新，请选择要保留的版本。"
+        : "这份计划已在其他页面移除，可将当前输入另存为新计划。", "material-warning"));
+      if (current())
+        action("采用已保存的图表计划", () => loadPlan(current(), true, true), box);
+      action(current() ? "保留本页图表输入" : "另存为新图表计划", () => {
+        if (form.saving()) throw new Error("图表计划正在保存，请稍等。");
+        const saved = current();
+        form.write({ ...form.read(), planId: saved?.id ?? null, base: saved, submitted: null });
+        draw();
+      }, box);
+    }
+    form.status();
+    if (form.read()) action("清空图表编辑器", () => {
+      if (form.saving()) throw new Error("图表计划正在保存，请稍等。");
+      form.write(null);
+      draw();
+    }, box);
+
     const lines = value => value.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
-    action("保存并确认图表计划（不调用模型）", async () => {
+    const savePlan = action("保存并确认图表计划（不调用模型）", async () => {
+      if (conflict()) throw new Error("请先核对其他页面保存的图表计划。");
+      const draft = form.read();
+      const prior = draft?.base ?? draft?.inherited;
       const rows = lines(numbers.value).map(l => l.split(/[,，]/).map(s => s.trim()));
       const spec = {
-        id: editingId || `fig_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`,
+        id: draft?.planId ?? `fig_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`,
         section_id: section.value, title: title.value.trim(), renderer: renderer.value,
+        anchor: prior?.anchor ?? -1, source_ids: prior?.source_ids ?? [],
         chart: renderer.value === "svg" ? "flow" : chart.value, nodes: lines(nodes.value),
         edges: lines(edges.value).map(value => {
           const match = value.match(/^(\d+)\s*->\s*(\d+)$/);
@@ -310,65 +746,157 @@
         starts: chart.value === "gantt" ? rows.map(r => Number(r[1])) : [],
         source: source.value, data_status: dataStatus.value, prompt: prompt.value,
         scene_text: lines(scene.value), overlays: lines(overlay.value).map(text => ({ text })),
-        base_asset_job: base.value, confirmed: true, text_confirmed: false,
+        base_asset_job: base.value, confirmed: true, text_confirmed: draft?.base?.text_confirmed ?? false,
         document_id: documentId.value,
       };
-      await request("/plans", "PUT", { revision: data.context.revision, items: [...data.plans.filter(p => p.id !== spec.id), spec] }); await refresh();
+      await saveForm(form, "plans", { ...draft, planId: spec.id, base: draft?.base ?? null },
+        spec, [...data.plans.filter(p => p.id !== spec.id), spec]);
     }, box);
+    savePlan.disabled = conflict();
     parent.append(box);
   }
-  async function submit(kind, target, paid, extra = {}) {
-    if (paid && !confirm((kind === "section" ? "本章沿用现有撰写与评审流程，最多六次模型请求。" :
+  async function submit(kind, target, paid, extra = {}, { onSending, onAccepted, checking = false } = {}) {
+    const scope = captureWorkspace();
+    if (workerStatus() === false) throw new Error("材料后台暂未启用，请刷新项目后继续。");
+    if (paid && !confirm((checking ? "暂未查到上次任务。继续会沿用原编号，只有任务尚未登记才会创建。\n" : "") +
+        (kind === "section" ? "本章沿用现有撰写与评审流程，最多六次模型请求。" :
         kind === "figure" ? "本次生成一张图片。" : "本次调用一次文字模型拟定候选方案。") +
         "平台模型按现有积分规则结算，自定义模型由服务商收费；不自动付费重绘。是否确认？")) return null;
-    const job = await waitFor(request("/jobs", "POST", {
-      revision: data.context.revision, kind, target, idempotency_key: crypto.randomUUID(),
+    const body = {
+      revision: data?.context.revision ?? host.state.project.material_revision,
+      kind, target, idempotency_key: extra.idempotency_key || crypto.randomUUID().replaceAll("-", ""),
       llm_config: paid ? { ...host.state.llmConfig } : null, confirm_paid: Boolean(paid),
       ...extra,
-    }), 30000, JOB_SUBMIT_NOTICE);
+    };
+    onSending?.(body.idempotency_key);
+    let job;
+    try {
+      job = await waitFor(request("/jobs", "POST", body), 30000, JOB_SUBMIT_NOTICE);
+    } catch (error) {
+      if (!error.status || error.status >= 500) throw new Error(JOB_SUBMIT_NOTICE);
+      throw error;
+    }
+    onAccepted?.(job);
+    if (!scope.current()) return job;
     try {
       await waitFor(refresh(), 15000, "任务已提交，但暂时无法刷新任务列表；请稍后查看，不要重复提交。");
     } catch {
       throw new Error("任务已提交，但暂时无法刷新任务列表；请稍后查看，不要重复提交。");
     }
-    host.toast("任务已保存，刷新页面后仍可查询。");
+    if (scope.current()) host.toast("任务已保存，刷新页面后仍可查询。");
     return job;
   }
+  async function getTrackedJob(action) {
+    const { id, kind, target } = action;
+    const previous = action.read();
+    if (previous) {
+      const suffix = previous.jobId ? `/jobs/${previous.jobId}` : `/jobs/by-request/${previous.requestId}`;
+      try {
+        const job = await waitFor(request(suffix), 15000, JOB_STATUS_NOTICE);
+        if (!action.current()) throw new Error("项目已切换，请返回原项目查看任务。");
+        if (job?.project_id !== id || job.kind !== kind || job.target !== target
+            || !/^[a-f0-9]{32}$/.test(job.id) || (previous.jobId && job.id !== previous.jobId))
+          throw new Error("暂时无法确认上次后台任务。");
+        action.record({ ...previous, jobId: job.id });
+        return job;
+      } catch (error) {
+        if (!action.current() || error.status !== 404) throw error;
+        if (previous.jobId || !configured()) {
+          action.record(null);
+          throw new Error("任务暂不可查看。可检查任务区，再决定是否重新生成。");
+        }
+      }
+      await waitFor(refresh(), 15000, "暂时无法读取项目版本，请稍后查看上次任务。");
+      if (!action.current()) throw new Error("项目已切换，请返回原项目查看任务。");
+    }
+    const running = projectId === id && data?.jobs?.find(job =>
+      job.kind === kind && job.target === target && ["pending", "running"].includes(job.status));
+    if (running) {
+      action.record({ jobId: running.id });
+      return running;
+    }
+    try {
+      return await submit(kind, target, true, previous ? { idempotency_key: previous.requestId } : {}, {
+        checking: Boolean(previous),
+        onSending: requestId => action.record({ requestId }),
+        onAccepted: job => action.record({ jobId: job.id }),
+      });
+    } catch (error) {
+      if ([400, 401, 402, 403, 404, 409, 422].includes(error.status) && !action.read()?.jobId && !previous)
+        action.record(null);
+      throw error;
+    }
+  }
+
+  async function listedJob(kind, target, paid) {
+    const id = host.state.project?.id;
+    const view = host.captureView?.();
+    const action = trackedAction(id, kind, target,
+      () => host.state.project?.id === id && (view?.active() ?? host.isProjectActive?.(id) !== false));
+    if (!action.read()) await refresh();
+    if (!action.current()) return;
+    if (!paid && !action.read()) return submit(kind, target, false);
+    try {
+      const job = await getTrackedJob(action);
+      if (!job || !action.current()) return;
+      if (terminalJobs.has(job.status)) {
+        action.record(null);
+        host.toast(job.error || "已找到上次任务，可在任务区查看结果。", job.status !== "completed");
+      } else {
+        host.toast("已找到后台任务，可在任务区查看进度。");
+      }
+    } finally {
+      if (action.current()) void refresh().catch(() => {});
+    }
+  }
+
   async function section(sid, editor) {
     const id = host.state.project?.id;
-    const isCurrent = () => Boolean(id && host.state.project?.id === id && projectId === id && host.isProjectActive?.(id) !== false);
+    const view = host.captureView?.();
+    const action = trackedAction(id, "section", sid, () => Boolean(id && host.state.project?.id === id
+      && (view?.active() ?? host.isProjectActive?.(id) !== false)));
+    const isCurrent = action.current;
     const loadedRevision = host.state.project.material_revision;
     const original = editor?.value;
-    await waitFor(refresh(), 15000, "材料状态暂时无法读取，请检查网络后再生成。");
+    if (!action.read()) await waitFor(refresh(), 15000, "材料状态暂时无法读取，请检查网络后再生成。");
     if (!isCurrent()) throw new Error("项目已切换，未提交该章节任务。");
-    if (editor && original !== (host.state.project.sections?.[sid] || "")) {
+    if (!action.read() && editor && original !== (host.state.project.sections?.[sid] || "")) {
       if (loadedRevision !== data.context.revision)
         throw new Error("项目已在其他操作中变化，请先保存并核对当前章节，未覆盖您的编辑");
-      await waitFor(host.api(`/api/projects/${projectId}/sections/${sid}`, {
+      const saved = await waitFor(host.api(`/api/projects/${id}/sections/${sid}`, {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: original, expected_revision: loadedRevision,
           base_content: host.state.project.sections?.[sid] || "" }),
       }), 15000, "暂未收到编辑保存结果，请先刷新项目核对；尚未提交生成任务。");
       if (!isCurrent()) throw new Error("项目已切换，请返回原项目查看已保存的编辑。");
+      if (saved.material_revision < host.state.project.material_revision && host.state.project.sections?.[sid] !== original)
+        throw new Error("已有更新的章节版本，请刷新后核对。");
+      host.state.project.material_revision = Math.max(saved.material_revision, host.state.project.material_revision);
       host.state.project.sections[sid] = original;
       if (editor.value !== original) throw new Error("保存期间正文又有修改，请先保存最新编辑，再生成草稿。");
       await waitFor(refresh(), 15000, "材料状态暂时无法读取，请检查网络后再生成。");
       if (!isCurrent()) throw new Error("项目已切换，未提交该章节任务。");
     }
-    const baseRevision = data.context.revision;
-    const job = await submit("section", sid, true);
+    const baseRevision = host.state.project.material_revision;
+    const baseContent = host.state.project.sections?.[sid] || "";
+    const job = await getTrackedJob(action);
     if (!job) throw new Error("已取消模型调用");
     if (!isCurrent()) throw new Error("任务可能仍在原项目中执行，请返回原项目查询。");
+    let current = job;
     for (let i = 0; i < 120; i++) {
-      await new Promise(resolve => setTimeout(resolve, 2500));
-      if (!isCurrent()) throw new Error("任务继续运行，可返回项目查询");
-      const current = await waitFor(request(`/jobs/${job.id}`), 15000, JOB_STATUS_NOTICE);
+      if (!terminalJobs.has(current.status)) {
+        await new Promise(resolve => setTimeout(resolve, 2500));
+        if (!isCurrent()) throw new Error("任务继续运行，可返回项目查询");
+        current = await waitFor(request(`/jobs/${job.id}`), 15000, JOB_STATUS_NOTICE);
+      }
       if (!isCurrent()) throw new Error("任务可能仍在原项目中执行，请返回原项目查询。");
       if (current.status === "completed") {
         if (current.result?.review_incomplete || current.result?.status === "review_failed") {
           // Keep the completed (and potentially billed) result in the task
           // list. Never silently apply or re-run an unreviewed draft.
           await refresh();
+          if (!isCurrent()) throw new Error("项目已切换，请返回原项目查看草稿。");
+          action.record(null);
           return { ...current.result, review_incomplete: true, conflict_status: "user_edit_preserved",
             notice: current.result?.grounding_issues?.length
               ? (current.result?.grounding_kind === "project"
@@ -378,12 +906,14 @@
         }
         if (editor && editor.value !== original && editor.value !== host.state.project.sections?.[sid]) {
           const latestEdit = editor.value;
-          await waitFor(host.api(`/api/projects/${id}/sections/${sid}`, { method: "PUT",
+          const saved = await waitFor(host.api(`/api/projects/${id}/sections/${sid}`, { method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content: latestEdit, expected_revision: baseRevision,
-              base_content: host.state.project.sections?.[sid] || "" }) }), 15000,
+            body: JSON.stringify({ content: latestEdit, expected_revision: baseRevision, base_content: baseContent }) }), 15000,
             "暂未收到编辑保存结果，生成草稿仍在任务区；请刷新项目核对。");
           if (!isCurrent()) throw new Error("项目已切换，请返回原项目查看已保存的编辑。");
+          if (saved.material_revision < host.state.project.material_revision && host.state.project.sections?.[sid] !== latestEdit)
+            throw new Error("已有更新的章节版本，请刷新后核对。");
+          host.state.project.material_revision = Math.max(saved.material_revision, host.state.project.material_revision);
           host.state.project.sections[sid] = latestEdit;
           if (editor.value !== latestEdit) throw new Error("保存期间正文又有修改，请先保存最新编辑；生成结果仍在任务区。");
         }
@@ -391,13 +921,19 @@
           "暂未收到草稿保存结果，请刷新原项目查看，不要重复生成。");
         if (!isCurrent()) throw new Error("项目已切换，请返回原项目查看草稿结果。");
         await waitFor(refresh(), 15000, "草稿已处理，但暂时无法刷新项目，请稍后查看。");
+        if (!isCurrent()) throw new Error("项目已切换，请返回原项目查看草稿。");
+        action.record(null);
         return { ...result, material_applied: true };
       }
-      if (["failed", "cancelled", "needs_review"].includes(current.status)) throw new Error(current.error || current.status);
+      if (["failed", "cancelled", "needs_review"].includes(current.status)) {
+        action.record(null);
+        throw new Error(current.error || "后台任务未完成，可在任务区查看。");
+      }
     }
     throw new Error("任务仍在后台执行，请稍后刷新任务列表，不必重复提交");
   }
   async function flushEdits() {
+    if (host.flushEdits) return host.flushEdits();
     // Save visible edits before freezing an export snapshot; never discard them by reloading.
     const id = host.state.project?.id;
     const userId = host.state.authSession?.user?.id || null;
@@ -420,18 +956,26 @@
     }
   }
   function invalidateArtifacts() {
-    artifactEpoch++;
-    urls.forEach(url => URL.revokeObjectURL(url));
-    urls = [];
-    if (data && configured()) draw();
+    if (data && configured() && projectId === host.state.project.id && mountedOwner === recoveryOwner()) draw();
+    else revokeArtifacts();
   }
 
-  async function exportDocument(options = {}, isCurrent = () => true) {
+  async function exportDocument(options = {}, isCurrent = () => true, onWordReady, onTrack) {
     await waitFor(flushEdits(), 15000, "正文保存结果暂未确认，请先检查项目中的正文再导出。");
     if (!isCurrent()) return;
     await waitFor(refresh(), 15000, "材料状态暂时无法读取，请检查网络后再导出。");
     if (!isCurrent()) return;
-    const job = await submit("export", "", false, options);
+    let job = data.jobs?.find(item => item.kind === "export" && ["pending", "running"].includes(item.status));
+    if (job) {
+      onTrack?.({ kind: "worker-job", id: job.id });
+    } else {
+      job = await submit("export", "", false, options, {
+        onSending: id => onTrack?.({ kind: "worker-request", id }),
+        onAccepted: accepted => {
+          if (isCurrent()) onTrack?.({ kind: "worker-job", id: accepted.id });
+        },
+      });
+    }
     if (!isCurrent()) return;
     const id = projectId;
     let lastStep;
@@ -449,10 +993,11 @@
       if (current.status === "completed") {
         await waitFor(refresh(), 15000, "Word 已生成，但暂时无法刷新任务区，请稍后查看任务并下载。");
         if (host.state.project?.id !== id || !isCurrent()) return;
-        const url = await blobUrl(path(`/jobs/${job.id}/files/proposal.docx`));
+        const filePath = path(`/jobs/${job.id}/files/proposal.docx`);
+        if (onWordReady) return onWordReady(filePath, current.result?.report?.warnings);
+        const url = await blobUrl(filePath + "?current=true");
         if (host.state.project?.id !== id || !isCurrent()) {
-          URL.revokeObjectURL(url);
-          urls = urls.filter(item => item !== url);
+          discardArtifact(url);
           return;
         }
         const link = el("a");
@@ -475,24 +1020,35 @@
     host.toast("导出仍在后台执行，请稍后刷新任务区，不必重复生成正文。");
   }
   async function outline() {
-    await flushEdits();
-    await refresh();
-    const job = await submit("outline", "", true);
+    const id = host.state.project?.id;
+    const view = host.captureView?.();
+    const action = trackedAction(id, "outline", "",
+      () => host.state.project?.id === id && (view?.active() ?? host.isProjectActive?.(id) !== false));
+    if (!action.read()) await waitFor(refresh(), 15000, "暂时无法读取项目材料，请稍后再拟目录。");
+    if (!action.current()) throw new Error("项目已切换");
+    const job = await getTrackedJob(action);
     if (!job) throw new Error("已取消目录模型调用");
-    const id = projectId;
+    let current = job;
     for (let i = 0; i < 120; i++) {
-      await new Promise(resolve => setTimeout(resolve, 2500));
-      if (host.state.project?.id !== id) throw new Error("任务继续执行，请返回项目查询");
-      const current = await request(`/jobs/${job.id}`);
-      if (current.status === "completed") {
-        await flushEdits();
-        const result = await request(`/jobs/${job.id}/apply`, "POST");
-        await refresh();
-        return { ...result, warning: result.notice || "目录为候选方案，请核对后确认" };
+      if (!action.current()) throw new Error("任务继续执行，请返回项目查询");
+      if (!terminalJobs.has(current.status)) {
+        await new Promise(resolve => setTimeout(resolve, 2500));
+        if (!action.current()) throw new Error("任务继续执行，请返回项目查询");
+        current = await waitFor(request(`/jobs/${job.id}`), 15000, JOB_STATUS_NOTICE);
       }
-      if (["failed", "cancelled", "needs_review"].includes(current.status)) throw new Error(current.error || current.status);
+      if (!action.current()) throw new Error("任务继续执行，请返回项目查询");
+      if (current.status === "completed") {
+        action.record(null);
+        void refresh().catch(() => {});
+        return { ...current.result, warning: current.result?.notice || "目录为候选方案，请核对后确认" };
+      }
+      if (["failed", "cancelled", "needs_review"].includes(current.status)) {
+        action.record(null);
+        throw new Error(current.error || "后台任务未完成，可在任务区查看。");
+      }
     }
     throw new Error("目录仍在后台生成，请在任务区查询");
   }
-  window.MaterialPilot = { mount, active, refresh, section, outline, exportDocument, flushEdits, blobUrl, invalidateArtifacts };
+  window.MaterialPilot = { mount, active, usesWorker, refresh, section, outline, exportDocument, flushEdits, blobUrl,
+    invalidateArtifacts, configureRecovery, pendingJob, clearRecovery };
 })();

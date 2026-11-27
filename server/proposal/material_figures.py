@@ -1,6 +1,7 @@
 """Bounded figure specifications. Models supply data, never executable code."""
 from __future__ import annotations
 
+import hashlib
 import html
 import math
 import textwrap
@@ -8,6 +9,27 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+def figure_sha256(path: Path) -> str:
+    with path.open("rb") as image:
+        return hashlib.file_digest(image, "sha256").hexdigest()
+
+
+def has_current_text_confirmation(figure: dict, image: Path) -> bool:
+    if not figure.get("text_confirmed"):
+        return False
+    job = figure.get("material_job_id")
+    if not job:
+        return True
+    receipt = figure.get("text_confirmation") or {}
+    if (not isinstance(receipt, dict) or receipt.get("job_id") != job
+            or receipt.get("scene_text") != figure.get("scene_text")):
+        return False
+    try:
+        return receipt.get("sha256") == figure_sha256(image)
+    except OSError:
+        return False
 
 
 class Overlay(BaseModel):

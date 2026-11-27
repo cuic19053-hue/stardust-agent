@@ -16,7 +16,9 @@ from docx.shared import Cm, Pt, RGBColor
 from utils.docx_common import harden_table
 
 from .markdown_tables import is_header_separator, pipe_cells
+from .material_figures import has_current_text_confirmation
 from .materials import material_view
+from .sections import visible_section_text
 
 STYLE = {
     "paper": "A4", "top_cm": 2.5, "bottom_cm": 2.5, "left_cm": 3.0, "right_cm": 2.6,
@@ -137,6 +139,7 @@ def export_material(store, project_id: str, folder: Path) -> dict[str, Any]:
                            ensure_grant_income_export_safe, _open_word_template)
     folder.mkdir(parents=True, exist_ok=True)
     project = store.project_for_export(project_id) if hasattr(store, "project_for_export") else store.get_project(project_id)
+    project = {**project, "sections": visible_section_text(project)}
     docs = store.list_documents(project_id)
     ensure_grant_income_export_safe(store, project, docs)
     project = _student_template_project(store, project, docs)
@@ -337,8 +340,8 @@ def export_material(store, project_id: str, folder: Path) -> dict[str, Any]:
         caption.paragraph_format.first_line_indent = Pt(0)
         source = figure.get("source") or ("AI 生成概念示意，不代表实物或实测结果" if figure.get("renderer") == "gpt" else "项目资料，待核对")
         _text(container, f"来源：{source}")
-        if figure.get("scene_text") and not figure.get("text_confirmed"):
-            warnings.append(f"图 {number} 场景文字尚未人工核对")
+        if figure.get("scene_text") and not has_current_text_confirmation(figure, path):
+            warnings.append(f"图 {number} 场景文字尚未人工核对。如图片已更换，请核对当前版本。")
 
     for index, section in enumerate(project["outline"], 1):
         sid = section["id"]

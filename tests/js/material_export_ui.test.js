@@ -4,7 +4,7 @@ const { resolve } = require("node:path");
 const { test } = require("node:test");
 const vm = require("node:vm");
 
-function harness(statuses, switchProject = false, onFetch = () => {}, { stallPoll = false } = {}) {
+function harness(statuses, switchProject = false, onFetch = () => {}, { stallPoll = false, jobs = [] } = {}) {
   const calls = [], downloads = [], fetches = [], notices = [], revoked = [];
   let pollPending = false, draftAreas = [];
   const state = { project: { id: "a".repeat(32) }, authSession: { access_token: "fake-user-jwt" } };
@@ -16,29 +16,43 @@ function harness(statuses, switchProject = false, onFetch = () => {}, { stallPol
     return statuses.length > 1 ? statuses.shift() : statuses[0];
   } };
   const context = vm.createContext({
-    window: {}, console, Blob, crypto: { randomUUID: () => "one-export-only" },
+    window: {}, console, Blob, AbortController, confirm: () => true, crypto: { randomUUID: () => "one-export-only" },
     setTimeout: (callback, delay) => { if (delay < 15000 || pollPending) callback(); return 1; }, clearTimeout() {},
     document: { querySelectorAll: () => draftAreas, body: { append() {} },
       createElement: () => ({ click() { downloads.push({ href: this.href, name: this.download }); }, remove() {} }) },
     fetch: async (url, options) => {
       fetches.push({ url, options });
       onFetch();
-      return { ok: true, blob: async () => new Blob(["synthetic Word"]) };
+      return { ok: true, blob: async () => new Blob(["PK\x03\x04", Buffer.alloc(24)], {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      }) };
     },
     URL: { createObjectURL: () => "blob:private-word", revokeObjectURL(url) { revoked.push(url); } },
   });
   const source = readFileSync(resolve(__dirname, "../../server/static/material.js"), "utf8")
     .replace("window.MaterialPilot =", `
       globalThis.init = config => { host = config; projectId = config.state.project.id;
-        data = { context: { revision: 4 } }; refresh = async () => {}; };
+        data = { context: { revision: 4 }, jobs: config.jobs }; refresh = async () => {}; };
       window.MaterialPilot =`);
+  vm.runInContext(readFileSync(resolve(__dirname, "../../server/static/word-export.js"), "utf8"), context);
   vm.runInContext(source, context);
+  host.jobs = jobs;
   context.init(host);
-  return { export: isCurrent => context.window.MaterialPilot.exportDocument({}, isCurrent),
+  return { export: (isCurrent, onTrack) => context.window.MaterialPilot.exportDocument({}, isCurrent, undefined, onTrack),
+    outline: () => context.window.MaterialPilot.outline(),
     flushEdits: () => context.window.MaterialPilot.flushEdits(),
     setDraftAreas: areas => { draftAreas = areas; }, host,
     invalidate: () => context.window.MaterialPilot.invalidateArtifacts(), calls, downloads, fetches, notices, revoked };
 }
+
+test("background outline generation returns the completed preview without applying it", async () => {
+  const outline = [{ id: "new", title: "候选章节" }];
+  const h = harness([{ status: "completed", result: { outline } }]);
+  const candidate = await h.outline();
+  assert.deepEqual(candidate.outline, outline);
+  assert.equal(h.calls.filter(call => call.options.method === "POST").length, 1);
+  assert.equal(h.calls.some(call => call.url.endsWith("/apply")), false);
+});
 
 test("material export waits for its one durable job then downloads with JWT", async () => {
   const h = harness([{ status: "running", step: "saving_artifacts" }, { status: "completed" }]);
@@ -49,6 +63,17 @@ test("material export waits for its one durable job then downloads with JWT", as
   assert.equal(h.downloads[0].href, "blob:private-word");
   assert.equal(h.fetches[0].options.headers.Authorization, "Bearer fake-user-jwt");
   assert.match(h.notices.at(-1), /已生成并下载/);
+});
+
+test("the export toolbar attaches to an existing background job", async () => {
+  const id = "9".repeat(32);
+  const tracked = [];
+  const jobs = [{ kind: "export", status: "running", id }];
+  const h = harness([{ status: "completed" }], false, () => {}, { jobs });
+  await h.export(() => true, attempt => tracked.push([attempt.kind, attempt.id]));
+  assert.deepEqual(tracked, [["worker-job", id]]);
+  assert.equal(h.calls.filter(c => c.options.method === "POST").length, 0);
+  assert.match(h.fetches[0].url, new RegExp(id + "/files/proposal[.]docx[?]current=true$"));
 });
 
 test("failed material export never downloads or resubmits", async () => {
