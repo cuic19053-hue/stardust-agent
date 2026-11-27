@@ -39,7 +39,7 @@ BYOK 配置加密后保存至任务。生产 Worker 不持有 `USER_CONFIG_ENCRY
 1. 按仓库规范检查并保护工作区，再同步远程；只从 `main` 的已验证提交发布。
 2. 依序应用材料工作流、Worker 上下文 RPC 和全赛道 RPC 迁移。新增项目版本、持久任务和
    不可变章节版本，不迁移钱包、不重置积分或免费次数。
-   发布使用材料版本校验的应用前，先应用 `20261127153222_atomic_material_review.sql`。
+   发布使用材料版本校验的应用前，先应用 `20261127164526_atomic_material_review.sql`。
 3. 用安全渠道生成专用随机 Worker 密钥，只把哈希写入数据库：
    ```sql
    insert into material_private.worker_capability(singleton,secret_hash)
