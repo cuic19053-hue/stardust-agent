@@ -234,3 +234,43 @@ def test_automatic_ocr_only_updates_unconfirmed_unfinished_rows(monkeypatch, tmp
     monkeypatch.setattr(store, "_rest", rest)
     assert store.update_document_extraction("doc", "", "error", only_unprocessed=True) is False
     assert calls == [("documents", "PATCH", {"id": "eq.doc", "confirmed": "eq.false", "extraction_status": "neq.ready"})]
+
+
+def test_cloud_chapter_history_survives_instance_replacement_and_pipeline_toggle(monkeypatch, tmp_path):
+    cloud = []
+    def rest(table, method="GET", params=None, payload=None):
+        assert table == "material_revisions"
+        if method == "POST":
+            version = {**payload, "id": len(cloud) + 1, "created_at": "2026-11-27T02:00:00+00:00"}
+            cloud.append(version)
+            return [version]
+        if "id" in params:
+            return [v for v in cloud if f"eq.{v['id']}" == params["id"]]
+        return [v for v in cloud if f"eq.{v['project_id']}" == params["project_id"]
+                and f"eq.{v['section_id']}" == params["section_id"]][:int(params["limit"])]
+    one = SupabaseStore("https://example.supabase.co", "public-test", tmp_path / "one")
+    two = SupabaseStore("https://example.supabase.co", "public-test", tmp_path / "two")
+    for store in (one, two):
+        monkeypatch.setattr(store, "_rest", rest)
+    monkeypatch.setenv("MATERIAL_PIPELINE_ENABLED", "false")
+    saved = one.save_section_version("p", "intro", "需要在冷启动后找回的手稿", source="before_restore")
+    assert not one._job_store.list_section_versions("p", "intro")
+    for enabled in ("true", "false"):
+        monkeypatch.setenv("MATERIAL_PIPELINE_ENABLED", enabled)
+        assert two.list_section_versions("p", "intro") == [saved]
+        assert two.get_section_version(str(saved["id"])) == saved
+
+
+def test_cloud_and_local_history_are_merged_only_for_a_visible_project(monkeypatch, tmp_path):
+    store = SupabaseStore("https://example.supabase.co", "public-test", tmp_path)
+    old = store._job_store.save_section_version("p", "intro", "旧实例手稿")
+    newer = {"project_id": "p", "section_id": "intro", "content": "云端记录", "created_at": "2099-01-01T00:00:00Z", "id": 123}
+    monkeypatch.setattr(store, "_rest", lambda *_args, **_kwargs: [newer])
+    monkeypatch.setattr(store, "get_project", lambda pid: {"id": pid})
+    assert [v["id"] for v in store.list_section_versions("p", "intro")] == [123, old["id"]]
+    assert [v["id"] for v in store.list_section_versions("p", "intro", 1)] == [123]
+    assert store.get_section_version(old["id"])["content"] == "旧实例手稿"
+    monkeypatch.setattr(store, "get_project", lambda _: None)
+    monkeypatch.setattr(store, "_rest", lambda *_args, **_kwargs: [])
+    assert store.list_section_versions("p", "intro") == []
+    assert store.get_section_version(old["id"]) is None

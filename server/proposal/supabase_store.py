@@ -1162,27 +1162,32 @@ class SupabaseStore:
         return self._job_store.cancel_generation_job(job_id)
 
     def save_section_version(self, project_id: str, section_id: str, content: str, source: str = "user_edit", review_card: dict[str, Any] | None = None) -> dict[str, Any]:
-        from .materials import enabled
-        if os.environ.get("MATERIAL_PIPELINE_ENABLED", "").lower() == "true" and enabled(self.get_project(project_id) or {}):
-            rows = self._rest("material_revisions", "POST", payload={
-                "project_id": project_id, "section_id": section_id,
-                "content": content, "source": source, "review_card": review_card,
-            })
-            return rows[0]
-        return self._job_store.save_section_version(project_id, section_id, content, source, review_card)
+        rows = self._rest("material_revisions", "POST", payload={
+            "project_id": project_id, "section_id": section_id,
+            "content": content, "source": source, "review_card": review_card,
+        })
+        return rows[0]
 
     def list_section_versions(self, project_id: str, section_id: str, limit: int = 10) -> list[dict[str, Any]]:
-        from .materials import enabled
-        if os.environ.get("MATERIAL_PIPELINE_ENABLED", "").lower() == "true" and enabled(self.get_project(project_id) or {}):
-            return self._rest("material_revisions", params={
-                "project_id": f"eq.{project_id}", "section_id": f"eq.{section_id}",
-                "order": "id.desc", "limit": str(max(1, min(limit, 100))),
-            })
-        return self._job_store.list_section_versions(project_id, section_id, limit)
+        limit = max(1, min(limit, 100))
+        rows = self._rest("material_revisions", params={
+            "project_id": f"eq.{project_id}", "section_id": f"eq.{section_id}",
+            "order": "id.desc", "limit": str(limit),
+        })
+        # Old instances may still have pre-migration UUID versions on disk.
+        # PostgreSQL enforces ownership for its own rows. Check it explicitly before exposing local ones.
+        legacy = self._job_store.list_section_versions(project_id, section_id, limit)
+        if not legacy or not self.get_project(project_id):
+            return rows
+        return sorted([*rows, *legacy], key=lambda item: datetime.fromisoformat(item["created_at"]),
+                      reverse=True)[:limit]
 
     def get_section_version(self, version_id: str) -> dict[str, Any] | None:
-        if os.environ.get("MATERIAL_PIPELINE_ENABLED", "").lower() == "true":
-            if str(version_id).isdigit():
-                rows = self._rest("material_revisions", params={"id": f"eq.{version_id}", "limit": "1"})
-                return rows[0] if rows else None
-        return self._job_store.get_section_version(version_id)
+        key = str(version_id)
+        if re.fullmatch(r"[0-9a-f]{32}", key):
+            legacy = self._job_store.get_section_version(key)
+            return legacy if legacy and self.get_project(legacy["project_id"]) else None
+        if not re.fullmatch(r"[0-9]{1,19}", key) or int(key) > 2**63 - 1:
+            return None
+        rows = self._rest("material_revisions", params={"id": f"eq.{key}", "limit": "1"})
+        return rows[0] if rows else None
