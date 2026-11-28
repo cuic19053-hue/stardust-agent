@@ -161,3 +161,16 @@ def test_chat_rechecks_the_passage_actually_returned_by_the_tool(workspace, monk
     assert "search_project_materials" in result["tool_calls"]
     assert ("已完成成果待核对" in result["message"]) == pending
     assert reply in result["message"]
+
+
+def test_worker_hydrates_the_confirmed_source_revision(workspace, tmp_path):
+    from server.material_worker import hydrate
+
+    store, _, project = workspace
+    doc = source(store, project, "[行 1] 准备开展观测。")
+    doc = store.apply_document_review(doc["id"], 1, "[行 1] 已完成观测。", "ready", True, [])
+    project = store.update_project(project["id"], sections={"foundation": "已完成观测。"})
+    job = {"project_id": project["id"], "payload": {"project": project, "documents": [doc]}}
+    replica, _ = hydrate(job, tmp_path / "worker")
+    claim, = ProposalTools(replica).validate_project(project["id"])["claim_audit"]["claims"]
+    assert claim["evidence"]["review_revision"] == doc["review_revision"] == 2
