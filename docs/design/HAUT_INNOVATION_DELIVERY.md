@@ -33,7 +33,7 @@
 
 ## 发布依赖
 
-云端应用切换前应用 `20261128054323_agent_turn_version_references.sql`。新版调用 `open_v2` 写入材料版本引用，旧版任务继续按原快照恢复。在隔离 PostgreSQL 中可运行 `RUN_POSTGRES_POLICY_TESTS=1 python -m pytest tests/test_material_postgres.py -k agent -q` 核验项目权限、运行找回和租约。生产验收使用已部署的版本和独立测试账号单独记录。
+云端应用切换前应用 `20261128070750_agent_turn_version_references.sql`。新版调用 `open_v2` 写入材料版本引用，旧版任务继续按原快照恢复。在隔离 PostgreSQL 中可运行 `RUN_POSTGRES_POLICY_TESTS=1 python -m pytest tests/test_material_postgres.py -k agent -q` 核验项目权限、运行找回和租约。生产验收使用已部署的版本和独立测试账号单独记录。
 
 ## 逐条核对与独立评分
 
