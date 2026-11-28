@@ -428,6 +428,7 @@ def export_material(store, project_id: str, folder: Path) -> dict[str, Any]:
             hardened.unlink(missing_ok=True)
     from .tools import ProposalTools
     validation = ProposalTools(store).validate_project(project_id)
+    warnings.extend(validation.get("claim_audit", {}).get("warnings", []))
     template_status = ("needs_review" if template_unavailable or template and (not used_template or template_unfilled_fields or not filled
                                                         or project.get("_template_fact_conflict"))
                        else "mapped" if used_template else "generic")

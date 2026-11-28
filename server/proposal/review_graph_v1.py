@@ -100,7 +100,8 @@ def build_review_graph(runs: ReviewRuns, checkpointer, model_call=None, *, graph
 
     def rules(state):
         project = state["snapshot"]["project"]
-        result = ProposalTools(SnapshotStore(state["snapshot"])).validate_project(project["id"])
+        # Historical graph versions must replay their original rule set.
+        result = ProposalTools(SnapshotStore(state["snapshot"]))._validate_project(project["id"], audit_facts=False)
         issues = []
 
         def add(section_id, problem, suggestion):

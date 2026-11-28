@@ -146,6 +146,7 @@ def register_export_api(app: FastAPI, get_store, load_project, validate_project)
             raise HTTPException(status_code=422, detail=f"Word 草稿生成失败：{exc}") from exc
         if not result.get("success"):
             raise HTTPException(status_code=500, detail=result.get("error", "Word 导出失败"))
+        result["warnings"] = list(dict.fromkeys([*result.get("warnings", []), *preflight.get("claim_audit", {}).get("warnings", [])]))
         if result.get("template_status") == "needs_review":
             preflight = dict(preflight)
             preflight["passed"] = False

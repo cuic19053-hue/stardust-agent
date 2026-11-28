@@ -26,27 +26,29 @@ def conversation_messages(agent: Any, project: dict[str, Any], project_id: str,
     # Keep the original text only for local identity/privacy decisions, never
     # add it to the model messages.
     identity_text = original_user_text if isinstance(original_user_text, str) else user_text
-    documents = agent.store.list_documents(project_id) if project_sources_allowed(history, identity_text) else []
-    if documents:
-        from .chat_tools import is_personal_writing_request
-        if is_personal_writing_request(identity_text):
-            from .personal_source_filter import filter_personal_evidence
-            from .skills import registry
-            skill = registry.get(str((project.get("state") or {}).get("skill_id") or ""))
-            if skill:
-                identity_history = [*history, {"role": "user", "content": identity_text}]
-                # Separate explicit self-introduction and privacy clauses for
-                # identity matching when the same sentence also asks about
-                # policy. Do not do this for examples or other people's data.
-                if not re.search(r"示例|举例|例如|比如|假设|虚构|朋友|同学|他人|别人|第三人|替人|代人|帮人|对方|他的|她的", identity_text):
-                    for clause in re.split(r"[，,；;。！？!?\n]", identity_text):
-                        if re.search(r"我叫|我名叫|我的名字|我的姓名|本人(?:叫|名叫)|(?:不要|别|禁止|不能|不可)(?:使用|填写|写入|引用|展示|透露)", clause):
-                            identity_history.append({"role": "user", "content": clause})
-                _, excluded = filter_personal_evidence(
-                    skill, project, identity_history, documents, {"results": []},
-                )
-                excluded_ids = set(excluded)
-                documents = [item for item in documents if str(item.get("id") or "") not in excluded_ids]
+    from .chat_tools import is_personal_writing_request
+    from .section_grounding import is_personal_skill
+    from .skills import registry
+    skill = registry.get(str((project.get("state") or {}).get("skill_id") or ""))
+    personal_writing = skill and is_personal_skill(skill) and is_personal_writing_request(identity_text)
+    read_documents = (agent.store.list_documents if personal_writing
+                      else getattr(agent.store, "document_headers", agent.store.list_documents))
+    documents = read_documents(project_id) if project_sources_allowed(history, identity_text) else []
+    if documents and personal_writing:
+        from .personal_source_filter import filter_personal_evidence
+        identity_history = [*history, {"role": "user", "content": identity_text}]
+        # Separate explicit self-introduction and privacy clauses for
+        # identity matching when the same sentence also asks about
+        # policy. Do not do this for examples or other people's data.
+        if not re.search(r"示例|举例|例如|比如|假设|虚构|朋友|同学|他人|别人|第三人|替人|代人|帮人|对方|他的|她的", identity_text):
+            for clause in re.split(r"[，,；;。！？!?\n]", identity_text):
+                if re.search(r"我叫|我名叫|我的名字|我的姓名|本人(?:叫|名叫)|(?:不要|别|禁止|不能|不可)(?:使用|填写|写入|引用|展示|透露)", clause):
+                    identity_history.append({"role": "user", "content": clause})
+        _, excluded = filter_personal_evidence(
+            skill, project, identity_history, documents, {"results": []},
+        )
+        excluded_ids = set(excluded)
+        documents = [item for item in documents if str(item.get("id") or "") not in excluded_ids]
     context["uploaded_materials"] = [
         {"filename": item["original_name"], "kind": item["kind"],
          "confirmed": bool(item["confirmed"]), "extraction_status": item["extraction_status"]}

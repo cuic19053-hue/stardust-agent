@@ -617,7 +617,7 @@ class PublicKnowledgeRetriever:
         for row in rows[:max(1, min(top_k, 10))]:
             results.append({key: row.get(key) for key in (
                 "id", "source_id", "skill_id", "variant", "restrictions", "kind", "title", "source_url", "school",
-                "application_year", "scope", "source_sha256", "source_ref", "content", "lexical_score",
+                "application_year", "scope", "source_sha256", "source_ref", "content", "original_quote", "lexical_score",
                 "vector_score", "fusion_score", "verified_at", "license", "rights_evidence_url", "example_structure",
                 "example_match_type", "attribution", "rights_review_status", "rights_resolution_url")})
         official_found = any(row["kind"] == "official" for row in results)

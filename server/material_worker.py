@@ -289,8 +289,11 @@ def hydrate(job, folder, local_source=None):
             shutil.copyfile(source, dest)
             item["preview"] = str(dest)
         diagrams.append(item)
-    # Restore snapshot exactly; hydration operations must not alter its revision.
+    # Hydration writes advance local counters; retain the revisions used by the submitted draft.
     with store.connect() as db:
+        db.executemany("UPDATE documents SET review_revision=? WHERE id=? AND project_id=?",
+                       [(doc["review_revision"], doc["id"], project_id) for doc in payload.get("documents", [])
+                        if doc.get("review_revision") is not None])
         db.execute("UPDATE projects SET state_json=?,diagrams_json=?,material_revision=? WHERE id=?",
                    (json.dumps(project["state"]),json.dumps(diagrams),project.get("material_revision",0),project_id))
     base = None

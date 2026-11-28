@@ -2829,3 +2829,15 @@ for (const transientFailure of [false, true]) {
     assert.equal(lists, transientFailure ? 2 : 1);
   });
 }
+
+test("student validation puts a disputed claim next to its original passage and revision", async () => {
+  const h = harness();
+  h.ui.state.project = { id: "project-one" };
+  h.ui.setApi(async () => ({ passed: false, consistency_warnings: ["已完成观测待核对"],
+    claim_audit: { claims: [{ claim: "已完成观测", cited_passage: { source_name: "记录.txt",
+      source_ref: "第 2 页", review_revision: 3, quote: "准备开展观测。" } }] } }));
+  await h.ui.validate();
+  const items = h.element("#validationResult").children.find(node => node.tagName === "UL" || node.children?.length);
+  assert.ok(items.children.some(node => ["待对照原文", "已完成观测", "记录.txt", "第 2 页", "版本 3", "准备开展观测"]
+    .every(text => node.textContent.includes(text))));
+});

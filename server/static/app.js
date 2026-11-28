@@ -287,6 +287,8 @@
 
   function clearProjectResults() {
     projectViewVersion++;
+    if ($("#chatRunsDialog")?.open) $("#chatRunsDialog").close();
+    $("#chatRunsList")?.replaceChildren();
     for (const selector of ["#sourceResults", "#knowledgeResults", "#factCandidates", "#intakeCandidates"]) {
       $(selector)?.replaceChildren();
     }
@@ -832,6 +834,66 @@
     }
     if (finishBtn) {
       finishBtn.classList.toggle("hidden", currentOnboardingStep !== 4);
+    }
+  }
+
+  async function showChatRuns(offset = 0) {
+    const view = currentProjectView();
+    if (!view.active()) return;
+    $("#chatActionMenu")?.classList.add("hidden");
+    const dialog = $("#chatRunsDialog");
+    if (!dialog.open) dialog.showModal();
+    const page = document.createElement("div");
+    $("#chatRunsList").replaceChildren(page);
+    const active = () => view.active() && dialog.open && page.isConnected;
+    const url = `/api/projects/${view.id}/chat-runs`;
+    const labels = { running: "执行中", suspended: "已暂停", interrupted: "执行中断",
+      completed: "已完成", needs_review: "调用结果待核对" };
+    page.textContent = "正在读取任务…";
+    try {
+      const { runs } = await api(`${url}?offset=${offset}`);
+      if (!active()) return;
+      page.textContent = runs.length ? "" : "本页没有对话任务。";
+      for (const run of runs) {
+        const entry = document.createElement("details");
+        const label = document.createElement("summary");
+        label.textContent = `${labels[run.status] || run.status} · ${new Date(run.created_at * 1000).toLocaleString()} · ${run.preview}`;
+        const body = document.createElement("div");
+        entry.append(label, body);
+        page.append(entry);
+        entry.addEventListener("toggle", async () => {
+          if (!entry.open || !active()) return;
+          body.textContent = "读取中…";
+          try {
+            const detail = await api(`${url}/${encodeURIComponent(run.id)}`);
+            if (!active()) return;
+            body.textContent = [detail.message, detail.answer ?? labels[detail.status]].join("\n\n");
+            if (["suspended", "interrupted"].includes(detail.status)) {
+              const resume = document.createElement("button");
+              resume.className = "button button-small";
+              resume.textContent = "继续原任务";
+              resume.onclick = () => {
+                if (!active()) return;
+                dialog.close();
+                sendChat(null, detail.message, detail.id);
+              };
+              body.append(document.createElement("br"), resume);
+            }
+          } catch (error) {
+            if (active()) body.textContent = error.message;
+          }
+        });
+      }
+      for (const [label, next] of [["上一页", offset - 20], ["下一页", offset + 20]]) {
+        if (next < 0 || (next > offset && runs.length < 20)) continue;
+        const button = document.createElement("button");
+        button.className = "button button-small";
+        button.textContent = label;
+        button.onclick = () => showChatRuns(next);
+        page.append(button);
+      }
+    } catch (error) {
+      if (active()) page.textContent = error.message;
     }
   }
 
@@ -4227,6 +4289,8 @@
           }
 
           if (result.conflict_status === "user_edit_preserved") {
+            if (result.citation_check?.warnings?.length)
+              sources.textContent = result.citation_check.warnings.join(" ");
             if (result.result_save_uncertain) {
               if (currentEditor()) renderUncertainDrafts();
               else renderSections();
@@ -4769,7 +4833,7 @@
     }
   }
 
-  async function sendChat(event, messageOverride = null) {
+  async function sendChat(event, messageOverride = null, resumeTurnId = null) {
     event?.preventDefault();
     const input = $("#chatInput");
     const message = messageOverride === null ? input.value.trim() : messageOverride.trim();
@@ -4791,11 +4855,11 @@
     ]);
     let idempotencyKey = pendingChatRequests.get(requestStorageKey);
     try { idempotencyKey ||= sessionStorage.getItem(requestStorageKey); } catch {}
-    if (!idempotencyKey) {
+    if (!resumeTurnId && !idempotencyKey) {
       idempotencyKey = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
       try { sessionStorage.setItem(requestStorageKey, idempotencyKey); } catch {}
     }
-    pendingChatRequests.set(requestStorageKey, idempotencyKey);
+    if (!resumeTurnId) pendingChatRequests.set(requestStorageKey, idempotencyKey);
     const sameAccount = () => chatRecoveryEpoch === requestEpoch && (state.authSession?.user?.id || null) === accountId;
     if (messageOverride === null) {
       updateRecoveredChatInput();
@@ -4810,7 +4874,7 @@
       input.value = "";
       input.style.height = "auto";
     }
-    appendMessage("user", message);
+    if (!resumeTurnId) appendMessage("user", message);
     let pending = appendThinkingMessage();
 
     // Check if api was replaced by a mock (e.g. in headless unit tests)
@@ -4930,7 +4994,7 @@
       }
       const body = {
         message,
-        idempotency_key: idempotencyKey,
+        ...(resumeTurnId ? { resume_turn_id: resumeTurnId } : { idempotency_key: idempotencyKey }),
         stream: true,
         llm_config: { ...state.llmConfig },
       };
@@ -5016,8 +5080,10 @@
         throw new Error("模型未返回可用正文，请勿连续重试；请先查看积分流水并联系管理员核对。");
       }
       if (messageOverride === null) forgetInterruptedChatMessage(projectId, message);
-      try { sessionStorage.removeItem(requestStorageKey); } catch {}
-      pendingChatRequests.delete(requestStorageKey);
+      if (!resumeTurnId) {
+        try { sessionStorage.removeItem(requestStorageKey); } catch {}
+        pendingChatRequests.delete(requestStorageKey);
+      }
 
       if (assistantRow && bubble) {
         bubble.innerHTML = renderMarkdownSafe(finalText);
@@ -5053,7 +5119,7 @@
         state.freeChatsRemaining = Number(finalResult.free_chats_remaining || 0);
         renderFreeChatsIndicator();
       }
-      if (finalResult?.replayed || finalResult?.setup_updated || (finalResult?.tool_calls || []).some((name) => ["save_project_fact", "save_section"].includes(name))) {
+      if (resumeTurnId || finalResult?.replayed || finalResult?.setup_updated || (finalResult?.tool_calls || []).some((name) => ["save_project_fact", "save_section"].includes(name))) {
         await refreshChatAfterError(projectId);
       }
       void refreshProjects().catch(() => {});
@@ -5105,6 +5171,15 @@
     }
   }
 
+  function claimEvidenceText(row) {
+    const evidence = row.evidence || row.cited_passage;
+    if (!evidence) return "";
+    const version = evidence.review_revision != null ? `确认版本 ${evidence.review_revision}` :
+      `原件 ${evidence.source_sha256.slice(0, 12)}`;
+    const scope = evidence.scope ? `（${evidence.scope}）` : "";
+    return `${evidence.source_name} · ${evidence.source_ref} · ${version}${scope}『${evidence.quote}』`;
+  }
+
   async function validate() {
     const btn = $("#validateBtn");
     const oldText = btn ? btn.textContent : "";
@@ -5137,6 +5212,13 @@
       for (const warning of result.consistency_warnings || []) {
         const item = document.createElement("li");
         item.textContent = warning;
+        list.append(item);
+      }
+      for (const row of result.claim_audit?.claims || []) {
+        const citation = claimEvidenceText(row);
+        if (!citation) continue;
+        const item = document.createElement("li");
+        item.textContent = `${row.evidence ? "已定位原文" : "待对照原文"}『${row.claim}』 · ${citation}`;
         list.append(item);
       }
       for (const item of result.low_confidence_ocr || []) {
@@ -5251,6 +5333,10 @@
         : item.requires_review ? "请先核对并修改这份草稿，再勾选保存。"
         : "勾选后保存，也可以先在下方修改内容。";
       if (item.warnings?.length) note.textContent += ` ${item.warnings.join(" ")}`;
+      for (const row of item.fact_checks || []) {
+        const citation = claimEvidenceText(row);
+        if (citation) note.textContent += ` 『${row.claim}』可对照 ${citation}`;
+      }
       const editor = document.createElement("textarea");
       editor.value = item.content;
       editor.readOnly = check.disabled;
@@ -5715,6 +5801,8 @@
     $("#openRechargeBtn")?.addEventListener("click", openRechargeDialog);
     $("#sidebarRechargeBtn")?.addEventListener("click", openRechargeDialog);
     $("#closeRechargeBtn")?.addEventListener("click", () => $("#rechargeDialog")?.close());
+    $("#chatRunsBtn")?.addEventListener("click", () => showChatRuns());
+    $("#chatRunsRefresh")?.addEventListener("click", () => showChatRuns());
     $("#usageLogsBtn")?.addEventListener("click", openUsageDialog);
     $("#closeUsageBtn")?.addEventListener("click", () => $("#usageDialog")?.close());
     $("#refreshUsageBtn")?.addEventListener("click", openUsageDialog);

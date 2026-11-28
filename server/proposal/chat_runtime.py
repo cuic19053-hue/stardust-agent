@@ -32,14 +32,25 @@ READ_ONLY_CACHED_TOOLS = frozenset({
 from .motivation_draft import is_motivation_draft_request, motivation_placeholder_draft, motivation_student_facts
 
 
-def _project_issues(skill, project, history, documents, content):
+def _project_issues(skill, project, history, documents, content, tool_cache):
     from .project_claims import unsupported_project_numbers
     from .project_contradictions import project_fact_contradictions
     from .project_reference_safety import unsupported_project_references
     from .project_team_safety import unsupported_project_team_claims
     from .social_survey_quality import unsupported_survey_table_counts
+    cited_issues = []
+    if "[来源" in content:
+        from .claim_audit import audit_claims, eligible_documents
+        hits = {"search_project_materials": [], "search_public_knowledge": []}
+        for key, result in tool_cache.items():
+            tool_name = json.loads(key)[0]
+            if tool_name in hits and isinstance(result, dict):
+                hits[tool_name].extend(result.get("results") or [])
+        audit = audit_claims(project, {"draft": content}, eligible_documents(project, documents, history),
+                            retrieved=hits["search_project_materials"], public_hits=hits["search_public_knowledge"])
+        cited_issues = audit["warnings"]
     return list(dict.fromkeys([
-        *unsupported_project_numbers(skill, project, history, documents, content),
+        *cited_issues, *unsupported_project_numbers(skill, project, history, documents, content),
         *project_fact_contradictions(skill, project, history, documents, content),
         *unsupported_project_references(skill, project, history, documents, content),
         *unsupported_project_team_claims(skill, project, history, documents, content),
@@ -271,7 +282,7 @@ class ChatRuntime:
             # the student explicitly asks to search.
             source_available = any(
                 doc.get("kind") == "source" and doc.get("confirmed") and doc.get("confirmation_origin") == "user"
-                for doc in self.store.list_documents(project_id)
+                for doc in getattr(self.store, "document_headers", self.store.list_documents)(project_id)
             ) and project_sources_allowed(history, user_text)
             explicit_lookup = explicit_public_lookup(user_text)
             permitted = {"search_project_materials"} if source_available else set()
@@ -348,7 +359,7 @@ class ChatRuntime:
                 source_history = [*history, {"role": "user", "content": user_text}]
                 documents = (self.store.list_documents(project_id)
                              if project_sources_allowed(source_history, "") else [])
-                issues = _project_issues(skill, project, source_history, documents, recovered)
+                issues = _project_issues(skill, project, source_history, documents, recovered, tool_cache)
                 warning = (PROJECT_CLAIM_REVIEW_PREFIX + "、".join(issues)
                            + "），请检查并修改后，再选择保存。\n\n") if issues else ""
                 text = (warning + "本次生成中断，以下是已收到的章节片段，整份材料尚未完成。"
@@ -397,7 +408,7 @@ class ChatRuntime:
                     documents = (self.store.list_documents(project_id)
                                  if project_sources_allowed(source_history, "") else [])
                     writing = text.rsplit("【写作内容】\n", 1)[-1] if draft_request and policy_reply is not None else text
-                    issues = _project_issues(skill, project, source_history, documents, writing)
+                    issues = _project_issues(skill, project, source_history, documents, writing, tool_cache)
                     if issues:
                         text = (PROJECT_CLAIM_REVIEW_PREFIX + "、".join(issues)
                                 + "），请检查并修改后，再选择保存。\n\n" + text)

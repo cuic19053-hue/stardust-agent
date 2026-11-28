@@ -89,3 +89,30 @@ def test_cloud_follow_up_uses_new_snapshot_and_preserves_original_report(cloud_d
     assert user(db, "submit", body)["id"] == child["id"]
     assert user(db, "submit", {**body, "parent_id": "0" * 32})["conflict"]
     assert user(db, "get", {"id": parent["id"]})["report"] == saved["report"]
+
+
+def test_agent_reference_history_and_cross_device_receipts(cloud_db):
+    import hashlib
+    db = cloud_db
+    args = request(db)
+    args["snapshot"]["version"] = 2
+    args["snapshot"]["history"] = [{"role": "user", "sha256": "a" * 64}]
+    assert "conflict" in turn(db, "open_v2", args)
+    args["snapshot"]["history"] = []
+    task = turn(db, "open_v2", args)
+    assert turn(db, "lookup", args)["snapshot_version"] == 2
+    assert turn(db, "recent")[0]["preview"] == args["message"]
+    assert turn(db, "recent", {"offset": 20}) == []
+    assert turn(db, "detail", {"id": task["id"]})["answer"] is None
+    assert turn(db, "resolve", {"id": task["id"]}) == {"key_hash": args["key_hash"]}
+    assert turn(db, "resolve", {"id": task["id"], "project_id": "other"}, owner=OTHER) is None
+    turn(db, "suspend", {"id": task["id"]})
+    args["snapshot"]["history"] = [{"role": "user", "sha256": "0" * 64}]
+    assert "conflict" in turn(db, "open_v2", args)
+    args["snapshot"]["history"][0]["sha256"] = hashlib.sha256(args["message"].encode()).hexdigest()
+    assert turn(db, "open_v2", args)["id"] == task["id"]
+    turn(db, "complete", {"id": task["id"], "result": {"message": "结果", "internal": "private"}})
+    detail = turn(db, "detail", {"id": task["id"]})
+    assert detail == {"id": task["id"], "status": "completed", "message": args["message"], "answer": "结果"}
+    turn(db, "detail", {"id": task["id"]}, owner=OTHER, ok=False)
+    assert turn(db, "detail", {"id": task["id"], "project_id": "other"}, owner=OTHER) is None
