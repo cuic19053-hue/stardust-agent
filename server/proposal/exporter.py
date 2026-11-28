@@ -597,7 +597,7 @@ def _append_draft(
             "草稿：提交前请核对学校最新通知、全部事实与文献来源。文中“待补充”内容不得直接提交。"
         )
         notice.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    elif not already_filled:
+    elif not already_filled and any(project["sections"].values()):
         document.add_page_break()
         notice = document.add_paragraph(
             "草稿续页：已保留原学校模板并附加 Agent 草稿内容。请核对模板中需要手工填写的栏目。"
@@ -605,7 +605,7 @@ def _append_draft(
         notice.alignment = WD_ALIGN_PARAGRAPH.CENTER
     for section in project["outline"]:
         section_id = section.get("id", "")
-        if section_id in already_filled:
+        if section_id in already_filled or (not include_all and not project["sections"].get(section_id, "").strip()):
             continue
         section_title = section.get("title", section_id or "未命名章节")
         content = str(project["sections"].get(section_id, "") or "待补充：请提供与本章节相关的真实信息。")
@@ -655,7 +655,7 @@ def _append_draft(
             nodes = diagram.get("nodes", [])
             if nodes:
                 document.add_paragraph(" → ".join(str(node) for node in nodes))
-    elif research_project:
+    elif include_all and research_project:
         document.add_heading("研究方案图表", level=1)
         table = document.add_table(rows=2, cols=2)
         table.style = "Table Grid"
@@ -678,7 +678,7 @@ def _append_draft(
                 document.add_picture(item["stored_path"], width=Cm(13.5))
             except Exception:
                 document.add_paragraph(f"待补充：无法嵌入图片 {item['original_name']}，请检查文件。")
-    elif research_project:
+    elif include_all and research_project:
         document.add_heading("项目实践照片", level=1)
         placeholder = document.add_table(rows=1, cols=1)
         placeholder.cell(0, 0).text = (
@@ -957,7 +957,12 @@ def export_project(store: Store, project_id: str, output_path: str | Path) -> di
         warnings.append(
             "未发现可自动填写的占位符或标准字段表格；保留了原模板，并在后面附加草稿章节，请人工核对是否需要填入原表格。"
         )
-    _append_draft(document, project, include_all=True, already_filled=filled_sections)
+    unmapped = [item.get("title") or item.get("id", "") for item in project["outline"]
+                if used_template and item.get("id") not in filled_sections
+                and str(project["sections"].get(item.get("id")) or "").strip()]
+    if unmapped and filled_sections:
+        warnings.append("以下已保存章节附在模板后，请核对原表栏位：" + "、".join(unmapped))
+    _append_draft(document, project, include_all=not used_template, already_filled=filled_sections)
     out = Path(output_path).expanduser().resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     document.save(str(out))
@@ -969,7 +974,7 @@ def export_project(store: Store, project_id: str, output_path: str | Path) -> di
         "template_sections_filled": table_count,
         "template_paragraphs_filled": len(paragraph_sections),
         "template_placeholders_replaced": token_count,
-        "template_status": ("needs_review" if template_unavailable or unfilled_fields or (used_template and (not filled_sections or project.get("_template_fact_conflict")))
+        "template_status": ("needs_review" if template_unavailable or unfilled_fields or unmapped or (used_template and (not filled_sections or project.get("_template_fact_conflict")))
                             else "mapped" if used_template else "generic"),
         "template_unfilled_fields": unfilled_fields,
         "pdf_template_outline_applied": pdf_outline_applied,

@@ -31,7 +31,7 @@ def durable_chat(store, project_id, payload, request, invoke, *, save_setup=None
     profile = digest({"config": cfg, "private_rag": request.headers.get("x-private-rag-consent", "")})
     try:
         journal = AgentJournal(store, project_id, payload.idempotency_key, profile, payload.message.strip())
-        task = journal.open(save_setup=save_setup)
+        task = journal.open(save_setup=save_setup, resume_turn_id=payload.resume_turn_id)
     except JournalConflict as exc:
         raise HTTPException(409, str(exc)) from None
     except RuntimeError:
@@ -48,11 +48,13 @@ def durable_chat(store, project_id, payload, request, invoke, *, save_setup=None
     token = active_journal.set(journal)
     try:
         response = invoke()
-    except BaseException:
+    except BaseException as exc:
         try:
             journal.suspend()
         except (ValueError, RuntimeError):
             pass  # Lease expiry preserves the same conservative outcome.
+        if isinstance(exc, JournalConflict):
+            raise HTTPException(409, str(exc)) from None
         raise
     finally:
         active_journal.reset(token)

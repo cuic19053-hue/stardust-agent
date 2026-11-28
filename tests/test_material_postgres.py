@@ -534,6 +534,7 @@ from cloud_review_postgres_cases import (  # noqa: E402,F401
 from agent_journal_postgres_cases import (  # noqa: E402,F401
     test_agent_rpc_private_owner_and_backend_boundaries,
     test_agent_known_steps_resume_once_and_completion_is_atomic,
+    test_agent_reference_history_and_cross_device_receipts,
     test_agent_unknown_call_and_changed_inputs_cannot_be_reexecuted,
     test_cloud_follow_up_uses_new_snapshot_and_preserves_original_report,
 )

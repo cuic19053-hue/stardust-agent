@@ -60,7 +60,8 @@ def cloud_db(sql, monkeypatch):
     for filename in ("20261011173308_workbench_credit_ledger.sql", "20261012120000_workbench_backend_capability.sql",
                      "20261113090000_workbench_model_interactions.sql", "20261117135553_langgraph_cloud_review.sql",
                      "20261117145842_review_scheduler_safe_update.sql",
-                     "20261117180705_agent_review_evidence_and_turn_recovery.sql"):
+                     "20261117180705_agent_review_evidence_and_turn_recovery.sql",
+                     "20261128054323_agent_turn_version_references.sql"):
         sql((ROOT / "supabase/migrations" / filename).read_text())
     sql(f"""update workbench_backend_capability set secret_hash=sha256(convert_to('{BACKEND}','UTF8'));
       select public.workbench_grant_payment_credits('{UID}','isolated-review-fixture',1000000);

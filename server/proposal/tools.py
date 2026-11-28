@@ -125,7 +125,7 @@ class ProposalTools:
         project = self.store.get_project(project_id)
         if not project:
             return {"error": "找不到这个项目。"}
-        docs = self.store.list_documents(project_id)
+        docs = getattr(self.store, "document_headers", self.store.list_documents)(project_id)
         return {
             "project": project,
             "documents": [

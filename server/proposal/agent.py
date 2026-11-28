@@ -734,7 +734,7 @@ class OllamaAgent:
             return str(public["scope_conflict"]) + " 未使用现有资料猜测。"
         public_items = [item for item in public.get("results", []) if item.get("kind") == "official"]
         official_documents = {
-            item["id"] for item in self.store.list_documents(project_id)
+            item["id"] for item in getattr(self.store, "document_headers", self.store.list_documents)(project_id)
             if item.get("confirmed") and item.get("kind") == "official"
         }
         project_items = []

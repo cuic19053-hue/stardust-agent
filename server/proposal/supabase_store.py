@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .storage import CreditRateLimitError, InsufficientCreditsError, PendingUsageError, new_id
+from .storage import DOCUMENT_HEADER_COLUMNS, CreditRateLimitError, InsufficientCreditsError, PendingUsageError, new_id
 from .billing_policy import normalize_trial_wallet
 from .supabase_http import supabase_urlopen
 
@@ -472,6 +472,42 @@ class SupabaseStore:
         )
         return [self._document_row(row, download=download) for row in rows]
 
+    def _project_rows(self, table, params):
+        # PostgREST caps individual responses. Keep an explicit, unique order
+        # and advance by the number actually returned (including smaller caps).
+        offset = 0
+        while True:
+            rows = self._rest(table, params={**params, "limit": "500", "offset": str(offset)})
+            if not rows:
+                return
+            yield from rows
+            offset += len(rows)
+
+    def document_headers(self, project_id: str) -> list[dict[str, Any]]:
+        rows = self._project_rows("documents", {"select": ",".join(DOCUMENT_HEADER_COLUMNS),
+                                  "project_id": f"eq.{project_id}", "order": "created_at.asc,id.asc"})
+        return [{**row, "confirmed": bool(row["confirmed"] and (
+            row["kind"] == "template" or row["confirmation_origin"] == "user"))} for row in rows]
+
+    def _confirmed_chunks(self, project_id, columns):
+        return self._project_rows("chunks", {
+            "select": columns + ",documents!inner(confirmed,kind)", "project_id": f"eq.{project_id}",
+            "documents.project_id": f"eq.{project_id}", "documents.confirmed": "eq.true",
+            "documents.confirmation_origin": "eq.user", "documents.kind": "neq.template", "order": "id.asc",
+        })
+
+    def confirmed_chunk_ids(self, project_id: str) -> list[str]:
+        return [r["id"] for r in self._confirmed_chunks(project_id, "id")]
+
+    def turn_chunks(self, project_id: str) -> list[dict[str, Any]]:
+        results = []
+        for row in self._confirmed_chunks(project_id, "*"):
+            item = dict(row)
+            item["embedding"] = self._json(item.pop("embedding_json", None), [])
+            item.pop("documents", None)
+            results.append(item)
+        return results
+
     def materialize_project_documents(self, project_id: str, *, template_document_id: str | None = None) -> list[dict[str, str]]:
         """Fetch only files the Word renderer actually embeds or opens.
 
@@ -733,13 +769,13 @@ class SupabaseStore:
             payload={"updated_at": utc_now()},
         )
 
-    def messages(self, project_id: str, limit: int = 30) -> list[dict[str, str]]:
+    def messages(self, project_id: str, limit: int = 30, *, stable_order: bool = False) -> list[dict[str, str]]:
         rows = self._rest(
             "messages",
             params=[
                 ("select", "role,content"),
                 ("project_id", f"eq.{project_id}"),
-                ("order", "created_at.desc"),
+                ("order", "created_at.desc,id.desc" if stable_order else "created_at.desc"),
                 ("limit", str(limit)),
             ],
         )

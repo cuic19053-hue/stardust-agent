@@ -118,7 +118,8 @@ class ChatToolRouter:
             from .personal_source_filter import filter_personal_evidence
             from .skills import registry
             skill = registry.get(str((self.project.get("state") or {}).get("skill_id") or ""))
-            if skill:
+            from .section_grounding import is_personal_skill
+            if skill and is_personal_skill(skill):
                 result, excluded = filter_personal_evidence(
                     skill, self.project, history if history is not None else [],
                     self.tools.store.list_documents(self.project_id), result,

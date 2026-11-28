@@ -515,6 +515,8 @@ def test_word_template_is_used_and_labeled_cells_are_filled(workspace, tmp_path)
     assert body["used_original_template"] is True
     assert body["template_sections_filled"] >= 1
     doc = Document(io.BytesIO(client.get(body["download_url"]).content))
+    assert len(doc.tables) == len(template.tables)
+    assert [p.text for p in doc.paragraphs] == [p.text for p in template.paragraphs]
     assert doc.tables[0].cell(0, 1).text == "校园植物病害识别"
     assert "拟利用图像方法" in doc.tables[0].cell(1, 1).text
 

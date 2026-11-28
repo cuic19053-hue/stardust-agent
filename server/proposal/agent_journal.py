@@ -8,6 +8,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 from copy import copy, deepcopy
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 import secrets
@@ -15,6 +16,7 @@ import time
 import uuid
 
 from .review_runs import digest
+from .storage import DOCUMENT_HEADER_COLUMNS
 
 active_journal = ContextVar("active_agent_journal", default=None)
 
@@ -23,29 +25,40 @@ class JournalConflict(ValueError):
     pass
 
 
-def input_snapshot(store, project_id, runtime_chunks=None):
+def legacy_snapshot(store, project_id, runtime_chunks):
     project = store.get_project(project_id)
     documents = [{k: v for k, v in d.items() if k in {"id", "project_id", "original_name", "kind", "content_type",
                   "extracted_text", "extraction_status", "confirmed", "confirmation_origin", "extraction_warning", "low_confidence_count"}}
                  for d in store.list_documents(project_id)]
     raw_chunks = store.chunks_for_project(project_id)
-    if runtime_chunks is not None:
-        runtime_chunks.extend(raw_chunks)
+    runtime_chunks.extend(raw_chunks)
     chunks = [{k: v for k, v in c.items() if not k.startswith("embedding")} for c in raw_chunks]
     # A stored hint is display metadata, never needed to execute the turn.
     project = deepcopy(project)
     project.get("state", {}).pop("last_model_config", None)
     snapshot = {"project": project, "documents": documents, "chunks": chunks,
                 "history": store.messages(project_id, limit=200)}
-    if len(json.dumps(snapshot, ensure_ascii=False).encode()) > 2_000_000:
-        raise JournalConflict("本轮资料过大，请减少材料后继续。")
     return snapshot
+
+
+def history_refs(messages):
+    return [{"role": m["role"], "sha256": hashlib.sha256(m["content"].encode()).hexdigest()}
+            for m in messages]
+
+
+def input_snapshot(store, project_id, history):
+    project = store.get_project(project_id)
+    project.get("state", {}).pop("last_model_config", None)
+    return {"version": 2, "project": project, "documents": store.document_headers(project_id),
+            "chunks": store.confirmed_chunk_ids(project_id), "history": history_refs(history)}
 
 
 def material_digest(snapshot):
     # Cloud's existing project trigger also increments revision for a chat's
     # updated_at touch. Compare actual input data, not that incidental counter.
     project = {k: v for k, v in snapshot["project"].items() if k not in {"updated_at", "created_at", "material_revision"}}
+    if snapshot.get("version") == 2 and "material" in project:
+        project["material"] = {k: v for k, v in project["material"].items() if k != "revision"}
     return digest({"project": project, "documents": snapshot["documents"], "chunks": snapshot["chunks"]})
 
 
@@ -77,11 +90,23 @@ class AgentJournal:
         payload = {"p_action": action, "p_secret": os.environ.get("WORKBENCH_BACKEND_SECRET", ""),
                    "p_args": {"project_id": self.project_id, "id": self.task_id, "lease": self.lease, **args}}
         result = self.store._rest("rpc/proposal_agent_turn", "POST", payload=payload)
+        if not result and action in {"lookup", "resolve"}:
+            return None
         if result and result.get("conflict"):
             raise JournalConflict(result["conflict"])
         return result
 
-    def open(self, *, save_setup=None):
+    def open(self, *, save_setup=None, resume_turn_id=None):
+        if resume_turn_id:
+            if self.cloud:
+                match = self.rpc("resolve", id=resume_turn_id)
+            else:
+                with self.store.connect() as db:
+                    match = db.execute("SELECT key_hash FROM agent_turns WHERE project_id=? AND id=?",
+                                       (self.project_id, resume_turn_id)).fetchone()
+            if not match:
+                raise JournalConflict("未找到本项目的原任务。")
+            self.request["key_hash"] = match["key_hash"]
         if self.cloud:
             known = self.rpc("lookup", **self.request)
         else:
@@ -93,14 +118,26 @@ class AgentJournal:
                     raise JournalConflict("同一请求标识已用于不同内容或模型配置。")
                 if known and known["status"] == "completed":
                     known["result"] = json.loads(known["result"])
+                elif known:
+                    known["snapshot_version"] = json.loads(known["snapshot"]).get("version", 1)
+        if resume_turn_id and (not known or known["id"] != resume_turn_id):
+            raise JournalConflict("未找到本项目的原任务。")
         if known and known["status"] == "completed":
             return known
         if known is None and save_setup is not None:
             save_setup()
         self.runtime_chunks = []
-        snapshot = input_snapshot(self.store, self.project_id, self.runtime_chunks)
+        if known and known.get("snapshot_version", 1) == 1:
+            snapshot = legacy_snapshot(self.store, self.project_id, self.runtime_chunks)
+        else:
+            observed = self.store.messages(self.project_id, limit=201, **({"stable_order": True} if self.cloud else {}))
+            snapshot = input_snapshot(self.store, self.project_id, observed[-200:])
+        if len(json.dumps(snapshot, ensure_ascii=False).encode()) > 2_000_000:
+            raise JournalConflict("本轮项目快照超过存储上限。")
+        fingerprint = material_digest(snapshot)
         if self.cloud:
-            task = self.rpc("open", **self.request, snapshot=snapshot, input_digest=material_digest(snapshot))
+            action = "open_v2" if snapshot.get("version") == 2 else "open"
+            task = self.rpc(action, **self.request, snapshot=snapshot, input_digest=fingerprint)
         else:
             with self.store.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
@@ -124,13 +161,22 @@ class AgentJournal:
                         task["status"] = "needs_review"
                     else:
                         old = json.loads(task["snapshot"])
-                        if task["input_digest"] != material_digest(snapshot) or snapshot["history"] != (old["history"] + [{"role": "user", "content": task["message"]}])[-200:]:
+                        appended = [{"role": "user", "content": task["message"]}]
+                        if old.get("version") == 2:
+                            appended = history_refs(appended)
+                        if (task["input_digest"] != fingerprint
+                                or snapshot["history"] != (old["history"] + appended)[-200:]):
                             raise JournalConflict("项目、材料或对话已变化，请保留原结果并发起新一轮。")
                 else:
+                    if snapshot.get("version") == 2:
+                        rows = db.execute("""SELECT role,content FROM messages WHERE project_id=?
+                            ORDER BY created_at DESC,rowid DESC LIMIT 200""", (self.project_id,)).fetchall()
+                        if history_refs(reversed(rows)) != snapshot["history"]:
+                            raise JournalConflict("对话历史已变化，请重新发起。")
                     task = {"id": uuid.uuid4().hex, "snapshot": json.dumps(snapshot, ensure_ascii=False), "status": "running"}
                     db.execute("""INSERT INTO agent_turns(id,project_id,key_hash,request_hash,snapshot,input_digest,message,status,created_at)
                         VALUES(?,?,?,?,?,?,?,'running',?)""", (task["id"], self.project_id, self.request["key_hash"],
-                        self.request["request_hash"], task["snapshot"], material_digest(snapshot), self.request["message"], time.time()))
+                        self.request["request_hash"], task["snapshot"], fingerprint, self.request["message"], time.time()))
                     db.execute("INSERT INTO messages(id,project_id,role,content,created_at) VALUES(?,?,'user',?,?)",
                                (uuid.uuid4().hex, self.project_id, self.request["message"], datetime.now(timezone.utc).isoformat()))
                     db.execute("UPDATE projects SET updated_at=? WHERE id=?", (datetime.now(timezone.utc).isoformat(), self.project_id))
@@ -147,6 +193,17 @@ class AgentJournal:
             return task
         self.task_id = task["id"]
         self.snapshot = json.loads(task["snapshot"]) if isinstance(task["snapshot"], str) else task["snapshot"]
+        if self.snapshot.get("version") == 2:
+            # The retry read includes the user message added by open. Read one
+            # extra row to recover all 200 original entries at the boundary.
+            self.runtime_history = observed[-200:]
+            if history_refs(self.runtime_history) != self.snapshot["history"]:
+                self.runtime_history = observed[:-1][-200:]
+                if history_refs(self.runtime_history) != self.snapshot["history"]:
+                    self.suspend()
+                    raise JournalConflict("本轮对话历史已变化，请重新发起。")
+        else:
+            self.runtime_history = self.snapshot["history"]
         return task
 
     def _fence(self, db):
@@ -224,13 +281,39 @@ class AgentJournal:
                        ("needs_review" if unknown else "suspended", self.task_id))
 
 
+def read_turns(store, project_id, *, turn_id=None, offset=0):
+    """Project history is read-only. Never expose leases, configuration or operation payloads."""
+    if hasattr(store, "_rest"):
+        result = store._rest("rpc/proposal_agent_turn", "POST", payload={
+            "p_secret": os.environ.get("WORKBENCH_BACKEND_SECRET", ""),
+            "p_action": "detail" if turn_id else "recent",
+            "p_args": {"project_id": project_id, "id": turn_id, "offset": offset},
+        })
+        return (result or None) if turn_id else result
+    with store.connect() as db:
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_turns'").fetchone():
+            return None if turn_id else []
+        status = "CASE WHEN status='running' AND lease_until<=? THEN 'interrupted' ELSE status END AS status"
+        if turn_id:
+            row = db.execute(f"""SELECT id,message,{status},
+                CASE WHEN status='completed' THEN json_extract(result,'$.message') END AS answer
+                FROM agent_turns WHERE project_id=? AND id=?""", (time.time(), project_id, turn_id)).fetchone()
+            return dict(row) if row else None
+        return [dict(row) for row in db.execute(f"""SELECT id,{status},substr(message,1,80) AS preview,created_at
+            FROM agent_turns WHERE project_id=? ORDER BY created_at DESC,id DESC LIMIT 20 OFFSET ?""",
+            (time.time(), project_id, offset))]
+
+
 class TurnStore:
     """Frozen input reads; conversation writes commit once with task completion."""
     def __init__(self, journal):
         self.journal, self.user_added = journal, False
-        # Rank only captured text. Existing vectors remain ephemeral and retain
-        # their embedding revision/consent checks in ProjectRetriever.
-        self.search_project_chunks = None
+        # Legacy turns use their embedded index. New searches resolve and verify
+        # captured versions under the current project identity and RAG consent.
+        self.version = journal.snapshot.get("version", 1)
+        if self.version == 1 or not callable(getattr(journal.store, "search_project_chunks", None)):
+            self.search_project_chunks = None
+        self._documents = None
 
     def __getattr__(self, name):
         return getattr(self.journal.store, name)
@@ -239,7 +322,7 @@ class TurnStore:
         return deepcopy(self.journal.snapshot["project"]) if project_id == self.journal.project_id else None
 
     def messages(self, project_id, limit=30):
-        history = deepcopy(self.journal.snapshot["history"])
+        history = deepcopy(self.journal.runtime_history)
         if self.user_added:
             history.append({"role": "user", "content": self.journal.request["message"]})
         return history[-limit:] if project_id == self.journal.project_id else []
@@ -250,12 +333,49 @@ class TurnStore:
         if role == "user":
             self.user_added = True
 
-    def list_documents(self, project_id):
+    def document_headers(self, project_id):
         return deepcopy(self.journal.snapshot["documents"]) if project_id == self.journal.project_id else []
+
+    def list_documents(self, project_id):
+        if project_id != self.journal.project_id:
+            return []
+        refs = self.journal.snapshot["documents"]
+        if self.version == 1:
+            return deepcopy(refs)
+        if self._documents is None:
+            documents = []
+            for ref in refs:
+                row = self.journal.store.get_document(ref["id"], download=False)
+                if not row or any(row.get(k) != ref[k] for k in DOCUMENT_HEADER_COLUMNS):
+                    raise JournalConflict("材料版本已变化，请重新发起。")
+                documents.append({**ref, "extracted_text": row["extracted_text"]})
+            self._documents = documents
+        return deepcopy(self._documents)
+
+    def search_project_chunks(self, project_id, *args):
+        if project_id != self.journal.project_id:
+            return []
+        rows = self.journal.store.search_project_chunks(project_id, *args)
+        self._verify_index(project_id, self.journal.store.confirmed_chunk_ids(project_id))
+        ids = set(self.journal.snapshot["chunks"])
+        if any(row["id"] not in ids for row in rows):
+            raise JournalConflict("材料索引已变化，请重新发起。")
+        return rows
+
+    def _verify_index(self, project_id, ids):
+        if (ids != self.journal.snapshot["chunks"]
+                or self.journal.store.document_headers(project_id) != self.journal.snapshot["documents"]):
+            raise JournalConflict("材料版本或索引已变化，请重新发起。")
 
     def chunks_for_project(self, project_id):
         if project_id != self.journal.project_id:
             return []
+        if self.version == 2:
+            store = self.journal.store
+            rows = getattr(store, "turn_chunks", store.chunks_for_project)(project_id)
+            rows.sort(key=lambda row: row["id"])
+            self._verify_index(project_id, [r["id"] for r in rows])
+            return rows
         runtime = {c["id"]: c for c in self.journal.runtime_chunks}
         return [{**deepcopy(c), **{k: v for k, v in runtime.get(c["id"], {}).items()
                                  if k.startswith("embedding") and runtime[c["id"]]["content"] == c["content"]}}

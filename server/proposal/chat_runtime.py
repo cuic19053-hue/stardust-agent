@@ -271,7 +271,7 @@ class ChatRuntime:
             # the student explicitly asks to search.
             source_available = any(
                 doc.get("kind") == "source" and doc.get("confirmed") and doc.get("confirmation_origin") == "user"
-                for doc in self.store.list_documents(project_id)
+                for doc in getattr(self.store, "document_headers", self.store.list_documents)(project_id)
             ) and project_sources_allowed(history, user_text)
             explicit_lookup = explicit_public_lookup(user_text)
             permitted = {"search_project_materials"} if source_available else set()

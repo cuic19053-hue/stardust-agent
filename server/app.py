@@ -149,6 +149,7 @@ class ChatInput(BaseModel):
     llm_config: LLMConfigInput | None = None
     stream: bool = False
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=160)
+    resume_turn_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
 
 
 class BillingReceiptInput(BaseModel):
@@ -1610,6 +1611,23 @@ def configure_reconcile_scheduler(request: Request):
         raise HTTPException(503, "后台对账调度暂不可配置") from None
 
 
+@app.get("/api/projects/{project_id}/chat-runs")
+def list_chat_runs(project_id: str, offset: int = 0):
+    from proposal.agent_journal import read_turns
+    _safe_project(project_id)
+    return {"runs": read_turns(store, project_id, offset=max(0, offset))}
+
+
+@app.get("/api/projects/{project_id}/chat-runs/{turn_id}")
+def get_chat_run(project_id: str, turn_id: str):
+    from proposal.agent_journal import read_turns
+    _safe_project(project_id)
+    run = read_turns(store, project_id, turn_id=turn_id)
+    if run is None:
+        raise HTTPException(404, "未找到这次对话")
+    return run
+
+
 @app.get("/api/projects/{project_id}/usage")
 def get_project_usage(project_id: str, limit: int = 50) -> dict[str, Any]:
     _safe_project(project_id)
@@ -2266,7 +2284,7 @@ def chat(project_id: str, payload: ChatInput, request: Request) -> dict[str, Any
     def reply():
         return _chat_reply(project_id, payload, request, project, state, fields, previous_assistant, ask_internet_track)
 
-    if payload.idempotency_key:
+    if payload.idempotency_key or payload.resume_turn_id:
         from proposal.agent_chat_api import durable_chat
         return durable_chat(store, project_id, payload, request, reply, save_setup=save_setup)
     save_setup()
@@ -2278,7 +2296,7 @@ def _chat_reply(project_id, payload, request, project, state, fields, previous_a
     if ask_internet_track:
         from proposal.track_clarification import INTERNET_TRACK_QUESTION
         # Keyed turns persist both messages in the journal's open/complete operations.
-        if not payload.idempotency_key:
+        if not (payload.idempotency_key or payload.resume_turn_id):
             store.add_message(project_id, "user", text)
             store.add_message(project_id, "assistant", INTERNET_TRACK_QUESTION)
         stream = bool(payload.stream or (request.headers.get("accept") == "text/event-stream")

@@ -34,6 +34,13 @@ def new_id() -> str:
     return uuid.uuid4().hex
 
 
+# Fields safe to expose to turn snapshots, without text, files or storage paths.
+DOCUMENT_HEADER_COLUMNS = (
+    "id", "project_id", "original_name", "kind", "content_type", "extraction_status",
+    "confirmed", "confirmation_origin", "extraction_warning", "low_confidence_count", "review_revision",
+)
+
+
 class Store:
     """Small local SQLite store. Uploaded files are kept outside the repository."""
 
@@ -465,6 +472,23 @@ class Store:
                 (project_id,),
             ).fetchall()
         return [self._document_row(row) for row in rows]
+
+    def document_headers(self, project_id: str) -> list[dict[str, Any]]:
+        with self.connect() as db:
+            rows = db.execute(
+                f"SELECT {','.join(DOCUMENT_HEADER_COLUMNS)} FROM documents WHERE project_id=? ORDER BY created_at,id",
+                (project_id,),
+            ).fetchall()
+        return [self._document_row(row) for row in rows]
+
+    def confirmed_chunk_ids(self, project_id: str) -> list[str]:
+        with self.connect() as db:
+            rows = db.execute(
+                """SELECT c.id FROM chunks c JOIN documents d ON d.id=c.document_id AND d.project_id=c.project_id
+                   WHERE c.project_id=? AND d.confirmed=1 AND d.confirmation_origin='user'
+                     AND d.kind!='template' ORDER BY c.id""", (project_id,),
+            )
+            return [row["id"] for row in rows]
 
     def update_document_extraction(
         self,

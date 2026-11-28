@@ -4902,3 +4902,7 @@ button[type="submit"]:active,
 .intake-panel .inline-hint { margin: 10px 0; }
 .intake-panel .fact-candidates { overflow-wrap: anywhere; }
 .intake-panel .fact-candidates:empty { display: none; }
+
+#chatRunsList details { padding: .65rem 0; }
+#chatRunsList summary { cursor: pointer; }
+#chatRunsList details div { white-space: pre-wrap; overflow-wrap: anywhere; padding-top: .5rem; }

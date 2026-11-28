@@ -229,3 +229,21 @@ test("deleting a project clears its restored draft and the current input", async
   assert.equal(input.value, "");
   assert.equal(session.has(key), false);
 });
+
+test("a second device resumes the selected project run with no stored request key", async () => {
+  const h = context.makeHarness(new Map());
+  h.ui.state.project = { id: "project-one" };
+  h.ui.setChatRefresh(async () => {});
+  h.ui.setLoadProject(async () => {});
+  inputFor(h, "尚未发送的另一条草稿");
+  const requests = [];
+  h.context.fetch = async (_url, options) => {
+    requests.push(JSON.parse(options.body));
+    return { ok: true, body: { getReader: completedReader } };
+  };
+  await h.ui.sendChat(null, "原任务", "a".repeat(32));
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].resume_turn_id, "a".repeat(32));
+  assert.equal(requests[0].idempotency_key, undefined);
+  assert.equal(h.element("#chatInput").value, "尚未发送的另一条草稿");
+});

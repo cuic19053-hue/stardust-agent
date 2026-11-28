@@ -12,7 +12,12 @@ def model_events(agent: Any, project_id: str, payload: dict[str, Any], *, stream
     if not journal:
         yield from _model_events(agent, project_id, payload, stream=stream)
         return
-    idx, operation = journal.begin("model", {"payload": payload, "stream": stream})
+    # Both transports journal the same terminal message. A fresh device can
+    # replay that response over SSE even if the original client requested JSON.
+    request = {"payload": payload}
+    if journal.snapshot.get("version") != 2:
+        request["stream"] = stream
+    idx, operation = journal.begin("model", request)
     if operation["cached"]:
         response = operation["result"]
         if stream and response["message"].get("content"):
