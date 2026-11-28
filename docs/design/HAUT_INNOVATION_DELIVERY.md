@@ -34,3 +34,25 @@
 ## 发布依赖
 
 云端应用切换前应用 `20261128054323_agent_turn_version_references.sql`。新版调用 `open_v2` 写入材料版本引用，旧版任务继续按原快照恢复。在隔离 PostgreSQL 中可运行 `RUN_POSTGRES_POLICY_TESTS=1 python -m pytest tests/test_material_postgres.py -k agent -q` 核验项目权限、运行找回和租约。生产验收使用已部署的版本和独立测试账号单独记录。
+
+## 逐条核对与独立评分
+
+工作台在整理对话草稿、生成章节和导出前的基础检查中列出预算、已完成成果、申报资格与截止日期。项目材料按确认版本和页、段、行定位。检查采用整句匹配，改写和来源不明的断言留给学生核对。生成章节时还要求本轮确实检索到引用。河工大 2024 年校级创新训练的资格条款、指导教师系统填报时段各绑定一段原文和页面摘要值。[教务处通知](https://jwc.haut.edu.cn/info/1114/7471.htm)
+
+评测单份真实交付时，核对人先冻结评分表，生成后逐项检查下载的 Word 与渲染页。评分程序在本地读取两份 JSON，打印本次事实错误率、必填项缺失率、已检查版式点合格率、待核对数和已对账成本。
+
+```sh
+python -m server.evals.delivery_quality /path/to/rubric.json /path/to/review.json
+```
+
+两份文件中的路径分别相对于各自所在目录。下表给出填法，原件、学生资料和核账记录保存在获授权的评测目录。
+
+| 文件 | 字段 | 填写方式 |
+| --- | --- | --- |
+| rubric | `template`、`sources` | 原表用 `{"path":"form.docx","sha256":"…"}`。每份授权材料和适用通知保留审核过的 UTF-8 文本，以材料 ID 为键，记录同样的路径及哈希。 |
+| rubric | `fields`、`layout_checks` | 按必填栏名记录 `{"location":[0,2,1],"expected_fragment":"1200元"}`。三个序号依次为表、行、列，单个序号指正文段落，均从零开始。选择该栏必须出现且空表中没有的事实。排版检查点分别记录 ID、页码及判据。 |
+| review | `rubric_sha256`、`output`、`deployment`、`model`、`run_id`、`reviewer` | 绑定冻结评分表和下载文件版本，登记实际部署提交、模型、任务和核对人。 |
+| review | `facts`、`layout` | 逐条填写 `{"draft_quote":"…","verdict":"error","source_id":"记录","original_quote":"…"}`。每个不同断言标一次，正确填 `correct`，无法判定填 `unresolved`。逐页检查后，每个版式点按 ID 填 `pass`、`fail` 或 `unreviewed`。 |
+| review | `receipts`、`wallet_spent_micro_cny` | 按运行日志列入全部计费调用 ID。每项填 `{"provider_request_id":"…","actual_micro_cny":1200}`，待结算填 `null`。另填该份交付的最终实扣，单位为百万分之一元。 |
+
+分母为零时比率输出 `null`。待判事实、未检查版式点另计。栏目错位或输出缺栏计为缺失。成本只有在每次调用均有独立收据且费用总和与本份实扣相符时才出值。程序核对文件、引句、栏目位置和算术，事实判定、样本授权及逐页观感由独立核对人负责。

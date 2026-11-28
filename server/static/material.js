@@ -513,6 +513,7 @@
         action("取消后续执行", async () => { await request(`/jobs/${job.id}/cancel`, "POST"); await refresh(); }, row);
       if (job.status === "completed") {
         const reviewIncomplete = job.kind === "section" && (job.result?.review_incomplete || job.result?.status === "review_failed");
+        for (const warning of job.result?.citation_check?.warnings || []) row.append(el("p", warning));
         if (reviewIncomplete) row.append(el("p", job.result?.grounding_issues?.length
           ? (job.result?.grounding_kind === "project"
             ? "草稿中的项目数据、成果或来源需要你核对，可在下方查看并决定是否使用。"

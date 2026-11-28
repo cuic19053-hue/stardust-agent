@@ -4289,6 +4289,8 @@
           }
 
           if (result.conflict_status === "user_edit_preserved") {
+            if (result.citation_check?.warnings?.length)
+              sources.textContent = result.citation_check.warnings.join(" ");
             if (result.result_save_uncertain) {
               if (currentEditor()) renderUncertainDrafts();
               else renderSections();
@@ -5169,6 +5171,15 @@
     }
   }
 
+  function claimEvidenceText(row) {
+    const evidence = row.evidence || row.cited_passage;
+    if (!evidence) return "";
+    const version = evidence.review_revision != null ? `确认版本 ${evidence.review_revision}` :
+      `原件 ${evidence.source_sha256.slice(0, 12)}`;
+    const scope = evidence.scope ? `（${evidence.scope}）` : "";
+    return `${evidence.source_name} · ${evidence.source_ref} · ${version}${scope}『${evidence.quote}』`;
+  }
+
   async function validate() {
     const btn = $("#validateBtn");
     const oldText = btn ? btn.textContent : "";
@@ -5201,6 +5212,13 @@
       for (const warning of result.consistency_warnings || []) {
         const item = document.createElement("li");
         item.textContent = warning;
+        list.append(item);
+      }
+      for (const row of result.claim_audit?.claims || []) {
+        const citation = claimEvidenceText(row);
+        if (!citation) continue;
+        const item = document.createElement("li");
+        item.textContent = `${row.evidence ? "已定位原文" : "待对照原文"}『${row.claim}』 · ${citation}`;
         list.append(item);
       }
       for (const item of result.low_confidence_ocr || []) {
@@ -5315,6 +5333,10 @@
         : item.requires_review ? "请先核对并修改这份草稿，再勾选保存。"
         : "勾选后保存，也可以先在下方修改内容。";
       if (item.warnings?.length) note.textContent += ` ${item.warnings.join(" ")}`;
+      for (const row of item.fact_checks || []) {
+        const citation = claimEvidenceText(row);
+        if (citation) note.textContent += ` 『${row.claim}』可对照 ${citation}`;
+      }
       const editor = document.createElement("textarea");
       editor.value = item.content;
       editor.readOnly = check.disabled;

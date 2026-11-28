@@ -308,19 +308,32 @@ def candidates(project: dict, messages: list[dict]) -> list[dict]:
     return list(latest.values())[-40:]
 
 
-def review(store, project: dict) -> dict:
-    messages = store.messages(project["id"], limit=200)
+def review(store, project: dict, *, originals=None, messages=None) -> dict:
+    if messages is None:
+        messages = store.messages(project["id"], limit=200)
     items = candidates(project, messages)
     # Legacy document updates do not always advance the project revision.
     # Include their review-relevant state without exposing material contents in
     # the snapshot returned to the browser.
+    from .claim_audit import audit_claims, eligible_documents
+    if originals is None:
+        originals = store.list_documents(project["id"])
+    audit = audit_claims(project, {item["section_id"]: item["content"] for item in items},
+                        eligible_documents(project, originals, messages), store=store)
+    for item in items:
+        item["fact_checks"] = [row for row in audit["claims"] if row["section_id"] == item["section_id"]]
+        item["warnings"].extend(row["warning"] for row in item["fact_checks"] if row.get("warning"))
+        if audit["truncated"]:
+            item["warnings"].append(audit["warnings"][-1])
+        if item["warnings"]:
+            item["requires_review"] = True
     documents = sorted((
         (str(doc.get("id") or ""), doc.get("original_name"), doc.get("kind"),
          doc.get("confirmed"), doc.get("confirmation_origin"),
          doc.get("extraction_status"), doc.get("extraction_warning"),
-         doc.get("low_confidence_count"),
+         doc.get("low_confidence_count"), doc.get("review_revision"),
          hashlib.sha256(str(doc.get("extracted_text") or "").encode()).hexdigest())
-        for doc in store.list_documents(project["id"])
+        for doc in originals
     ), key=lambda doc: doc[0])
     return {
         "snapshot": fingerprint([project.get("material_revision", 0),
@@ -370,7 +383,9 @@ def register_chat_drafts(app, get_store):
     @router.post("/confirm")
     def confirm(project_id: str, payload: DraftConfirmation):
         store, project = owned_project(project_id)
-        current = review(store, project)
+        originals = store.list_documents(project_id)
+        messages = store.messages(project_id, limit=200)
+        current = review(store, project, originals=originals, messages=messages)
         if payload.snapshot != current["snapshot"]:
             raise HTTPException(409, "项目、材料或对话已变化，请重新预览；尚未覆盖任何正文。")
         available = {item["id"]: item for item in current["items"]}
@@ -379,6 +394,7 @@ def register_chat_drafts(app, get_store):
         outline, sections, state = (deepcopy(project[k]) for k in ("outline", "sections", "state"))
         sources = dict(state.get("_chat_draft_sources", {}))
         backups = []
+        selected_sections = {}
         total = 0
         for selected in payload.items:
             item = available.get(selected.id)
@@ -401,7 +417,15 @@ def register_chat_drafts(app, get_store):
                     raise HTTPException(422, "目录最多支持 20 个章节，请先调整目录后再保存新草稿。")
                 outline.append({"id": sid, "title": item["title"]})
             sections[sid] = content
+            selected_sections[sid] = content
             sources[sid] = {"candidate": item["id"], "source": "user_confirmed_chat_draft"}
+        from .claim_audit import audit_claims, eligible_documents, source_version
+        checks = audit_claims(project, selected_sections, eligible_documents(project, originals, messages), store=store)
+        for row in checks["claims"]:
+            if row.get("evidence"):
+                sid = row["section_id"]
+                sources[sid].setdefault("fact_origins", {})[row["claim_id"]] = source_version(row["evidence"])
+                sources[sid]["body_sha256"] = hashlib.sha256(selected_sections[sid].encode()).hexdigest()
         state.update(outline_confirmed=True, _chat_draft_sources=sources)
         # Preserve the previous version before replacing it. A failed backup or
         # revision conflict must never overwrite the student's current text.
@@ -417,6 +441,8 @@ def register_chat_drafts(app, get_store):
             raise HTTPException(409, "项目已变化，未保存，请重新预览")
         from .review_workflow import after_draft_saved
         return {"saved": len(payload.items), "material_revision": saved["material_revision"],
-                "notice": "草稿已保存。", "review": after_draft_saved(store, project_id, "chat_draft")}
+                "claim_audit": checks,
+                "notice": "草稿已保存，仍有关键事实待核对。" if checks["warnings"] else "草稿已保存。",
+                "review": after_draft_saved(store, project_id, "chat_draft")}
 
     app.include_router(router)

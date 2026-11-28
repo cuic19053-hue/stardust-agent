@@ -94,7 +94,7 @@ class ChatToolRouter:
         history = None
         sources_allowed = True
         preference_unavailable = False
-        if name in {"search_project_materials", "get_project_state"}:
+        if name in {"search_project_materials", "get_project_state", "validate_project"}:
             from .project_writing import project_sources_allowed
             try:
                 history = self.tools.store.messages(self.project_id, limit=200)
@@ -111,7 +111,12 @@ class ChatToolRouter:
             if name == "search_project_materials" and not sources_allowed:
                 return name, {"results": [], "retrieval_mode": "disabled_by_user",
                               "message": "你要求暂不使用上传的材料，本次没有检索。"}
+        if name == "validate_project" and not sources_allowed:
+            return name, {"message": "请在工作台核对草稿。当前无法使用上传材料检查来源。"}
         result = self.tools.invoke(name, arguments)
+        if name == "validate_project" and isinstance(result, dict):
+            # The model only needs pending warnings. Detailed passages stay in the student-facing report.
+            result = {k: v for k, v in result.items() if k != "claim_audit"}
         if name == "get_project_state" and isinstance(result, dict) and not sources_allowed:
             result = {**result, "documents": []}
         if name == "search_project_materials" and isinstance(result, dict) and is_personal_writing_request(self.user_text):

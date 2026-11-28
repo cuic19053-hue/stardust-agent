@@ -1111,6 +1111,10 @@ class OllamaAgent:
             retrieval_mode=context.get("retrieval_mode"),
             notice="草稿已由 Agentic 自愈闭环打磨完成。请核对事实与来源后再确认。",
         )
+        from .claim_audit import audit_claims, eligible_documents
+        audit = audit_claims(project, {section_id: workflow_res.content},
+                            eligible_documents(project, source_documents, student_history),
+                            retrieved=context.get("results", []), public_hits=public_context.get("results", []))
         workflow_res.content, bad_citations = _check_generated_citations(
             workflow_res.content, context.get("results", []), public_context.get("results", [])
         )
@@ -1139,6 +1143,11 @@ class OllamaAgent:
                 if project_issues:
                     result["grounding_issues"] = project_issues
                     result["grounding_kind"] = "project"
+        if bad_citations:
+            audit["warnings"].append(f"有 {len(bad_citations)} 处引用未匹配本轮检索到的位置，来源待核对。")
+        result["citation_check"] = {**audit, "unknown_citations_removed": len(bad_citations)}
+        if audit["warnings"]:
+            result["review_incomplete"] = True
         from .generation_safety import review_incomplete
         if review_incomplete(result):
             result["review_incomplete"] = True
@@ -1147,16 +1156,15 @@ class OllamaAgent:
                 result["notice"] = f"草稿中的{subject}需要你核对。"
             elif result.get("revision_incomplete"):
                 result["notice"] = "后续修改未完成，上一版草稿仍可核对和编辑。"
+            elif audit["warnings"]:
+                result["notice"] = "草稿含待核对的关键事实，请查看对应原句后再使用。"
             else:
                 result["notice"] = "本轮检查未完成。"
         if excluded_personal_docs:
             note = "部分材料中的申请人姓名与当前学生不同，本次未用于写作，请核对材料。"
             result["notice"] = " ".join(filter(None, [result.get("notice"), note]))
         result["public_knowledge"] = public_context
-        result["citation_check"] = {
-            "unknown_citations_removed": len(bad_citations),
-            "notice": "仅检查来源名称和位置是否存在于本次检索，不能证明论断得到来源支持；请人工核对。",
-        }
+
         return result
 
     def propose_diagram(self, project_id: str, title: str) -> dict[str, Any]:

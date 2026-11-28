@@ -131,6 +131,9 @@ def exercise_delivery(tmp_path, monkeypatch, *, template=None):
         assert second.get(f"/api/projects/{other}/chat-runs/{run['id']}").status_code == 404
         preview = second.get(url + "/chat-drafts").json()
         item = next(i for i in preview["items"] if source_fact in i["content"])
+        budget, = item["fact_checks"]
+        assert budget["status"] == "matched_original" and budget["evidence"]["quote"] == source_fact
+        assert budget["evidence"]["source_ref"] == "行 1" and budget["evidence"]["review_revision"] > 0
         assert second.post(url + "/chat-drafts/confirm", json={"snapshot": preview["snapshot"],
                            "items": [{"id": item["id"]}]}).status_code == 200
         exported = second.post(url + "/export")

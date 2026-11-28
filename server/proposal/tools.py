@@ -583,6 +583,9 @@ class ProposalTools:
         return {"success": True, "key": key, "value": facts[key], "source_quote": fact_sources[key]}
 
     def validate_project(self, project_id: str) -> dict[str, Any]:
+        return self._validate_project(project_id, audit_facts=True)
+
+    def _validate_project(self, project_id: str, *, audit_facts: bool) -> dict[str, Any]:
         project = self.store.get_project(project_id)
         if not project:
             return {"error": "找不到这个项目。"}
@@ -655,15 +658,32 @@ class ProposalTools:
                 for value in (reference.get("title"), reference.get("doi"), reference.get("url")):
                     if value:
                         known_source_names.add(str(value).casefold())
+        audit = {}
+        if audit_facts:
+            from .claim_audit import audit_claims, eligible_documents
+            messages = getattr(self.store, "messages", None)
+            try:
+                history = messages(project_id, limit=200) if messages and documents else []
+            except (OSError, RuntimeError):
+                # Keep export available when the student's file-use preference cannot be loaded.
+                evidence_documents = []
+            else:
+                evidence_documents = eligible_documents(project, documents, history)
+            audit = audit_claims(project, sections, evidence_documents, store=self.store, saved=True)
+            known_source_names.update(row["evidence"]["source_name"].casefold() for row in audit["claims"]
+                                      if row.get("evidence", {}).get("source_url"))
         citation_warnings = []
         for section_id, content in sections.items():
             for source_name in re.findall(r"\[来源[：:]\s*([^\],，]+)", str(content)):
                 source_name = source_name.strip().casefold()
-                if source_name and not any(source_name in known for known in known_source_names):
+                known = (source_name in known_source_names if audit_facts else
+                         any(source_name in name for name in known_source_names))
+                if source_name and not known:
                     citation_warnings.append(
                         f"章节“{section_id}”的来源标记“{source_name}”未匹配到已确认材料或文献。"
                     )
         consistency_warnings.extend(citation_warnings)
+        consistency_warnings.extend(audit.get("warnings", []))
         budget = str(state.get("budget", "")).strip()
         budget_section = " ".join(
             str(value)
@@ -730,6 +750,7 @@ class ProposalTools:
             "placeholder_sections": placeholder_sections,
             "consistency_warnings": consistency_warnings,
             "source_citation_warnings": citation_warnings,
+            "claim_audit": audit,
             "budget_evidence": source_budgets,
             "section_count": section_count,
             "photo_notice": (
